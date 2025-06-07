@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd /Users/fields/Desktop/Unreal\\\\ Projects/TerrAI && find:*)",
+      "Bash(cd:*)",
+      "Bash(grep:*)",
+      "Bash(ls:*)",
+      "Bash(for backup in \"CompleteBackupJun8at11AM\" \"CleanBuildJun9at1030\" \"StableBuildJune9at9PM\")",
+      "Bash(do echo \"=== $backup ===\" ls -la \"/Volumes/Garden/TerrAI Backups and Optimization Files/BACKUPS:OPTIMIZATIONS/Legacy Backups/$backup/\")",
+      "Bash(done)",
+      "Bash(wc:*)",
+      "Bash(for backup in \"fullBackupAug1at9AM\" \"fullBackupAug10at1PM\" \"fullBackupAug11at8AM\" \"fullBackupAug11at1030AM\" \"fullBackupAug13at11PM\" \"fullBackupAug16at4PM\" \"fullBackupAug22at6PM\" \"fullBackupAug31at4PM\")",
+      "Bash(do path=\"/Volumes/Garden/TerrAI Backups and Optimization Files/BACKUPS:OPTIMIZATIONS/Legacy Backups/$backup/Source/TerrAI\" echo \"=== $backup ===\" ls -lh \"$path/WaterSystem.cpp\" \"$path/MasterController.cpp\" \"$path/TerrainController.cpp\")",
+      "Bash(xargs basename:*)",
+      "Bash(echo:*)",
+      "Bash( find \"/Users/fields/Desktop/Unreal Projects/TerrAI/Content\" -type f -size +50M -exec ls -lh {} ;)",
+      "Bash(git init:*)"
+    ]
+  }
+}

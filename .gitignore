@@ -1,0 +1,41 @@
+# Unreal Engine 5 .gitignore
+
+# Compiled binaries (rebuild from source)
+Binaries/
+
+# Build artifacts
+Intermediate/
+
+# Shader/asset cache (regenerated)
+DerivedDataCache/
+
+# Local settings, logs, autosaves, crashes
+Saved/
+
+# IDE/editor files (regenerated from .uproject)
+*.sln
+*.xcworkspace/
+*.xcodeproj/
+.vs/
+.vscode/
+.idea/
+
+# macOS
+.DS_Store
+*.swp
+*~
+
+# Build folder (iOS/Android packaging)
+Build/
+
+# Platforms folder (can be large, regenerated)
+# Uncomment if you want to exclude:
+# Platforms/
+
+# Local plugins (if using source control for main project only)
+# Plugins/*
+# !Plugins/.gitkeep
+
+# Large binary assets you may want to use Git LFS for:
+# *.uasset filter=lfs diff=lfs merge=lfs -text
+# *.umap filter=lfs diff=lfs merge=lfs -text
