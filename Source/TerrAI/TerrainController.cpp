@@ -37,7 +37,7 @@ ATerrainController::ATerrainController()
     SpringArm->bInheritRoll = false;
     
     // *** CRITICAL COLLISION SETTINGS FOR TERRAIN CLIPPING FIX ***
-    SpringArm->bDoCollisionTest = true;              // Enable collision detection
+    SpringArm->bDoCollisionTest = false;             // Disable collision to prevent camera jumping on hills
     SpringArm->bUseCameraLagSubstepping = true;      // Smooth collision response
     SpringArm->CameraLagSpeed = 10.0f;               // Fast lag recovery
     SpringArm->CameraLagMaxDistance = 50.0f;         // Max lag distance
@@ -426,8 +426,10 @@ void ATerrainController::UpdateCameraPosition(float DeltaTime)
         SetActorLocation(NewLocation);
     }
     
-    // Apply mouse look
-    if (!LookInput.IsZero() && bMouseLookEnabled)
+    // Apply mouse look ONLY when not editing terrain/water
+    bool bAllowMouseLook = !bIsEditingTerrain && !bIsEditingWater;
+    
+    if (!LookInput.IsZero() && bMouseLookEnabled && bAllowMouseLook)
     {
         CameraRotation.Yaw += LookInput.X * MouseSensitivity;
         CameraRotation.Pitch = FMath::Clamp(CameraRotation.Pitch + (LookInput.Y * MouseSensitivity), -80.0f, 80.0f);
@@ -666,9 +668,19 @@ void ATerrainController::SetWaterBrushStrength(float NewStrength)
 
 void ATerrainController::ToggleVisualMode()
 {
-    int32 CurrentModeInt = static_cast<int32>(CurrentVisualMode);
-    CurrentModeInt = (CurrentModeInt + 1) % 3;
-    SetVisualMode(static_cast<ETerrainVisualMode>(CurrentModeInt));
+    // Check if Shift is held for water material cycling
+    APlayerController* PC = Cast<APlayerController>(GetController());
+    if (PC && PC->IsInputKeyDown(EKeys::LeftShift))
+    {
+        ToggleWaterVisualMode();
+    }
+    else
+    {
+        // Normal terrain material cycling
+        int32 CurrentModeInt = static_cast<int32>(CurrentVisualMode);
+        CurrentModeInt = (CurrentModeInt + 1) % 5;  // Cycles through 5 terrain modes
+        SetVisualMode(static_cast<ETerrainVisualMode>(CurrentModeInt));
+    }
 }
 
 void ATerrainController::SetVisualMode(ETerrainVisualMode NewMode)
@@ -692,6 +704,14 @@ void ATerrainController::SetVisualMode(ETerrainVisualMode NewMode)
             MaterialToApply = HybridMaterial;
             ModeName = TEXT("Hybrid Mode");
             break;
+        case ETerrainVisualMode::Chrome:
+            MaterialToApply = ChromeMaterial;
+            ModeName = TEXT("Chrome");
+            break;
+        case ETerrainVisualMode::Glass:
+            MaterialToApply = GlassMaterial;
+            ModeName = TEXT("Glass");
+            break;
         default:
             MaterialToApply = WireframeMaterial;
             ModeName = TEXT("Default Wireframe");
@@ -706,6 +726,52 @@ void ATerrainController::SetVisualMode(ETerrainVisualMode NewMode)
     else
     {
         UE_LOG(LogTemp, Error, TEXT("Material not set for visual mode: %s"), *ModeName);
+    }
+}
+
+void ATerrainController::ToggleWaterVisualMode()
+{
+    int32 CurrentModeInt = static_cast<int32>(CurrentWaterVisualMode);
+    CurrentModeInt = (CurrentModeInt + 1) % 3;  // Cycles through 3 water modes
+    SetWaterVisualMode(static_cast<EWaterVisualMode>(CurrentModeInt));
+}
+
+void ATerrainController::SetWaterVisualMode(EWaterVisualMode NewMode)
+{
+    CurrentWaterVisualMode = NewMode;
+    
+    UMaterialInterface* WaterMaterialToApply = nullptr;
+    FString ModeName;
+    
+    switch (CurrentWaterVisualMode)
+    {
+        case EWaterVisualMode::Water:
+            WaterMaterialToApply = WaterMaterial;
+            ModeName = TEXT("Water");
+            break;
+        case EWaterVisualMode::Milk:
+            WaterMaterialToApply = MilkMaterial;
+            ModeName = TEXT("Milk");
+            break;
+        case EWaterVisualMode::Debug:
+            WaterMaterialToApply = WaterDebugMaterial;
+            ModeName = TEXT("Debug");
+            break;
+        default:
+            WaterMaterialToApply = WaterMaterial;
+            ModeName = TEXT("Default Water");
+            break;
+    }
+    
+    // Apply water material to surface water system
+    if (TargetTerrain && WaterMaterialToApply)
+    {
+        TargetTerrain->SetWaterVolumeMaterial(WaterMaterialToApply);
+        UE_LOG(LogTemp, Warning, TEXT("Water visual mode changed to: %s"), *ModeName);
+    }
+    else
+    {
+        UE_LOG(LogTemp, Error, TEXT("Water material not set for mode: %s"), *ModeName);
     }
 }
 
@@ -963,6 +1029,12 @@ void ATerrainController::UpdatePerformanceStats(float DeltaTime)
             case ETerrainVisualMode::Hybrid:
                 VisualModeText = TEXT("Hybrid Mode");
                 break;
+            case ETerrainVisualMode::Chrome:
+                VisualModeText = TEXT("Chrome");
+                break;
+            case ETerrainVisualMode::Glass:
+                VisualModeText = TEXT("Glass");
+                break;
             default:
                 VisualModeText = TEXT("Unknown Mode");
                 break;
@@ -970,6 +1042,27 @@ void ATerrainController::UpdatePerformanceStats(float DeltaTime)
         
         GEngine->AddOnScreenDebugMessage(32, 0.5f, FColor::White,
             FString::Printf(TEXT("Visual Mode: %s (V to toggle)"), *VisualModeText));
+        
+        // Show current water visual mode
+        FString WaterModeText;
+        switch (CurrentWaterVisualMode)
+        {
+            case EWaterVisualMode::Water:
+                WaterModeText = TEXT("Water");
+                break;
+            case EWaterVisualMode::Milk:
+                WaterModeText = TEXT("Milk");
+                break;
+            case EWaterVisualMode::Debug:
+                WaterModeText = TEXT("Debug");
+                break;
+            default:
+                WaterModeText = TEXT("Unknown");
+                break;
+        }
+        
+        GEngine->AddOnScreenDebugMessage(33, 0.5f, FColor::Cyan,
+            FString::Printf(TEXT("Water Mode: %s (Shift+V to toggle)"), *WaterModeText));
         
         StatUpdateTimer = 0.0f;
     }

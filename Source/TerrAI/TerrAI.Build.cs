@@ -16,7 +16,9 @@ public class TerrAI : ModuleRules
             "EnhancedInput",
             "ProceduralMeshComponent",
             "RenderCore",
-            "RHI"
+            "RHI",
+            "Niagara",          // Phase 4: Niagara FX integration
+            "NiagaraCore"       // Phase 4: Niagara core functionality
         });
 
         // Private dependencies (internal use only)

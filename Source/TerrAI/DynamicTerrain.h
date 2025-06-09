@@ -114,14 +114,19 @@ public:
 
     UFUNCTION(BlueprintCallable, Category = "Chunk System")
     void MarkChunkForUpdate(int32 ChunkIndex);
+    
+    // ===== VOLUMETRIC WATER SUPPORT FUNCTIONS =====
+    
+    UFUNCTION(BlueprintCallable, Category = "Volumetric Water")
+    FVector GetChunkWorldPosition(int32 ChunkIndex) const;
 
     // ===== WATER SYSTEM INTEGRATION =====
     
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Water System")
-    UWaterSystem* WaterSystem = nullptr;
+    UWaterSystem* WaterSystem;
     
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Atmospheric System")
-    UAtmosphericSystem* AtmosphericSystem = nullptr;
+    UAtmosphericSystem* AtmosphericSystem;
     
     UFUNCTION(BlueprintCallable, Category = "Water System")
     void InitializeWaterSystem();
@@ -143,6 +148,20 @@ public:
     
     UFUNCTION(BlueprintCallable, Category = "Water System")
     bool IsWaterSystemReady() const;
+    
+    // ===== VOLUMETRIC WATER CONTROL =====
+    
+    UFUNCTION(BlueprintCallable, Category = "Volumetric Water")
+    void EnableVolumetricWater(bool bEnable);
+    
+    UFUNCTION(BlueprintCallable, Category = "Volumetric Water")
+    void SetVolumetricSettings(float MinDepth, float UpdateDistance, int32 MaxChunks);
+    
+    UFUNCTION(BlueprintCallable, Category = "Volumetric Water")
+    bool IsVolumetricWaterEnabled() const;
+    
+    UFUNCTION(BlueprintCallable, Category = "Volumetric Water")
+    int32 GetActiveVolumeChunks() const;
     
     // ===== ATMOSPHERIC SYSTEM INTEGRATION =====
     
@@ -174,6 +193,9 @@ public:
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terrain Settings")
     float MaxTerrainHeight = 2000.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terrain Settings")
+    float MinTerrainHeight = -2000.0f;
 
     // ===== CHUNK SYSTEM CONFIGURATION =====
     
@@ -231,6 +253,9 @@ public:
     
     UFUNCTION(BlueprintCallable, Category = "Materials")
     void SetActiveMaterial(UMaterialInterface* Material);
+    
+    UFUNCTION(BlueprintCallable, Category = "Materials")
+    void SetWaterVolumeMaterial(UMaterialInterface* Material);
 
 private:
     // ===== INTERNAL COMPONENTS =====

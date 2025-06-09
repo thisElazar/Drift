@@ -15,11 +15,21 @@
 #include "TerrainController.generated.h"
 
 UENUM(BlueprintType)
+enum class EWaterVisualMode : uint8
+{
+    Water          UMETA(DisplayName = "Water"),
+    Milk           UMETA(DisplayName = "Milk"),
+    Debug          UMETA(DisplayName = "Debug")
+};
+
+UENUM(BlueprintType)
 enum class ETerrainVisualMode : uint8
 {
     Wireframe      UMETA(DisplayName = "Digital Wireframe"),
     Naturalistic   UMETA(DisplayName = "Natural Landscape"),
-    Hybrid         UMETA(DisplayName = "Hybrid Mode")
+    Hybrid         UMETA(DisplayName = "Hybrid Mode"),
+    Chrome         UMETA(DisplayName = "Chrome"),
+    Glass          UMETA(DisplayName = "Glass")
 };
 
 UENUM(BlueprintType)
@@ -46,6 +56,10 @@ public:
     // Visual mode system
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visual Modes")
     ETerrainVisualMode CurrentVisualMode = ETerrainVisualMode::Wireframe;
+    
+    // Water visual mode system
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visual Modes")
+    EWaterVisualMode CurrentWaterVisualMode = EWaterVisualMode::Water;
 
     // Editing mode system
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Editing")
@@ -60,6 +74,22 @@ public:
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Materials")
     UMaterialInterface* HybridMaterial = nullptr;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Materials")
+    UMaterialInterface* ChromeMaterial = nullptr;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Materials")
+    UMaterialInterface* GlassMaterial = nullptr;
+    
+    // Water material references
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Materials")
+    UMaterialInterface* WaterMaterial = nullptr;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Materials")
+    UMaterialInterface* MilkMaterial = nullptr;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Materials")
+    UMaterialInterface* WaterDebugMaterial = nullptr;
 
     // Input action for V key
     UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input")
@@ -84,6 +114,12 @@ public:
 
     UFUNCTION(BlueprintCallable, Category = "Visual Modes")
     void SetVisualMode(ETerrainVisualMode NewMode);
+    
+    UFUNCTION(BlueprintCallable, Category = "Visual Modes")
+    void ToggleWaterVisualMode();
+
+    UFUNCTION(BlueprintCallable, Category = "Visual Modes")
+    void SetWaterVisualMode(EWaterVisualMode NewMode);
 
     UFUNCTION(BlueprintCallable, Category = "Editing")
     void ToggleEditingMode();
