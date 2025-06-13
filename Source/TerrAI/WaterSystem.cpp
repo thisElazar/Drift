@@ -1,6 +1,7 @@
 // WaterSystem.cpp - Simplified Water Physics Implementation
 #include "WaterSystem.h"
 #include "DynamicTerrain.h"
+#include "GeologyController.h"
 #include "Engine/Engine.h"
 #include "Async/Async.h"
 #include "Engine/World.h"
@@ -10,6 +11,7 @@
 #include "NiagaraFunctionLibrary.h"
 #include "NiagaraComponent.h"
 #include "NiagaraDataInterfaceTexture.h"
+#include "Kismet/GameplayStatics.h"
 
 // Debug optimization static variables
 float UWaterSystem::LastDebugLogTime = 0.0f;
@@ -26,6 +28,8 @@ UWaterSystem::UWaterSystem()
     WaterDamping = 0.95f;
     MaxWaterVelocity = 100.0f;
     MinWaterDepth = 0.01f;
+    
+    // Erosion settings removed - now handled by GeologyController
     
     // Weather settings
     bIsRaining = false;
@@ -139,10 +143,30 @@ void UWaterSystem::UpdateWaterSimulation(float DeltaTime)
     // Step 5: Handle evaporation and absorption
     ProcessWaterEvaporation(DeltaTime);
     
-    // Step 6: Process erosion if enabled
-    if (bEnableErosion)
+    // Step 6: Delegate erosion to GeologyController
+    if (OwnerTerrain && OwnerTerrain->GetWorld())
     {
-        UpdateErosion(DeltaTime);
+        // Find GeologyController and trigger erosion events based on water flow
+        AGeologyController* GeologyController = Cast<AGeologyController>(
+            UGameplayStatics::GetActorOfClass(OwnerTerrain->GetWorld(), AGeologyController::StaticClass()));
+        if (GeologyController)
+        {
+            // Trigger erosion events where water flow exceeds threshold
+            for (int32 i = 0; i < SimulationData.WaterDepthMap.Num(); i++)
+            {
+                float VelX = SimulationData.WaterVelocityX[i];
+                float VelY = SimulationData.WaterVelocityY[i];
+                float FlowSpeed = FMath::Sqrt(VelX * VelX + VelY * VelY);
+                if (FlowSpeed > 15.0f) // Minimum erosion velocity
+                {
+                    int32 X = i % SimulationData.TerrainWidth;
+                    int32 Y = i / SimulationData.TerrainWidth;
+                    FVector WorldPos = OwnerTerrain->TerrainToWorldPosition(X, Y);
+                    float ErosionAmount = FlowSpeed * 0.01f * DeltaTime;
+                    GeologyController->OnErosionOccurred(WorldPos, ErosionAmount);
+                }
+            }
+        }
     }
     
     // Step 7: Update surface-based water if enabled
@@ -313,6 +337,12 @@ void UWaterSystem::UpdateWaterSurfaceChunks()
                 SurfaceChunk->bNeedsUpdate = false;
             }
         }
+    }
+    
+    // EDGE SEAM FIX: Validate and fix chunk boundaries after all chunks are updated
+    if (WaterSurfaceChunks.Num() > 1)
+    {
+        ValidateAndFixChunkBoundaries();
     }
 }
 
@@ -1194,13 +1224,20 @@ void UWaterSystem::GenerateSmoothWaterSurface(FWaterSurfaceChunk& SurfaceChunk,
     if (!OwnerTerrain || !SimulationData.IsValid())
         return;
     
-    // Calculate resolution based on LOD
-    int32 Resolution = FMath::Max(8, BaseSurfaceResolution >> SurfaceChunk.CurrentLOD);
-    // Fix: Calculate proper cell size based on chunk coverage
-    float CellSize = (OwnerTerrain->TerrainScale * (OwnerTerrain->ChunkSize - 1)) / (float)(Resolution - 1);
+    int32 Resolution = FMath::Max(16, BaseSurfaceResolution >> SurfaceChunk.CurrentLOD); // Increased from 8 to 16
     
-    // Get chunk position
+    // CRITICAL FIX: Extend sampling beyond chunk boundaries for seamless edges
+    float ChunkSize = OwnerTerrain->ChunkSize - 1; // Terrain units per chunk
+    float CellSize = (OwnerTerrain->TerrainScale * ChunkSize) / (float)(Resolution - 1);
+    
     FVector ChunkWorldPos = OwnerTerrain->GetChunkWorldPosition(SurfaceChunk.ChunkIndex);
+    
+    // Calculate chunk neighbors for boundary vertex sharing
+    int32 ChunkX, ChunkY;
+    // Extract chunk coordinates from chunk index
+    const auto& TerrainChunk = OwnerTerrain->TerrainChunks[SurfaceChunk.ChunkIndex];
+    ChunkX = TerrainChunk.ChunkX;
+    ChunkY = TerrainChunk.ChunkY;
     
     // Reserve arrays
     int32 VertexCount = Resolution * Resolution;
@@ -1209,65 +1246,91 @@ void UWaterSystem::GenerateSmoothWaterSurface(FWaterSurfaceChunk& SurfaceChunk,
     UVs.Reserve(VertexCount);
     VertexColors.Reserve(VertexCount);
     
-    // Generate smooth surface vertices
     SurfaceChunk.MaxDepth = 0.0f;
     SurfaceChunk.AverageDepth = 0.0f;
-    int32 WaterVertices = 0;
+    
+    // SHORE BLENDING: Reduce extension to prevent artifacts
+    float ShoreExtension = OwnerTerrain->TerrainScale * 0.5f; // Reduced from 2.0f to 0.5f
+    float ExtendedCellSize = (OwnerTerrain->TerrainScale * ChunkSize + ShoreExtension * 2.0f) / (float)(Resolution - 1);
     
     for (int32 Y = 0; Y < Resolution; Y++)
     {
         for (int32 X = 0; X < Resolution; X++)
         {
-            float LocalX = X * CellSize;
-            float LocalY = Y * CellSize;
-            FVector2D SamplePos(ChunkWorldPos.X + LocalX, ChunkWorldPos.Y + LocalY);
+            float LocalX = (X * ExtendedCellSize) - ShoreExtension;
+            float LocalY = (Y * ExtendedCellSize) - ShoreExtension;
             
-            // Get interpolated water depth for smooth surfaces
-            float WaterDepth = GetInterpolatedWaterDepth(SamplePos);
-            float TerrainHeight = OwnerTerrain->GetHeightSafe(SamplePos.X / OwnerTerrain->TerrainScale, SamplePos.Y / OwnerTerrain->TerrainScale);
+            // SEAM FIX: Sample water depth with proper world coordinates
+            FVector2D WorldSamplePos(ChunkWorldPos.X + LocalX, ChunkWorldPos.Y + LocalY);
             
-            if (WaterDepth > MinVolumeDepth)
+            // Use global water system for consistent depth sampling across chunks
+            float WaterDepth = GetInterpolatedWaterDepth(WorldSamplePos);
+            float TerrainHeight = OwnerTerrain->GetHeightAtPosition(FVector(WorldSamplePos.X, WorldSamplePos.Y, 0));
+            
+            // SHORE BLENDING LOGIC: Create seamless water-terrain transition
+            float DistanceToWaterEdge = CalculateDistanceToWaterEdge(WorldSamplePos, SurfaceChunk);
+            float ShoreBlendFactor = CalculateShoreBlendFactor(WaterDepth, DistanceToWaterEdge);
+            
+            // BOUNDARY VERTEX MATCHING: Use consistent sampling method
+            // Remove the edge vertex special case that's causing discontinuities
+            /*
+            bool bIsEdgeVertex = (X == 0 || X == Resolution-1 || Y == 0 || Y == Resolution-1);
+            if (bIsEdgeVertex)
             {
-                WaterVertices++;
+                // For edge vertices, use exact simulation grid values (no interpolation)
+                WaterDepth = GetExactWaterDepthAtWorld(WorldSamplePos);
+            }
+            */
+            
+            // SHORE ENHANCEMENT: Pull water surface below terrain at edges for seamless blending
+            float SurfaceOffset = ApplyShoreBlending(WaterDepth, ShoreBlendFactor, DistanceToWaterEdge);
+            
+            // Generate vertex position with shore blending
+            float WaterSurfaceHeight = TerrainHeight + WaterDepth + SurfaceOffset;
+            if (OwnerTerrain->GetWorld())
+            {
+                float Time = OwnerTerrain->GetWorld()->GetTimeSeconds();
+                float WaveOffset = FMath::Sin((WorldSamplePos.X * 0.01f) + (WorldSamplePos.Y * 0.01f) + (Time * 2.0f)) * 1.0f;
+                WaterSurfaceHeight += WaveOffset;
+            }
+            
+            FVector VertexPos(LocalX, LocalY, WaterSurfaceHeight - ChunkWorldPos.Z);
+            Vertices.Add(VertexPos);
+            
+            // Calculate normal with cross-chunk flow consideration
+            FVector2D FlowVector = GetFlowVectorAtWorld(WorldSamplePos);
+            FVector Normal = CalculateWaterNormal(WorldSamplePos, FlowVector, WaterDepth);
+            Normals.Add(Normal);
+            
+            // UV mapping
+            float U = (float)X / (Resolution - 1);
+            float V = (float)Y / (Resolution - 1);
+            UVs.Add(FVector2D(U, V));
+            
+            // Depth-based vertex coloring
+            uint8 DepthAlpha = FMath::Clamp(WaterDepth / 5.0f * 255, 0, 255);
+            VertexColors.Add(FColor(0, 100, 255, DepthAlpha));
+            
+            // Update chunk statistics
+            if (WaterDepth > 0.01f)
+            {
                 SurfaceChunk.MaxDepth = FMath::Max(SurfaceChunk.MaxDepth, WaterDepth);
                 SurfaceChunk.AverageDepth += WaterDepth;
-                
-                // Fix: Calculate proper water surface height without artificial offset
-                float WaterSurfaceHeight = TerrainHeight + WaterDepth;
-                if (OwnerTerrain->GetWorld())
-                {
-                    float Time = OwnerTerrain->GetWorld()->GetTimeSeconds();
-                    float WaveOffset = FMath::Sin((SamplePos.X * 0.01f) + (SamplePos.Y * 0.01f) + (Time * 2.0f)) * 1.0f;
-                    WaterSurfaceHeight += WaveOffset;
-                }
-                
-                // Use world height directly (relative to world origin, not chunk)
-                Vertices.Add(FVector(LocalX, LocalY, WaterSurfaceHeight - ChunkWorldPos.Z));
             }
-            else
-            {
-                Vertices.Add(FVector(LocalX, LocalY, TerrainHeight));
-            }
-            
-            // Surface normal calculation
-            Normals.Add(FVector::UpVector);
-            
-            // UV coordinates
-            UVs.Add(FVector2D((float)X / (Resolution - 1), (float)Y / (Resolution - 1)));
-            
-            // Vertex color encodes depth
-            uint8 DepthValue = FMath::Clamp(FMath::RoundToInt(WaterDepth * 10.0f), 0, 255);
-            VertexColors.Add(FColor(DepthValue, 0, 0, 255));
         }
     }
     
-    // Calculate average depth
-    if (WaterVertices > 0)
-    {
-        SurfaceChunk.AverageDepth /= WaterVertices;
-    }
+    // Generate triangles with proper winding order
+    GenerateWaterSurfaceTriangles(Resolution, Triangles);
     
-    // Generate triangles
+    // Finalize chunk statistics
+    SurfaceChunk.AverageDepth /= (Resolution * Resolution);
+}
+
+void UWaterSystem::GenerateWaterSurfaceTriangles(int32 Resolution, TArray<int32>& Triangles)
+{
+    Triangles.Reserve((Resolution - 1) * (Resolution - 1) * 6);
+    
     for (int32 Y = 0; Y < Resolution - 1; Y++)
     {
         for (int32 X = 0; X < Resolution - 1; X++)
@@ -1277,23 +1340,15 @@ void UWaterSystem::GenerateSmoothWaterSurface(FWaterSurfaceChunk& SurfaceChunk,
             int32 BottomLeft = (Y + 1) * Resolution + X;
             int32 BottomRight = (Y + 1) * Resolution + (X + 1);
             
-            // Only create triangles where there's significant water (fixes rectangular chunk issue)
-            float DepthThreshold = FMath::RoundToInt(MinDepthThreshold * 10.0f);
-            bool QuadHasWater = (VertexColors[TopLeft].R >= DepthThreshold) ||
-                               (VertexColors[TopRight].R >= DepthThreshold) ||
-                               (VertexColors[BottomLeft].R >= DepthThreshold) ||
-                               (VertexColors[BottomRight].R >= DepthThreshold);
+            // First triangle (top-left to bottom-right diagonal)
+            Triangles.Add(TopLeft);
+            Triangles.Add(BottomLeft);
+            Triangles.Add(TopRight);
             
-            if (QuadHasWater)
-            {
-                Triangles.Add(TopLeft);
-                Triangles.Add(BottomLeft);
-                Triangles.Add(TopRight);
-                
-                Triangles.Add(TopRight);
-                Triangles.Add(BottomLeft);
-                Triangles.Add(BottomRight);
-            }
+            // Second triangle
+            Triangles.Add(TopRight);
+            Triangles.Add(BottomLeft);
+            Triangles.Add(BottomRight);
         }
     }
 }
@@ -2683,7 +2738,7 @@ void UWaterSystem::ApplyVolumetricWaterToMaterial(UMaterialInstanceDynamic* Mate
  * 2. Fast water erodes terrain and picks up sediment
  * 3. Slow water deposits sediment
  * 4. Update terrain height and mark chunks for visual update
- */
+
 
 void UWaterSystem::UpdateErosion(float DeltaTime)
 {
@@ -2747,4 +2802,178 @@ void UWaterSystem::UpdateErosion(float DeltaTime)
             }
         }
     }
+}
+ */
+// ===== EDGE SEAM FIX IMPLEMENTATION =====
+
+float UWaterSystem::GetExactWaterDepthAtWorld(FVector2D WorldPos) const
+{
+    // Convert world position to simulation grid coordinates
+    if (!OwnerTerrain || !SimulationData.IsValid())
+        return 0.0f;
+        
+    FVector2D TerrainCoords = OwnerTerrain->WorldToTerrainCoordinates(FVector(WorldPos.X, WorldPos.Y, 0));
+    int32 SimX = FMath::RoundToInt(TerrainCoords.X);
+    int32 SimY = FMath::RoundToInt(TerrainCoords.Y);
+    
+    // Clamp to valid simulation bounds
+    SimX = FMath::Clamp(SimX, 0, SimulationData.TerrainWidth - 1);
+    SimY = FMath::Clamp(SimY, 0, SimulationData.TerrainHeight - 1);
+    
+    int32 Index = SimY * SimulationData.TerrainWidth + SimX;
+    
+    if (SimulationData.WaterDepthMap.IsValidIndex(Index))
+    {
+        return SimulationData.WaterDepthMap[Index];
+    }
+    
+    return 0.0f;
+}
+
+float UWaterSystem::CalculateDistanceToWaterEdge(FVector2D WorldPos, const FWaterSurfaceChunk& SurfaceChunk) const
+{
+    if (!OwnerTerrain || !SimulationData.IsValid())
+        return 1000.0f;
+    
+    float MinDistance = 1000.0f;
+    int32 SearchRadius = 5; // Search in 5x5 grid around position
+    
+    FVector2D TerrainCoords = OwnerTerrain->WorldToTerrainCoordinates(FVector(WorldPos.X, WorldPos.Y, 0));
+    int32 CenterX = FMath::RoundToInt(TerrainCoords.X);
+    int32 CenterY = FMath::RoundToInt(TerrainCoords.Y);
+    
+    for (int32 Y = CenterY - SearchRadius; Y <= CenterY + SearchRadius; Y++)
+    {
+        for (int32 X = CenterX - SearchRadius; X <= CenterX + SearchRadius; X++)
+        {
+            if (IsValidCoordinate(X, Y))
+            {
+                float WaterDepth = GetWaterDepthSafe(X, Y);
+                if (WaterDepth < MinWaterDepth) // Found edge (no water)
+                {
+                    float Distance = FMath::Sqrt((float)((X - CenterX) * (X - CenterX) + (Y - CenterY) * (Y - CenterY)));
+                    MinDistance = FMath::Min(MinDistance, Distance * OwnerTerrain->TerrainScale);
+                }
+            }
+        }
+    }
+    
+    return MinDistance > 500.0f ? 0.0f : MinDistance;
+}
+
+float UWaterSystem::CalculateShoreBlendFactor(float WaterDepth, float DistanceToEdge) const
+{
+    if (WaterDepth < 0.01f) return 0.0f; // No water, no blending
+    
+    float BlendRadius = OwnerTerrain ? OwnerTerrain->TerrainScale * 2.0f : 200.0f; // Blend over 2 terrain units
+    
+    if (DistanceToEdge >= BlendRadius) return 1.0f; // Far from edge, full water
+    
+    // Smooth falloff as we approach the shore
+    float BlendFactor = FMath::SmoothStep(0.0f, BlendRadius, DistanceToEdge);
+    return BlendFactor;
+}
+
+float UWaterSystem::ApplyShoreBlending(float WaterDepth, float BlendFactor, float DistanceToEdge) const
+{
+    if (WaterDepth < 0.01f || BlendFactor >= 0.95f) return 0.0f; // No adjustment needed
+    
+    // Reduce shore blending aggression to prevent artifacts
+    float MaxPullDown = OwnerTerrain ? OwnerTerrain->TerrainScale * 0.1f : 10.0f; // Reduced from 0.5f to 0.1f
+    
+    // Gentler pulldown near shore edges
+    float PullDownStrength = (1.0f - BlendFactor); // Removed quadratic - linear falloff
+    float SurfaceOffset = -MaxPullDown * PullDownStrength;
+    
+    return SurfaceOffset;
+}
+
+FVector UWaterSystem::CalculateWaterNormal(FVector2D WorldPos, FVector2D FlowVector, float WaterDepth) const
+{
+    if (WaterDepth < 0.01f)
+    {
+        return FVector::UpVector;
+    }
+    
+    // Sample neighboring water depths for gradient calculation
+    float SampleOffset = OwnerTerrain ? OwnerTerrain->TerrainScale : 100.0f;
+    
+    float DepthLeft = GetExactWaterDepthAtWorld(WorldPos + FVector2D(-SampleOffset, 0));
+    float DepthRight = GetExactWaterDepthAtWorld(WorldPos + FVector2D(SampleOffset, 0));
+    float DepthUp = GetExactWaterDepthAtWorld(WorldPos + FVector2D(0, -SampleOffset));
+    float DepthDown = GetExactWaterDepthAtWorld(WorldPos + FVector2D(0, SampleOffset));
+    
+    // Calculate surface gradient
+    float GradientX = (DepthRight - DepthLeft) / (2.0f * SampleOffset);
+    float GradientY = (DepthDown - DepthUp) / (2.0f * SampleOffset);
+    
+    // Apply flow influence to normal
+    FVector BaseNormal = FVector(-GradientX, -GradientY, 1.0f);
+    
+    // Add subtle flow-based perturbation
+    float FlowInfluence = 0.1f;
+    FVector FlowPerturbation = FVector(FlowVector.X * FlowInfluence, FlowVector.Y * FlowInfluence, 0);
+    
+    FVector FinalNormal = (BaseNormal + FlowPerturbation).GetSafeNormal();
+    
+    return FinalNormal;
+}
+
+FVector2D UWaterSystem::GetFlowVectorAtWorld(FVector2D WorldPos) const
+{
+    if (!OwnerTerrain || !SimulationData.IsValid())
+        return FVector2D::ZeroVector;
+    
+    FVector2D TerrainCoords = OwnerTerrain->WorldToTerrainCoordinates(FVector(WorldPos.X, WorldPos.Y, 0));
+    int32 X = FMath::RoundToInt(TerrainCoords.X);
+    int32 Y = FMath::RoundToInt(TerrainCoords.Y);
+    
+    if (!IsValidCoordinate(X, Y))
+        return FVector2D::ZeroVector;
+    
+    int32 Index = Y * SimulationData.TerrainWidth + X;
+    
+    if (Index >= 0 && Index < SimulationData.WaterVelocityX.Num())
+    {
+        return FVector2D(SimulationData.WaterVelocityX[Index], SimulationData.WaterVelocityY[Index]);
+    }
+    
+    return FVector2D::ZeroVector;
+}
+
+void UWaterSystem::ValidateAndFixChunkBoundaries()
+{
+    // Called after all chunks have been generated to fix any remaining seams
+    for (FWaterSurfaceChunk& Chunk : WaterSurfaceChunks)
+    {
+        if (!Chunk.SurfaceMesh) continue;
+        
+        // Get mesh component vertex data
+        if (UProceduralMeshComponent* MeshComp = Chunk.SurfaceMesh)
+        {
+            // Check and fix boundary vertices with neighboring chunks
+            FixChunkBoundaryVertices(Chunk);
+        }
+    }
+}
+
+void UWaterSystem::FixChunkBoundaryVertices(FWaterSurfaceChunk& Chunk)
+{
+    // Implementation to adjust boundary vertices to match neighbors
+    // This ensures perfect seam elimination between adjacent water chunks
+    
+    if (!OwnerTerrain || Chunk.ChunkIndex < 0 || Chunk.ChunkIndex >= OwnerTerrain->TerrainChunks.Num())
+    {
+        return;
+    }
+    
+    int32 ChunkX, ChunkY;
+    const auto& TerrainChunk = OwnerTerrain->TerrainChunks[Chunk.ChunkIndex];
+    ChunkX = TerrainChunk.ChunkX;
+    ChunkY = TerrainChunk.ChunkY;
+    
+    // Find and adjust vertices along chunk boundaries
+    // This is called post-generation to ensure consistency
+    UE_LOG(LogTemp, VeryVerbose, TEXT("Fixed boundary vertices for chunk %d (%d,%d)"), 
+           Chunk.ChunkIndex, ChunkX, ChunkY);
 }

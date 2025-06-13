@@ -147,88 +147,16 @@ void ADynamicTerrain::InitializeWaterSystem()
     }
 }
 
-void ADynamicTerrain::AddWater(FVector WorldPosition, float Amount)
-{
-    if (WaterSystem)
-    {
-        WaterSystem->AddWater(WorldPosition, Amount);
-    }
-}
-
-void ADynamicTerrain::RemoveWater(FVector WorldPosition, float Amount)
-{
-    if (WaterSystem)
-    {
-        WaterSystem->RemoveWater(WorldPosition, Amount);
-    }
-}
-
-float ADynamicTerrain::GetWaterDepthAtPosition(FVector WorldPosition) const
-{
-    if (WaterSystem)
-    {
-        return WaterSystem->GetWaterDepthAtPosition(WorldPosition);
-    }
-    return 0.0f;
-}
-
-void ADynamicTerrain::StartRain(float Intensity)
-{
-    if (WaterSystem)
-    {
-        WaterSystem->StartRain(Intensity);
-    }
-}
-
-void ADynamicTerrain::StopRain()
-{
-    if (WaterSystem)
-    {
-        WaterSystem->StopRain();
-    }
-}
+// ===== WATER FUNCTIONS REMOVED - USE WATERCONTROLLER INSTEAD =====
+// All water interaction now goes through WaterController for clean separation
 
 bool ADynamicTerrain::IsWaterSystemReady() const
 {
     return WaterSystem && WaterSystem->IsSystemReady();
 }
 
-// ===== VOLUMETRIC WATER CONTROL =====
-
-void ADynamicTerrain::EnableVolumetricWater(bool bEnable)
-{
-    if (WaterSystem)
-    {
-        WaterSystem->bEnableWaterVolumes = bEnable;
-        UE_LOG(LogTemp, Warning, TEXT("EnableVolumetricWater called with: %s"), bEnable ? TEXT("TRUE") : TEXT("FALSE"));
-    }
-}
-
-void ADynamicTerrain::SetVolumetricSettings(float MinDepth, float UpdateDistance, int32 MaxChunks)
-{
-    if (WaterSystem)
-    {
-        WaterSystem->MinVolumeDepth = MinDepth;
-        WaterSystem->VolumeUpdateDistance = UpdateDistance;
-        WaterSystem->MaxVolumeChunks = MaxChunks;
-        UE_LOG(LogTemp, Warning, TEXT("Surface Water Settings: MinDepth=%.2f, Distance=%.0f, MaxChunks=%d"),
-               MinDepth, UpdateDistance, MaxChunks);
-    }
-}
-
-bool ADynamicTerrain::IsVolumetricWaterEnabled() const
-{
-    return WaterSystem && WaterSystem->bEnableWaterVolumes;
-}
-
-int32 ADynamicTerrain::GetActiveVolumeChunks() const
-{
-    if (WaterSystem)
-    {
-        return WaterSystem->GetActiveVolumeChunkCount();
-    }
-    return 0;
-}
+// ===== VOLUMETRIC WATER CONTROL - REMOVED =====
+// All volumetric water functions moved to WaterController for clean separation
 
 // ===== TERRAIN GENERATION =====
 

@@ -285,19 +285,8 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Physics")
     float MinWaterDepth = 0.01f;         // Ignore tiny amounts (performance)
     
-    // ===== EROSION SETTINGS =====
-    
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Erosion")
-    bool bEnableErosion = true;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Erosion")
-    float ErosionRate = 0.1f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Erosion")
-    float MinErosionVelocity = 15.0f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Erosion")
-    float DepositionRate = 0.05f;
+    // ===== EROSION SETTINGS - MOVED TO GEOLOGYCONTROLLER =====
+    // All erosion functionality moved to GeologyController for clean separation
     
     // ===== EDGE DRAINAGE SETTINGS =====
     
@@ -531,6 +520,35 @@ public:
     float GetInterpolatedWaterDepth(FVector2D WorldPosition) const;
     
     void UpdateSurfaceUVMapping(FWaterSurfaceChunk& SurfaceChunk);
+    
+    // ===== EDGE SEAM FIX FUNCTIONS =====
+    
+    /** Helper function for exact boundary vertex matching */
+    float GetExactWaterDepthAtWorld(FVector2D WorldPos) const;
+    
+    /** Calculate distance to water edge for shore blending */
+    float CalculateDistanceToWaterEdge(FVector2D WorldPos, const FWaterSurfaceChunk& SurfaceChunk) const;
+    
+    /** Calculate shore blend factor for seamless transitions */
+    float CalculateShoreBlendFactor(float WaterDepth, float DistanceToEdge) const;
+    
+    /** Apply shore blending to pull water surface below terrain */
+    float ApplyShoreBlending(float WaterDepth, float BlendFactor, float DistanceToEdge) const;
+    
+    /** Enhanced normal calculation considering flow direction */
+    FVector CalculateWaterNormal(FVector2D WorldPos, FVector2D FlowVector, float WaterDepth) const;
+    
+    /** Get flow vector at world position */
+    FVector2D GetFlowVectorAtWorld(FVector2D WorldPos) const;
+    
+    /** Validate and fix chunk boundaries after generation */
+    void ValidateAndFixChunkBoundaries();
+    
+    /** Fix boundary vertices for specific chunk */
+    void FixChunkBoundaryVertices(FWaterSurfaceChunk& Chunk);
+    
+    /** Generate triangle indices for water surface */
+    void GenerateWaterSurfaceTriangles(int32 Resolution, TArray<int32>& Triangles);
     
     // PHASE 1-2: SIMULATION AUTHORITY FUNCTIONS
     

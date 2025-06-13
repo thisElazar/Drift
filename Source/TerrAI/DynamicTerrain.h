@@ -131,37 +131,10 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Water System")
     void InitializeWaterSystem();
     
-    UFUNCTION(BlueprintCallable, Category = "Water System")
-    void AddWater(FVector WorldPosition, float Amount);
-    
-    UFUNCTION(BlueprintCallable, Category = "Water System")
-    void RemoveWater(FVector WorldPosition, float Amount);
-    
-    UFUNCTION(BlueprintCallable, Category = "Water System")
-    float GetWaterDepthAtPosition(FVector WorldPosition) const;
-    
-    UFUNCTION(BlueprintCallable, Category = "Water System")
-    void StartRain(float Intensity = 1.0f);
-    
-    UFUNCTION(BlueprintCallable, Category = "Water System")
-    void StopRain();
+    // ===== WATER SYSTEM ACCESS ONLY =====
     
     UFUNCTION(BlueprintCallable, Category = "Water System")
     bool IsWaterSystemReady() const;
-    
-    // ===== VOLUMETRIC WATER CONTROL =====
-    
-    UFUNCTION(BlueprintCallable, Category = "Volumetric Water")
-    void EnableVolumetricWater(bool bEnable);
-    
-    UFUNCTION(BlueprintCallable, Category = "Volumetric Water")
-    void SetVolumetricSettings(float MinDepth, float UpdateDistance, int32 MaxChunks);
-    
-    UFUNCTION(BlueprintCallable, Category = "Volumetric Water")
-    bool IsVolumetricWaterEnabled() const;
-    
-    UFUNCTION(BlueprintCallable, Category = "Volumetric Water")
-    int32 GetActiveVolumeChunks() const;
     
     // ===== ATMOSPHERIC SYSTEM INTEGRATION =====
     

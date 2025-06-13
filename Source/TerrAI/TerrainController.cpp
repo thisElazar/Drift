@@ -17,6 +17,7 @@
 #include "DrawDebugHelpers.h"
 #include "Kismet/GameplayStatics.h"
 #include "TerrAIGameInstance.h"
+#include "WaterController.h"
 
 ATerrainController::ATerrainController()
 {
@@ -48,9 +49,24 @@ ATerrainController::ATerrainController()
     //SpringArm->bUseSubstepping = true;               // Smooth collision movement
     //SpringArm->TargetOffset = FVector(0, 0, 100);    // Offset camera slightly above target
     
-    // Create camera component
+    // Create camera component with depth optimization for large terrain
     Camera = CreateDefaultSubobject<UCameraComponent>(TEXT("Camera"));
     Camera->SetupAttachment(SpringArm, USpringArmComponent::SocketName);
+    
+    // CRITICAL: Optimize camera depth precision for 51.3km terrain
+    Camera->SetConstraintAspectRatio(false);
+    Camera->SetOrthoNearClipPlane(1.0f);      // Closer near plane for better precision
+    Camera->SetOrthoFarClipPlane(100000.0f);  // 100km far plane
+    
+    // Create first person camera with same depth optimization
+    FirstPersonCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("FirstPersonCamera"));
+    FirstPersonCamera->SetupAttachment(SceneRoot);
+    FirstPersonCamera->SetActive(false);
+    
+    // Apply same depth precision settings
+    FirstPersonCamera->SetConstraintAspectRatio(false);
+    FirstPersonCamera->SetOrthoNearClipPlane(1.0f);
+    FirstPersonCamera->SetOrthoFarClipPlane(100000.0f);
     
     // Create brush preview component - attach to root, not spring arm
     BrushPreview = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("BrushPreview"));
@@ -58,6 +74,12 @@ ATerrainController::ATerrainController()
     BrushPreview->SetCollisionEnabled(ECollisionEnabled::NoCollision);
     BrushPreview->SetCastShadow(false);
     BrushPreview->SetVisibility(true);
+    
+    // Initialize camera system
+    CurrentCameraMode = ECameraMode::Overhead;
+    FirstPersonHeight = 152.4f;
+    TransitionSpeed = 3.0f;
+    bTransitioning = false;
     
     // Initialize settings
     CameraMoveSpeed = 3000.0f;
@@ -179,46 +201,32 @@ void ATerrainController::BeginPlay()
             UE_LOG(LogTemp, Warning, TEXT("Applied game settings: Size=%d, Texture=%d"), NewSize, (int32)GameInst->DefaultTexture);
         }
         
-        // *** INITIALIZE WATER SYSTEM BEFORE MATERIAL APPLICATION ***
-        // Initialize water system parameters FIRST to prevent blue flash
-        if (TargetTerrain && TargetTerrain->WaterSystem && WaterParameterCollection)
+        // Auto-find WaterController if not set (backup method)
+        if (!WaterController)
         {
-            TargetTerrain->WaterSystem->WaterParameterCollection = WaterParameterCollection;
-            TargetTerrain->WaterSystem->WaterEvaporationRate = WaterEvaporationRate;
-            TargetTerrain->WaterSystem->WaterAbsorptionRate = WaterAbsorptionRate;
-            TargetTerrain->WaterSystem->WaterFlowSpeed = WaterFlowSpeed;
-            TargetTerrain->WaterSystem->bEnableWaterSimulation = bEnableWaterSimulation;
-            TargetTerrain->WaterSystem->WaterDamping = WaterDamping;
-            TargetTerrain->WaterSystem->MaxWaterVelocity = MaxWaterVelocity;
-            TargetTerrain->WaterSystem->MinWaterDepth = MinWaterDepth;
+            WaterController = Cast<AWaterController>(UGameplayStatics::GetActorOfClass(GetWorld(), AWaterController::StaticClass()));
+            if (WaterController)
+            {
+                UE_LOG(LogTemp, Warning, TEXT("Auto-found WaterController in world"));
+            }
         }
         
-        // *** APPLY EROSION SETTINGS AFTER WATER SYSTEM IS READY ***
-        if (TargetTerrain && TargetTerrain->WaterSystem)
+        // Initialize WaterController if available - it handles all water parameters
+        if (WaterController)
         {
-            TargetTerrain->WaterSystem->bEnableErosion = bEnableErosion;
-            TargetTerrain->WaterSystem->ErosionRate = ErosionRate;
-            TargetTerrain->WaterSystem->MinErosionVelocity = MinErosionVelocity;
-            TargetTerrain->WaterSystem->DepositionRate = DepositionRate;
-            
-            UE_LOG(LogTemp, Warning, TEXT("Applied erosion settings from TerrainController"));
+            WaterController->Initialize(TargetTerrain);
+            UE_LOG(LogTemp, Warning, TEXT("TerrainController: WaterController initialized"));
+        }
+        else
+        {
+            UE_LOG(LogTemp, Warning, TEXT("TerrainController: No WaterController assigned"));
         }
         
-        // *** APPLY CLOUD SETTINGS TO ATMOSPHERIC SYSTEM ***
+        // ADD ATMOSPHERECONTROLLER DELEGATION (Phase 4)
         if (TargetTerrain && TargetTerrain->AtmosphericSystem)
         {
-            TargetTerrain->AtmosphericSystem->bEnableCloudRendering = bEnableCloudRendering;
-            TargetTerrain->AtmosphericSystem->CloudStaticMesh = CloudStaticMesh;
-            TargetTerrain->AtmosphericSystem->CloudMaterial = CloudMaterial;
-            TargetTerrain->AtmosphericSystem->CloudAltitude = CloudAltitude;
-            TargetTerrain->AtmosphericSystem->CloudOpacity = CloudOpacity;
-            TargetTerrain->AtmosphericSystem->MaxCloudMeshes = MaxCloudMeshes;
-            TargetTerrain->AtmosphericSystem->BaseTemperature = BaseTemperature;
-            TargetTerrain->AtmosphericSystem->WindPattern = PrevailingWind;
-            TargetTerrain->AtmosphericSystem->SeasonalAmplitude = SeasonalAmplitude;
-            TargetTerrain->AtmosphericSystem->UpdateFrequency = AtmosphericUpdateRate;
-            
-            UE_LOG(LogTemp, Warning, TEXT("Applied cloud and atmospheric settings from TerrainController"));
+            // Delegate atmospheric control to AtmosphericSystem instead of handling directly
+            UE_LOG(LogTemp, Warning, TEXT("TerrainController: AtmosphericSystem available for delegation"));
         }
         
         // Create brush preview
@@ -226,6 +234,14 @@ void ATerrainController::BeginPlay()
         
         // *** SET VISUAL MODE AFTER WATER SYSTEM IS READY ***
         SetVisualMode(CurrentVisualMode);
+        
+        // Apply depth buffer optimizations for z-fighting fix
+        if (GetWorld())
+        {
+            GetWorld()->Exec(GetWorld(), TEXT("r.SetNearClipPlane 1.0"));
+            GetWorld()->Exec(GetWorld(), TEXT("r.EarlyZPass 1"));
+            UE_LOG(LogTemp, Warning, TEXT("Applied z-fighting fixes for large terrain"));
+        }
         
         UE_LOG(LogTemp, Warning, TEXT("TerrainController initialized with water system support"));
     }
@@ -343,11 +359,23 @@ void ATerrainController::SetupPlayerInputComponent(UInputComponent* PlayerInputC
         // System controls
         if (ToggleVisualizationAction)
         {
-            EnhancedInputComponent->BindAction(ToggleVisualizationAction, ETriggerEvent::Started, this, &ATerrainController::ToggleVisualMode);
+            EnhancedInputComponent->BindAction(ToggleVisualizationAction, ETriggerEvent::Started, this, &ATerrainController::HandleWaterToggle);
         }
         if (ToggleRainAction)
         {
-            EnhancedInputComponent->BindAction(ToggleRainAction, ETriggerEvent::Started, this, &ATerrainController::ToggleRainInput);
+            EnhancedInputComponent->BindAction(ToggleRainAction, ETriggerEvent::Started, this, &ATerrainController::HandleRainToggle);
+        }
+        
+        // Shift key tracking for delegation
+        if (LeftShiftAction)
+        {
+            EnhancedInputComponent->BindAction(LeftShiftAction, ETriggerEvent::Started, this, &ATerrainController::OnLeftShiftPressed);
+            EnhancedInputComponent->BindAction(LeftShiftAction, ETriggerEvent::Completed, this, &ATerrainController::OnLeftShiftReleased);
+        }
+        if (RightShiftAction)
+        {
+            EnhancedInputComponent->BindAction(RightShiftAction, ETriggerEvent::Started, this, &ATerrainController::OnRightShiftPressed);
+            EnhancedInputComponent->BindAction(RightShiftAction, ETriggerEvent::Completed, this, &ATerrainController::OnRightShiftReleased);
         }
         if (ToggleEditingModeAction)
         {
@@ -361,11 +389,21 @@ void ATerrainController::SetupPlayerInputComponent(UInputComponent* PlayerInputC
         // Time control
         if (IncreaseTimeSpeedAction)
         {
-            EnhancedInputComponent->BindAction(IncreaseTimeSpeedAction, ETriggerEvent::Started, this, &ATerrainController::IncreaseTimeSpeedInput);
+            EnhancedInputComponent->BindAction(IncreaseTimeSpeedAction, ETriggerEvent::Started, this, &ATerrainController::IncreaseTimeSpeed);
         }
         if (DecreaseTimeSpeedAction)
         {
-            EnhancedInputComponent->BindAction(DecreaseTimeSpeedAction, ETriggerEvent::Started, this, &ATerrainController::DecreaseTimeSpeedInput);
+            EnhancedInputComponent->BindAction(DecreaseTimeSpeedAction, ETriggerEvent::Started, this, &ATerrainController::DecreaseTimeSpeed);
+        }
+        
+        // Camera switching
+        if (SwitchCameraAction)
+        {
+            EnhancedInputComponent->BindAction(SwitchCameraAction, ETriggerEvent::Started, this, &ATerrainController::WarpToFirstPerson);
+        }
+        if (ReturnToOverheadAction)
+        {
+            EnhancedInputComponent->BindAction(ReturnToOverheadAction, ETriggerEvent::Started, this, &ATerrainController::ReturnToOverhead);
         }
         
     }
@@ -405,58 +443,19 @@ void ATerrainController::FlyDown(const FInputActionValue& Value)
 
 void ATerrainController::UpdateCameraPosition(float DeltaTime)
 {
-    // UE 5.4 compatible smooth movement input
-    SmoothedMovementInput.X = FMath::FInterpTo(SmoothedMovementInput.X, MovementInput.X, DeltaTime, MovementInputSmoothness);
-    SmoothedMovementInput.Y = FMath::FInterpTo(SmoothedMovementInput.Y, MovementInput.Y, DeltaTime, MovementInputSmoothness);
+    // Handle camera transitions first
+    UpdateCameraTransition(DeltaTime);
     
-    // Apply movement
-    if (!SmoothedMovementInput.IsZero())
+    if (bTransitioning) return;
+    
+    if (CurrentCameraMode == ECameraMode::Overhead)
     {
-        FVector ForwardDir = SpringArm->GetForwardVector();
-        FVector RightDir = SpringArm->GetRightVector();
-        
-        // Project to ground plane
-        ForwardDir.Z = 0;
-        RightDir.Z = 0;
-        ForwardDir.Normalize();
-        RightDir.Normalize();
-        
-        FVector MovementDir = (ForwardDir * SmoothedMovementInput.Y) + (RightDir * SmoothedMovementInput.X);
-        FVector NewLocation = GetActorLocation() + (MovementDir * CameraMoveSpeed * DeltaTime);
-        SetActorLocation(NewLocation);
+        UpdateOverheadCamera(DeltaTime);
     }
-    
-    // Apply mouse look ONLY when not editing terrain/water
-    bool bAllowMouseLook = !bIsEditingTerrain && !bIsEditingWater;
-    
-    if (!LookInput.IsZero() && bMouseLookEnabled && bAllowMouseLook)
+    else if (CurrentCameraMode == ECameraMode::FirstPerson)
     {
-        CameraRotation.Yaw += LookInput.X * MouseSensitivity;
-        CameraRotation.Pitch = FMath::Clamp(CameraRotation.Pitch + (LookInput.Y * MouseSensitivity), -80.0f, 80.0f);
-        SpringArm->SetWorldRotation(CameraRotation);
+        UpdateFirstPersonCamera(DeltaTime);
     }
-    
-    // Apply zoom
-    if (FMath::Abs(ZoomInput) > 0.1f)
-    {
-        float NewTargetArmLength = SpringArm->TargetArmLength - (ZoomInput * CameraZoomSpeed * DeltaTime);
-        SpringArm->TargetArmLength = FMath::Clamp(NewTargetArmLength, MinZoomDistance, MaxZoomDistance);
-    }
-    
-    // Apply vertical movement
-    if (FMath::Abs(FlyUpInput) > 0.1f || FMath::Abs(FlyDownInput) > 0.1f)
-    {
-        float VerticalMovement = (FlyUpInput - FlyDownInput) * CameraFlySpeed * DeltaTime;
-        FVector CurrentLocation = GetActorLocation();
-        CurrentLocation.Z += VerticalMovement;
-        SetActorLocation(CurrentLocation);
-    }
-    
-    // Reset inputs
-    LookInput = FVector2D::ZeroVector;
-    ZoomInput = 0.0f;
-    FlyUpInput = 0.0f;
-    FlyDownInput = 0.0f;
 }
 
 // ===== TERRAIN EDITING FUNCTIONS =====
@@ -499,6 +498,9 @@ void ATerrainController::StartTerrainEditing(bool bRaise)
     bIsRaisingTerrain = bRaise;
     bIsLoweringTerrain = !bRaise;
     
+    // Reset cursor smoothing
+    bCursorInitialized = false;
+    
     UE_LOG(LogTemp, Warning, TEXT("Started %s terrain"), bRaise ? TEXT("raising") : TEXT("lowering"));
 }
 
@@ -518,11 +520,32 @@ void ATerrainController::UpdateTerrainModification(float DeltaTime)
         return;
     }
     
-    FVector CursorPosition = GetCursorWorldPosition();
-    if (CursorPosition != FVector::ZeroVector)
+    FVector RawCursorPosition = GetCursorWorldPosition();
+    if (RawCursorPosition != FVector::ZeroVector)
     {
-        TargetTerrain->ModifyTerrain(CursorPosition, BrushRadius, BrushStrength * DeltaTime, bIsRaisingTerrain);
-        LastCursorPosition = CursorPosition;
+        // Initialize cursor position on first valid trace
+        if (!bCursorInitialized)
+        {
+            SmoothedCursorPosition = RawCursorPosition;
+            LastValidCursorPosition = RawCursorPosition;
+            bCursorInitialized = true;
+        }
+        
+        // Smooth cursor movement to prevent jumping
+        SmoothedCursorPosition = FMath::VInterpTo(SmoothedCursorPosition, 
+            RawCursorPosition, DeltaTime, CursorSmoothingSpeed);
+        
+        // Apply modification at smoothed position
+        TargetTerrain->ModifyTerrain(SmoothedCursorPosition, BrushRadius, 
+            BrushStrength * DeltaTime, bIsRaisingTerrain);
+        
+        LastValidCursorPosition = SmoothedCursorPosition;
+    }
+    else if (bCursorInitialized)
+    {
+        // Use last valid position if trace fails
+        TargetTerrain->ModifyTerrain(LastValidCursorPosition, BrushRadius, 
+            BrushStrength * DeltaTime, bIsRaisingTerrain);
     }
 }
 
@@ -566,6 +589,9 @@ void ATerrainController::StartWaterEditing(bool bAdd)
     bIsAddingWater = bAdd;
     bIsRemovingWater = !bAdd;
     
+    // Reset cursor smoothing
+    bCursorInitialized = false;
+    
     UE_LOG(LogTemp, Warning, TEXT("Started %s water"), bAdd ? TEXT("adding") : TEXT("removing"));
 }
 
@@ -580,27 +606,86 @@ void ATerrainController::StopWaterEditing()
 
 void ATerrainController::UpdateWaterModification(float DeltaTime)
 {
-    if (!TargetTerrain)
+    // PHASE 1: Delegate to WaterController, fallback to direct terrain access
+    if (WaterController)
     {
-        return;
-    }
-    
-    FVector CursorPosition = GetCursorWorldPosition();
-    if (CursorPosition != FVector::ZeroVector)
-    {
-        float WaterAmount = bIsAddingWater ?
-            WaterBrushStrength * WaterAdditionRate * DeltaTime :
-            WaterBrushStrength * DeltaTime;
+        FVector RawCursorPosition = GetCursorWorldPosition();
+        if (RawCursorPosition != FVector::ZeroVector)
+        {
+            // Apply same smoothing logic
+            if (!bCursorInitialized)
+            {
+                SmoothedCursorPosition = RawCursorPosition;
+                LastValidCursorPosition = RawCursorPosition;
+                bCursorInitialized = true;
+            }
             
-        if (bIsAddingWater)
-        {
-            TargetTerrain->AddWater(CursorPosition, WaterAmount);
+            SmoothedCursorPosition = FMath::VInterpTo(SmoothedCursorPosition, 
+                RawCursorPosition, DeltaTime, CursorSmoothingSpeed);
+            
+            float WaterAmount = bIsAddingWater ?
+                WaterBrushStrength * WaterAdditionRate * DeltaTime :
+                WaterBrushStrength * DeltaTime;
+                
+            if (bIsAddingWater)
+            {
+                WaterController->AddWater(SmoothedCursorPosition, WaterAmount);
+            }
+            else if (bIsRemovingWater)
+            {
+                WaterController->RemoveWater(SmoothedCursorPosition, WaterAmount);
+            }
+            LastValidCursorPosition = SmoothedCursorPosition;
         }
-        else if (bIsRemovingWater)
+        else if (bCursorInitialized)
         {
-            TargetTerrain->RemoveWater(CursorPosition, WaterAmount);
+            // Use last valid position if trace fails
+            float WaterAmount = bIsAddingWater ?
+                WaterBrushStrength * WaterAdditionRate * DeltaTime :
+                WaterBrushStrength * DeltaTime;
+                
+            if (bIsAddingWater)
+            {
+                WaterController->AddWater(LastValidCursorPosition, WaterAmount);
+            }
+            else if (bIsRemovingWater)
+            {
+                WaterController->RemoveWater(LastValidCursorPosition, WaterAmount);
+            }
         }
-        LastCursorPosition = CursorPosition;
+    }
+    else if (TargetTerrain)
+    {
+        // Fallback: direct terrain access until WaterController is fixed
+        UE_LOG(LogTemp, Warning, TEXT("No WaterController - using fallback terrain access"));
+        FVector RawCursorPosition = GetCursorWorldPosition();
+        if (RawCursorPosition != FVector::ZeroVector)
+        {
+            // Apply smoothing to fallback too
+            if (!bCursorInitialized)
+            {
+                SmoothedCursorPosition = RawCursorPosition;
+                LastValidCursorPosition = RawCursorPosition;
+                bCursorInitialized = true;
+            }
+            
+            SmoothedCursorPosition = FMath::VInterpTo(SmoothedCursorPosition, 
+                RawCursorPosition, DeltaTime, CursorSmoothingSpeed);
+            
+            float WaterAmount = bIsAddingWater ?
+                WaterBrushStrength * WaterAdditionRate * DeltaTime :
+                WaterBrushStrength * DeltaTime;
+                
+            if (bIsAddingWater)
+            {
+                WaterController->AddWater(SmoothedCursorPosition, WaterAmount);
+            }
+            else if (bIsRemovingWater)
+            {
+                WaterController->RemoveWater(SmoothedCursorPosition, WaterAmount);
+            }
+            LastValidCursorPosition = SmoothedCursorPosition;
+        }
     }
 }
 
@@ -666,21 +751,30 @@ void ATerrainController::SetWaterBrushStrength(float NewStrength)
 
 // ===== SYSTEM CONTROL FUNCTIONS =====
 
-void ATerrainController::ToggleVisualMode()
+void ATerrainController::HandleWaterToggle()
 {
-    // Check if Shift is held for water material cycling
-    APlayerController* PC = Cast<APlayerController>(GetController());
-    if (PC && PC->IsInputKeyDown(EKeys::LeftShift))
+    // Use Enhanced Input shift state instead of legacy input
+    bool bShiftHeld = bLeftShiftHeld || bRightShiftHeld;
+    
+    if (bShiftHeld && WaterController)
     {
-        ToggleWaterVisualMode();
+        // Shift+V: Toggle water materials via WaterController
+        WaterController->ToggleWaterVisualMode();
+        UE_LOG(LogTemp, Log, TEXT("TerrainController: Delegated water visual toggle to WaterController"));
     }
     else
     {
-        // Normal terrain material cycling
-        int32 CurrentModeInt = static_cast<int32>(CurrentVisualMode);
-        CurrentModeInt = (CurrentModeInt + 1) % 5;  // Cycles through 5 terrain modes
-        SetVisualMode(static_cast<ETerrainVisualMode>(CurrentModeInt));
+        // V only: Toggle terrain materials (existing functionality)
+        ToggleVisualMode();
     }
+}
+
+void ATerrainController::ToggleVisualMode()
+{
+    // Normal terrain material cycling
+    int32 CurrentModeInt = static_cast<int32>(CurrentVisualMode);
+    CurrentModeInt = (CurrentModeInt + 1) % 5;  // Cycles through 5 terrain modes
+    SetVisualMode(static_cast<ETerrainVisualMode>(CurrentModeInt));
 }
 
 void ATerrainController::SetVisualMode(ETerrainVisualMode NewMode)
@@ -729,51 +823,7 @@ void ATerrainController::SetVisualMode(ETerrainVisualMode NewMode)
     }
 }
 
-void ATerrainController::ToggleWaterVisualMode()
-{
-    int32 CurrentModeInt = static_cast<int32>(CurrentWaterVisualMode);
-    CurrentModeInt = (CurrentModeInt + 1) % 3;  // Cycles through 3 water modes
-    SetWaterVisualMode(static_cast<EWaterVisualMode>(CurrentModeInt));
-}
 
-void ATerrainController::SetWaterVisualMode(EWaterVisualMode NewMode)
-{
-    CurrentWaterVisualMode = NewMode;
-    
-    UMaterialInterface* WaterMaterialToApply = nullptr;
-    FString ModeName;
-    
-    switch (CurrentWaterVisualMode)
-    {
-        case EWaterVisualMode::Water:
-            WaterMaterialToApply = WaterMaterial;
-            ModeName = TEXT("Water");
-            break;
-        case EWaterVisualMode::Milk:
-            WaterMaterialToApply = MilkMaterial;
-            ModeName = TEXT("Milk");
-            break;
-        case EWaterVisualMode::Debug:
-            WaterMaterialToApply = WaterDebugMaterial;
-            ModeName = TEXT("Debug");
-            break;
-        default:
-            WaterMaterialToApply = WaterMaterial;
-            ModeName = TEXT("Default Water");
-            break;
-    }
-    
-    // Apply water material to surface water system
-    if (TargetTerrain && WaterMaterialToApply)
-    {
-        TargetTerrain->SetWaterVolumeMaterial(WaterMaterialToApply);
-        UE_LOG(LogTemp, Warning, TEXT("Water visual mode changed to: %s"), *ModeName);
-    }
-    else
-    {
-        UE_LOG(LogTemp, Error, TEXT("Water material not set for mode: %s"), *ModeName);
-    }
-}
 
 void ATerrainController::ToggleEditingMode()
 {
@@ -793,28 +843,36 @@ void ATerrainController::ToggleEditingMode()
     StopWaterEditing();
 }
 
-void ATerrainController::ToggleRain()
+void ATerrainController::HandleRainToggle()
 {
-    if (!TargetTerrain)
+    if (WaterController)
     {
-        return;
-    }
-    
-    if (TargetTerrain->WaterSystem && TargetTerrain->WaterSystem->bIsRaining)
-    {
-        TargetTerrain->StopRain();
-        UE_LOG(LogTemp, Warning, TEXT("Rain stopped"));
+        WaterController->ToggleRain();
+        UE_LOG(LogTemp, Log, TEXT("TerrainController: Delegated rain toggle to WaterController"));
     }
     else
     {
-        TargetTerrain->StartRain(1.5f);
-        UE_LOG(LogTemp, Warning, TEXT("Rain started"));
+        UE_LOG(LogTemp, Warning, TEXT("TerrainController: No WaterController to delegate rain toggle"));
+    }
+}
+
+// Keep legacy rain function for backwards compatibility - now delegates to WaterController
+void ATerrainController::ToggleRain()
+{
+    if (WaterController)
+    {
+        WaterController->ToggleRain();
+        UE_LOG(LogTemp, Log, TEXT("TerrainController: Legacy ToggleRain() delegated to WaterController"));
+    }
+    else
+    {
+        UE_LOG(LogTemp, Warning, TEXT("TerrainController: No WaterController for legacy rain toggle"));
     }
 }
 
 void ATerrainController::ToggleRainInput(const FInputActionValue& Value)
 {
-    ToggleRain();
+    HandleRainToggle();
 }
 
 void ATerrainController::ToggleEditingModeInput(const FInputActionValue& Value)
@@ -859,7 +917,15 @@ bool ATerrainController::PerformCursorTrace(FVector& OutHitLocation) const
     FVector MouseWorldLocation, MouseWorldDirection;
     if (PC->DeprojectMousePositionToWorld(MouseWorldLocation, MouseWorldDirection))
     {
+        // Ensure trace starts high above terrain to avoid underground hits
         FVector Start = MouseWorldLocation;
+        if (TargetTerrain)
+        {
+            FVector TerrainCenter = TargetTerrain->GetActorLocation();
+            float MaxTerrainHeight = TerrainCenter.Z + 5000.0f; // Conservative max height
+            Start.Z = FMath::Max(Start.Z, MaxTerrainHeight);
+        }
+        
         FVector End = Start + (MouseWorldDirection * 50000.0f);
         
         FHitResult HitResult;
@@ -869,8 +935,47 @@ bool ATerrainController::PerformCursorTrace(FVector& OutHitLocation) const
         
         if (GetWorld()->LineTraceSingleByChannel(HitResult, Start, End, ECC_WorldStatic, CollisionParams))
         {
-            OutHitLocation = HitResult.Location;
-            return true;
+            // Only accept hits on upward-facing surfaces (terrain top)
+            if (HitResult.Normal.Z > 0.7f) // Surface normal pointing mostly upward
+            {
+                OutHitLocation = HitResult.Location;
+                return true;
+            }
+            else
+            {
+                UE_LOG(LogTemp, Verbose, TEXT("Ray hit surface from below, ignoring"));
+            }
+        }
+        
+        // Fallback: Find closest terrain edge point when ray misses
+        if (TargetTerrain)
+        {
+            // Project ray onto terrain plane and find closest valid point
+            FVector TerrainCenter = TargetTerrain->GetActorLocation();
+            float TerrainSize = TargetTerrain->TerrainWidth * TargetTerrain->TerrainScale;
+            
+            // Intersect ray with terrain's base plane
+            FVector PlaneNormal = FVector::UpVector;
+            FVector PlanePoint = TerrainCenter;
+            
+            float Denominator = FVector::DotProduct(MouseWorldDirection, PlaneNormal);
+            if (FMath::Abs(Denominator) > 0.0001f)
+            {
+                float T = FVector::DotProduct(PlanePoint - MouseWorldLocation, PlaneNormal) / Denominator;
+                FVector PlaneIntersection = MouseWorldLocation + (MouseWorldDirection * T);
+                
+                // Clamp to terrain bounds
+                float HalfSize = TerrainSize * 0.5f;
+                PlaneIntersection.X = FMath::Clamp(PlaneIntersection.X, 
+                    TerrainCenter.X - HalfSize, TerrainCenter.X + HalfSize);
+                PlaneIntersection.Y = FMath::Clamp(PlaneIntersection.Y, 
+                    TerrainCenter.Y - HalfSize, TerrainCenter.Y + HalfSize);
+                
+                // Get actual terrain height at this position
+                float TerrainHeight = TargetTerrain->GetHeightAtPosition(PlaneIntersection);
+                OutHitLocation = FVector(PlaneIntersection.X, PlaneIntersection.Y, TerrainHeight);
+                return true;
+            }
         }
     }
     
@@ -922,16 +1027,25 @@ void ATerrainController::UpdateBrushPreview()
         return;
     }
     
-    FVector CursorPosition = GetCursorWorldPosition();
-    if (CursorPosition != FVector::ZeroVector)
+    // Use smoothed position during editing, raw position when not editing
+    FVector DisplayPosition;
+    if (bIsEditingTerrain || bIsEditingWater)
     {
-        BrushPreview->SetWorldLocation(CursorPosition);
-        
+        // During editing: use smoothed cursor to prevent jumps
+        DisplayPosition = bCursorInitialized ? SmoothedCursorPosition : GetCursorWorldPosition();
+    }
+    else
+    {
+        // When not editing: use raw cursor for immediate response
+        DisplayPosition = GetCursorWorldPosition();
+    }
+    
+    if (DisplayPosition != FVector::ZeroVector)
+    {
+        BrushPreview->SetWorldLocation(DisplayPosition);
         float PreviewScale = BrushRadius / 100.0f;
         BrushPreview->SetWorldScale3D(FVector(PreviewScale));
-        
         BrushPreview->SetVisibility(true);
-        
         UpdateBrushPreviewMaterial();
     }
     else
@@ -1043,26 +1157,14 @@ void ATerrainController::UpdatePerformanceStats(float DeltaTime)
         GEngine->AddOnScreenDebugMessage(32, 0.5f, FColor::White,
             FString::Printf(TEXT("Visual Mode: %s (V to toggle)"), *VisualModeText));
         
-        // Show current water visual mode
-        FString WaterModeText;
-        switch (CurrentWaterVisualMode)
-        {
-            case EWaterVisualMode::Water:
-                WaterModeText = TEXT("Water");
-                break;
-            case EWaterVisualMode::Milk:
-                WaterModeText = TEXT("Milk");
-                break;
-            case EWaterVisualMode::Debug:
-                WaterModeText = TEXT("Debug");
-                break;
-            default:
-                WaterModeText = TEXT("Unknown");
-                break;
-        }
+        // Camera mode info
+        FString CameraModeText = (CurrentCameraMode == ECameraMode::Overhead) ? TEXT("Overhead") : TEXT("First Person");
+        GEngine->AddOnScreenDebugMessage(33, 0.5f, FColor::Yellow,
+            FString::Printf(TEXT("Camera: %s (C=Warp to cursor, TAB=Overhead)"), *CameraModeText));
         
-        GEngine->AddOnScreenDebugMessage(33, 0.5f, FColor::Cyan,
-            FString::Printf(TEXT("Water Mode: %s (Shift+V to toggle)"), *WaterModeText));
+        // Water mode info now handled by WaterController
+        GEngine->AddOnScreenDebugMessage(34, 0.5f, FColor::Cyan,
+            TEXT("Water Mode: Controlled by WaterController (Shift+V to toggle)"));
         
         StatUpdateTimer = 0.0f;
     }
@@ -1072,37 +1174,6 @@ void ATerrainController::UpdateTerrainInfo(float DeltaTime)
 {
     // Additional terrain info can be displayed here
     // Currently handled in UpdatePerformanceStats
-}
-
-// ===== EROSION CONTROL FUNCTIONS =====
-
-void ATerrainController::SetErosionEnabled(bool bEnable)
-{
-    bEnableErosion = bEnable;
-    
-    if (TargetTerrain && TargetTerrain->WaterSystem)
-    {
-        TargetTerrain->WaterSystem->bEnableErosion = bEnable;
-        UE_LOG(LogTemp, Warning, TEXT("Erosion %s"), bEnable ? TEXT("ENABLED") : TEXT("DISABLED"));
-    }
-}
-
-void ATerrainController::ResetErosionSettings()
-{
-    ErosionRate = 0.05f;
-    MinErosionVelocity = 10.0f;
-    DepositionRate = 0.03f;
-    MaxSedimentCapacity = 2.0f;
-    
-    // Apply to water system
-    if (TargetTerrain && TargetTerrain->WaterSystem)
-    {
-        TargetTerrain->WaterSystem->ErosionRate = ErosionRate;
-        TargetTerrain->WaterSystem->MinErosionVelocity = MinErosionVelocity;
-        TargetTerrain->WaterSystem->DepositionRate = DepositionRate;
-        
-        UE_LOG(LogTemp, Warning, TEXT("Erosion settings reset to scientifically accurate defaults"));
-    }
 }
 
 // ===== TIME CONTROL FUNCTIONS =====
@@ -1134,49 +1205,280 @@ void ATerrainController::ResetTimeSpeed()
     UE_LOG(LogTemp, Warning, TEXT("Time speed reset to normal"));
 }
 
-void ATerrainController::IncreaseTimeSpeedInput(const FInputActionValue& Value)
+// ===== ENHANCED INPUT SHIFT KEY FUNCTIONS =====
+
+void ATerrainController::OnLeftShiftPressed(const FInputActionValue& Value)
 {
-    IncreaseTimeSpeed();
+    bLeftShiftHeld = true;
+    UE_LOG(LogTemp, VeryVerbose, TEXT("Left Shift pressed"));
 }
 
-void ATerrainController::DecreaseTimeSpeedInput(const FInputActionValue& Value)
+void ATerrainController::OnLeftShiftReleased(const FInputActionValue& Value)
 {
-    DecreaseTimeSpeed();
+    bLeftShiftHeld = false;
+    UE_LOG(LogTemp, VeryVerbose, TEXT("Left Shift released"));
 }
 
-// ===== WATER PHYSICS CONTROL FUNCTIONS =====
-
-void ATerrainController::SetWaterSimulationEnabled(bool bEnable)
+void ATerrainController::OnRightShiftPressed(const FInputActionValue& Value)
 {
-    bEnableWaterSimulation = bEnable;
+    bRightShiftHeld = true;
+    UE_LOG(LogTemp, VeryVerbose, TEXT("Right Shift pressed"));
+}
+
+void ATerrainController::OnRightShiftReleased(const FInputActionValue& Value)
+{
+    bRightShiftHeld = false;
+    UE_LOG(LogTemp, VeryVerbose, TEXT("Right Shift released"));
+}
+
+// ===== ATMOSPHERIC CONTROL FUNCTIONS - MOVED TO ATMOSPHERECONTROLLER =====
+// All atmospheric functions moved to AtmosphereController for clean separation
+
+// ===== CAMERA SYSTEM FUNCTIONS =====
+
+void ATerrainController::WarpToFirstPerson()
+{
+    if (bTransitioning) return;
     
-    if (TargetTerrain && TargetTerrain->WaterSystem)
+    // Store overhead state if we're coming from overhead
+    if (CurrentCameraMode == ECameraMode::Overhead)
     {
-        TargetTerrain->WaterSystem->bEnableWaterSimulation = bEnable;
-        UE_LOG(LogTemp, Warning, TEXT("Water simulation %s"), bEnable ? TEXT("ENABLED") : TEXT("DISABLED"));
+        StoredOverheadLocation = GetActorLocation();
+        StoredOverheadRotation = SpringArm->GetComponentRotation();
+        StoredCameraHeight = GetActorLocation().Z;
+    }
+    
+    // Get spawn position at cursor
+    FVector CursorPosition = GetCursorWorldPosition();
+    if (CursorPosition == FVector::ZeroVector)
+    {
+        CursorPosition = GetActorLocation();
+    }
+    
+    // Calculate first person target
+    FVector TerrainHeight = GetTerrainHeightAtCursor();
+    TargetLocation = FVector(CursorPosition.X, CursorPosition.Y, TerrainHeight.Z + FirstPersonHeight);
+    TargetRotation = FRotator(0.0f, CurrentCameraMode == ECameraMode::Overhead ? StoredOverheadRotation.Yaw : FirstPersonCamera->GetComponentRotation().Yaw, 0.0f);
+    
+    CurrentCameraMode = ECameraMode::FirstPerson;
+    bTransitioning = true;
+    
+    UE_LOG(LogTemp, Warning, TEXT("Warping to First Person at cursor location"));
+}
+
+void ATerrainController::ReturnToOverhead()
+{
+    if (bTransitioning) return;
+    if (CurrentCameraMode == ECameraMode::Overhead) return; // Already overhead
+    
+    // Return to stored overhead position
+    TargetLocation = StoredOverheadLocation;
+    TargetRotation = StoredOverheadRotation;
+    
+    CurrentCameraMode = ECameraMode::Overhead;
+    bTransitioning = true;
+    
+    UE_LOG(LogTemp, Warning, TEXT("Returning to Overhead view"));
+}
+
+// Legacy function - now just calls WarpToFirstPerson
+void ATerrainController::SwitchCameraMode()
+{
+    WarpToFirstPerson();
+}
+
+void ATerrainController::UpdateCameraTransition(float DeltaTime)
+{
+    if (!bTransitioning) return;
+    
+    if (CurrentCameraMode == ECameraMode::FirstPerson)
+    {
+        // Transition to first person
+        FVector CurrentLoc = FMath::VInterpTo(GetActorLocation(), TargetLocation, DeltaTime, TransitionSpeed);
+        FRotator CurrentRot = FMath::RInterpTo(FirstPersonCamera->GetComponentRotation(), TargetRotation, DeltaTime, TransitionSpeed);
+        
+        SetActorLocation(CurrentLoc);
+        FirstPersonCamera->SetWorldRotation(CurrentRot);
+        
+        // Switch cameras early in transition to avoid jump
+        if (FVector::Dist(CurrentLoc, TargetLocation) < 200.0f && Camera->IsActive())
+        {
+            Camera->SetActive(false);
+            FirstPersonCamera->SetActive(true);
+        }
+        
+        if (FVector::Dist(CurrentLoc, TargetLocation) < 10.0f)
+        {
+            SetActorLocation(TargetLocation);
+            FirstPersonCamera->SetWorldRotation(TargetRotation);
+            bTransitioning = false;
+            UE_LOG(LogTemp, Warning, TEXT("First person transition complete"));
+        }
+    }
+    else
+    {
+        // Transition to overhead
+        FVector CurrentLoc = FMath::VInterpTo(GetActorLocation(), TargetLocation, DeltaTime, TransitionSpeed);
+        FRotator CurrentRot = FMath::RInterpTo(SpringArm->GetComponentRotation(), TargetRotation, DeltaTime, TransitionSpeed);
+        
+        SetActorLocation(CurrentLoc);
+        SpringArm->SetWorldRotation(CurrentRot);
+        
+        // Switch cameras early and match SpringArm position for smooth return
+        if (FVector::Dist(CurrentLoc, TargetLocation) < 200.0f && FirstPersonCamera->IsActive())
+        {
+            FirstPersonCamera->SetActive(false);
+            Camera->SetActive(true);
+        }
+        
+        if (FVector::Dist(CurrentLoc, TargetLocation) < 50.0f)
+        {
+            SetActorLocation(TargetLocation);
+            SpringArm->SetWorldRotation(TargetRotation);
+            bTransitioning = false;
+            UE_LOG(LogTemp, Warning, TEXT("Overhead transition complete"));
+        }
     }
 }
 
-// ===== ATMOSPHERIC CONTROL FUNCTIONS =====
-
-void ATerrainController::SetBaseTemperature(float NewTemperature)
+void ATerrainController::UpdateOverheadCamera(float DeltaTime)
 {
-    BaseTemperature = NewTemperature;
+    // Smooth movement input
+    SmoothedMovementInput.X = FMath::FInterpTo(SmoothedMovementInput.X, MovementInput.X, DeltaTime, MovementInputSmoothness);
+    SmoothedMovementInput.Y = FMath::FInterpTo(SmoothedMovementInput.Y, MovementInput.Y, DeltaTime, MovementInputSmoothness);
     
-    if (TargetTerrain && TargetTerrain->AtmosphericSystem)
+    // WASD movement
+    if (!SmoothedMovementInput.IsZero())
     {
-        TargetTerrain->AtmosphericSystem->BaseTemperature = NewTemperature;
-        UE_LOG(LogTemp, Warning, TEXT("Base temperature set to %.1f K (%.1f°C)"), NewTemperature, NewTemperature - 273.15f);
+        FVector ForwardDir = Camera->GetForwardVector();
+        FVector RightDir = Camera->GetRightVector();
+        
+        ForwardDir.Z = 0;
+        RightDir.Z = 0;
+        ForwardDir.Normalize();
+        RightDir.Normalize();
+        
+        FVector MovementDir = (ForwardDir * SmoothedMovementInput.Y) + (RightDir * SmoothedMovementInput.X);
+        FVector NewLocation = GetActorLocation() + (MovementDir * CameraMoveSpeed * DeltaTime);
+        SetActorLocation(NewLocation);
+    }
+    
+    // Mouse look (existing logic)
+    if (!LookInput.IsZero() && bMouseLookEnabled && !bIsEditingTerrain && !bIsEditingWater && !bTransitioning)
+    {
+        FRotator CurrentRotation = Camera->GetComponentRotation();
+        CurrentRotation.Yaw += LookInput.X * MouseSensitivity;
+        CurrentRotation.Pitch = FMath::Clamp(CurrentRotation.Pitch + (LookInput.Y * MouseSensitivity), -89.0f, 89.0f);
+        Camera->SetWorldRotation(CurrentRotation);
+    }
+    
+    // Always reset look input when editing to prevent accumulation
+    if (bIsEditingTerrain || bIsEditingWater)
+    {
+        LookInput = FVector2D::ZeroVector;
+    }
+    
+    // Zoom (replace SpringArm logic)
+    if (FMath::Abs(ZoomInput) > 0.01f)
+    {
+        FVector CurrentLoc = GetActorLocation();
+        CurrentLoc.Z = FMath::Clamp(CurrentLoc.Z - (ZoomInput * CameraZoomSpeed * DeltaTime), MinCameraHeight, MaxCameraHeight);
+        SetActorLocation(CurrentLoc);
+    }
+    
+    // Vertical movement
+    if (FMath::Abs(FlyUpInput) > 0.1f || FMath::Abs(FlyDownInput) > 0.1f)
+    {
+        float VerticalMovement = (FlyUpInput - FlyDownInput) * CameraFlySpeed * DeltaTime;
+        FVector CurrentLocation = GetActorLocation();
+        CurrentLocation.Z = FMath::Clamp(CurrentLocation.Z + VerticalMovement, MinCameraHeight, MaxCameraHeight);
+        SetActorLocation(CurrentLocation);
+    }
+    
+    // Reset inputs
+    LookInput = FVector2D::ZeroVector;
+    ZoomInput = 0.0f;
+    FlyUpInput = 0.0f;
+    FlyDownInput = 0.0f;
+}
+
+void ATerrainController::UpdateFirstPersonCamera(float DeltaTime)
+{
+    // Smooth movement input (was missing)
+    SmoothedMovementInput.X = FMath::FInterpTo(SmoothedMovementInput.X, MovementInput.X, DeltaTime, MovementInputSmoothness);
+    SmoothedMovementInput.Y = FMath::FInterpTo(SmoothedMovementInput.Y, MovementInput.Y, DeltaTime, MovementInputSmoothness);
+    
+    // WASD movement at human scale
+    if (!SmoothedMovementInput.IsZero())
+    {
+        FVector ForwardDir = FirstPersonCamera->GetForwardVector();
+        FVector RightDir = FirstPersonCamera->GetRightVector();
+        
+        ForwardDir.Z = 0;
+        RightDir.Z = 0;
+        ForwardDir.Normalize();
+        RightDir.Normalize();
+        
+        FVector MovementDir = (ForwardDir * SmoothedMovementInput.Y) + (RightDir * SmoothedMovementInput.X);
+        FVector NewLocation = GetActorLocation() + (MovementDir * CameraMoveSpeed * 0.3f * DeltaTime);
+        
+        // Maintain height above terrain with validation
+        if (TargetTerrain)
+        {
+            float TerrainHeight = TargetTerrain->GetHeightAtPosition(NewLocation);
+            float MinHeight = TerrainHeight + FirstPersonHeight;
+            
+            // Ensure we never go underground
+            if (NewLocation.Z < MinHeight)
+            {
+                NewLocation.Z = MinHeight;
+            }
+        }
+        
+        SetActorLocation(NewLocation);
+    }
+    
+    // CRITICAL: Periodic terrain height check to prevent underground drift
+    if (TargetTerrain)
+    {
+        FVector CurrentLocation = GetActorLocation();
+        float TerrainHeight = TargetTerrain->GetHeightAtPosition(CurrentLocation);
+        float MinHeight = TerrainHeight + 50.0f; // Minimum 50 units above terrain
+        
+        if (CurrentLocation.Z < MinHeight)
+        {
+            CurrentLocation.Z = MinHeight;
+            SetActorLocation(CurrentLocation);
+            UE_LOG(LogTemp, Warning, TEXT("First-person camera corrected from underground"));
+        }
+    }
+    
+    // Mouse look for first person
+    if (!LookInput.IsZero() && bMouseLookEnabled && !bIsEditingTerrain && !bIsEditingWater && !bTransitioning)
+    {
+        FRotator CurrentRotation = FirstPersonCamera->GetComponentRotation();
+        CurrentRotation.Yaw += LookInput.X * MouseSensitivity;
+        CurrentRotation.Pitch = FMath::Clamp(CurrentRotation.Pitch + (LookInput.Y * MouseSensitivity), -80.0f, 80.0f);
+        FirstPersonCamera->SetWorldRotation(CurrentRotation);
+    }
+    
+    // Always reset during editing
+    if (bIsEditingTerrain || bIsEditingWater)
+    {
+        LookInput = FVector2D::ZeroVector;
     }
 }
 
-void ATerrainController::SetPrevailingWind(FVector2D NewWindPattern)
+FVector ATerrainController::GetTerrainHeightAtCursor() const
 {
-    PrevailingWind = NewWindPattern;
+    FVector CursorPos = GetCursorWorldPosition();
     
-    if (TargetTerrain && TargetTerrain->AtmosphericSystem)
+    if (TargetTerrain)
     {
-        TargetTerrain->AtmosphericSystem->WindPattern = NewWindPattern;
-        UE_LOG(LogTemp, Warning, TEXT("Prevailing wind set to (%.1f, %.1f) m/s"), NewWindPattern.X, NewWindPattern.Y);
+        float TerrainHeight = TargetTerrain->GetHeightAtPosition(CursorPos);
+        return FVector(CursorPos.X, CursorPos.Y, TerrainHeight);
     }
+    
+    return CursorPos;
 }
+
