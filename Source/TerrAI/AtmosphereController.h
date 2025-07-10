@@ -93,12 +93,30 @@ class TERRAI_API AAtmosphereController : public AActor
 
 public:
     AAtmosphereController();
+    
+    // ===== TEMPORAL MANAGER INTEGRATION =====
+        
+        /**
+         * Main update function called by MasterController when TemporalManager approves
+         * This replaces the Tick-based updates for proper temporal coordination
+         */
+        UFUNCTION(BlueprintCallable, Category = "Temporal Integration")
+        void UpdateAtmosphericSystem(float DeltaTime);
+        
+        /**
+         * Gets the last time this system was updated (for debugging)
+         */
+        UFUNCTION(BlueprintPure, Category = "Temporal Integration")
+        float GetLastUpdateTime() const { return LastSystemUpdateTime; }
+        
 
 protected:
+    // Override Tick but disable atmospheric updates
+    virtual void Tick(float DeltaTime) override;
     virtual void BeginPlay() override;
 
 public:
-    virtual void Tick(float DeltaTime) override;
+    //virtual void Tick(float DeltaTime) override;
 
     // ===== INITIALIZATION =====
     
@@ -118,6 +136,12 @@ public:
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather")
     float WeatherTransitionSpeed = 1.0f;
+    
+    UFUNCTION(BlueprintCallable, Category = "Weather Control", meta = (CallInEditor))
+    void StartPhysicsBasedRain(float Intensity = 5.0f, float Radius = 10000.0f);
+
+    UFUNCTION(BlueprintCallable, Category = "Weather Control", meta = (CallInEditor))
+    void StopPhysicsBasedRain();
 
     // ===== SEASONAL SYSTEM =====
     
@@ -205,6 +229,20 @@ public:
     UFUNCTION(BlueprintCallable, Category = "System Coordination")
     void OnTerrainModified(FVector Location, float Radius);
 
+    // ===== WIND CONTROL FUNCTIONS =====
+    
+    UFUNCTION(BlueprintCallable, Category = "Wind Control")
+    void SetWindDirection(FVector NewDirection);
+    
+    UFUNCTION(BlueprintCallable, Category = "Wind Control")
+    void SetWindSpeed(float NewSpeed);
+    
+    UFUNCTION(BlueprintCallable, Category = "Wind Control")
+    void SetWind(FVector WindVector);
+    
+    UFUNCTION(BlueprintCallable, Category = "Wind Control")
+    void UpdateWindImmediate();
+    
     // ===== DEBUG & VISUALIZATION =====
     
     UFUNCTION(BlueprintCallable, Category = "Debug")
@@ -212,8 +250,12 @@ public:
     
     UFUNCTION(BlueprintCallable, Category = "Debug")
     void PrintAtmosphereStats() const;
-
-private:
+    
+    // ===== BLUEPRINT INTEGRATION =====
+    
+    UFUNCTION(BlueprintCallable, Category = "Atmosphere", CallInEditor)
+    void ApplyBlueprintDefaults();
+    
     // ===== SYSTEM REFERENCES =====
     
     UPROPERTY()
@@ -221,6 +263,17 @@ private:
     
     UPROPERTY()
     UWaterSystem* WaterSystem = nullptr;
+    
+    UPROPERTY()
+    class UAtmosphericSystem* AtmosphericSystem = nullptr;
+
+
+    
+#if WITH_EDITOR
+    virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif
+
+private:
 
     // ===== INTERNAL STATE =====
     
@@ -245,4 +298,20 @@ private:
     void ProcessWeatherTransition(float DeltaTime);
     FWeatherData GenerateRandomWeather() const;
     FSeasonalData GetCurrentSeasonalData() const;
+    
+    UPROPERTY()
+    float LastSystemUpdateTime = 0.0f;
+    
+    UPROPERTY()
+    float WindFieldUpdateTimer = 0.0f;
+    
+    UPROPERTY()
+    float WindFieldUpdateInterval = 0.5f; // Update wind field every 0.5 seconds
+    
+    // Track last wind values to avoid unnecessary updates
+    UPROPERTY()
+    FVector LastWindDirection = FVector::ZeroVector;
+    
+    UPROPERTY()
+    float LastWindSpeed = 0.0f;
 };

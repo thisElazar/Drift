@@ -117,6 +117,29 @@ void UAtmosphericSystem::Initialize(ADynamicTerrain* InTerrain, UWaterSystem* In
     
     UE_LOG(LogTemp, Warning, TEXT("AtmosphericSystem: Initialized with %d atmospheric cells"),
            AtmosphericGrid.Num());
+    
+    // CRITICAL FIX: Late registration with MasterController
+       if (InTerrain && InTerrain->CachedMasterController && !IsRegisteredWithMaster())
+       {
+           AMasterWorldController* Master = InTerrain->CachedMasterController;
+           
+           // Register ourselves
+           RegisterWithMasterController(Master);
+           
+           // Apply scaling if needed
+           if (!IsSystemScaled())
+           {
+               // Get current world scaling config
+               const FWorldScalingConfig& Config = Master->GetWorldScalingConfig();
+               ConfigureFromMaster(Config);
+               
+               // Synchronize coordinates
+               const FWorldCoordinateSystem& Coords = Master->GetWorldCoordinateSystem();
+               SynchronizeCoordinates(Coords);
+               
+               UE_LOG(LogTemp, Warning, TEXT("AtmosphericSystem: Late registration and scaling applied"));
+           }
+       }
 }
 
 void UAtmosphericSystem::InitializeAtmosphericGrid()
@@ -584,13 +607,40 @@ void UAtmosphericSystem::UpdateWeatherPatterns(float DeltaTime)
         Pattern.Intensity *= (1.0f - DeltaTime * 0.01f); // 1% decay per second
         
         // Apply pattern effects to atmospheric grid
-        ApplyWeatherPatternToGrid(Pattern);
+        // * USE Just Single Implementation// ApplyWeatherPatternToGrid(Pattern);
     }
     
     // Remove expired patterns
     ActiveWeatherPatterns.RemoveAll([](const FWeatherPattern& Pattern) {
         return Pattern.Age > 1800.0f || Pattern.Intensity < 0.1f; // Remove after 30 min or weak
     });
+    
+    // CRITICAL: Remove expired patterns to prevent memory issues
+    ActiveWeatherPatterns.RemoveAll([DeltaTime](FWeatherPattern& Pattern) {
+        Pattern.Age += DeltaTime;
+        return Pattern.Age > Pattern.LifeTime;
+    });
+    
+    // CRITICAL: Limit total number of active patterns
+    const int32 MaxActivePatterns = 10;
+    if (ActiveWeatherPatterns.Num() > MaxActivePatterns)
+    {
+        // Remove oldest patterns
+        ActiveWeatherPatterns.Sort([](const FWeatherPattern& A, const FWeatherPattern& B) {
+            return A.Age > B.Age;
+        });
+        ActiveWeatherPatterns.SetNum(MaxActivePatterns);
+    }
+    
+    // Update pattern positions
+    for (FWeatherPattern& Pattern : ActiveWeatherPatterns)
+    {
+        Pattern.Center += Pattern.Movement * DeltaTime;
+    }
+    
+    // Apply patterns to atmospheric grid
+    ApplyWeatherPatterns();
+
     
     // Generate new patterns occasionally (every 5-10 minutes)
     static float PatternTimer = 0.0f;
@@ -602,6 +652,15 @@ void UAtmosphericSystem::UpdateWeatherPatterns(float DeltaTime)
     }
     
     UE_LOG(LogTemp, VeryVerbose, TEXT("[WEATHER] %d active patterns"), ActiveWeatherPatterns.Num());
+}
+
+void UAtmosphericSystem::ApplyWeatherPatterns()
+{
+    // Apply all active weather patterns to the atmospheric grid
+    for (const FWeatherPattern& Pattern : ActiveWeatherPatterns)
+    {
+        ApplyWeatherPatternToGrid(Pattern);
+    }
 }
 
 void UAtmosphericSystem::ApplyWeatherPatternToGrid(const FWeatherPattern& Pattern)
@@ -1014,7 +1073,7 @@ void UAtmosphericSystem::CreateHighPressureSystem(FVector2D Center, float Streng
     NewPattern.Age = 0.0f;
     
     ActiveWeatherPatterns.Add(NewPattern);
-    UE_LOG(LogTemp, Warning, TEXT("Created high pressure system at (%.0f, %.0f)"), Center.X, Center.Y);
+    UE_LOG(LogTemp, VeryVerbose, TEXT("Created high pressure system at (%.0f, %.0f)"), Center.X, Center.Y);
 }
 
 void UAtmosphericSystem::CreateLowPressureSystem(FVector2D Center, float Strength)
@@ -1029,7 +1088,7 @@ void UAtmosphericSystem::CreateLowPressureSystem(FVector2D Center, float Strengt
     NewPattern.Age = 0.0f;
     
     ActiveWeatherPatterns.Add(NewPattern);
-    UE_LOG(LogTemp, Warning, TEXT("Created low pressure system at (%.0f, %.0f)"), Center.X, Center.Y);
+    UE_LOG(LogTemp, VeryVerbose, TEXT("Created low pressure system at (%.0f, %.0f)"), Center.X, Center.Y);
 }
 
 void UAtmosphericSystem::CreateFrontalSystem(FVector2D Start, FVector2D End, float Intensity)

@@ -163,7 +163,7 @@ public:
     void ResetTerrainFully();
     
     // Clean generation for startup (automatic reset)
-    void PerformCleanGeneration();
+    void PerformCleanGeneration(bool bInitializeSystems = true);
 
     // ===== MISSING FUNCTION DECLARATIONS =====
     UFUNCTION(BlueprintCallable, Category = "Master Controller")
@@ -262,10 +262,7 @@ public:
     
     UFUNCTION(BlueprintCallable, Category = "Water System")
     bool IsWaterSystemReady() const;
-    
-    // ===== REMOVED: Water functions now handled by WaterController =====
-    // All AddWater, RemoveWater, Rain functions moved to WaterController for clean separation
-    
+  
     // ===== ATMOSPHERIC SYSTEM INTEGRATION =====
     
     UFUNCTION(BlueprintCallable, Category = "Atmospheric System")
@@ -303,10 +300,10 @@ public:
     float TerrainScale = 100.0f;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terrain Settings")
-    float MaxTerrainHeight = 2000.0f;
+    float MaxTerrainHeight = 10000.0f;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terrain Settings")
-    float MinTerrainHeight = -2000.0f;
+    float MinTerrainHeight = -10000.0f;
 
     // ===== SCALABLE CHUNK SYSTEM =====
     
@@ -318,9 +315,6 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Chunk System")
     int32 MaxUpdatesPerFrame = 2;  // Reduced for better performance
 
-    // ===== BRUSH SETTINGS - REMOVED =====
-    // All brush settings now managed by MasterController authority
-    // Use CachedMasterController->GetBrushRadius() and GetBrushStrength()
 
     // ===== PERFORMANCE SETTINGS =====
     
@@ -403,9 +397,6 @@ public:
     UFUNCTION(BlueprintCallable, Category = "World Management")
     void MigrateToScalableSystem();
     
-    
-    
-    
     // Performance optimization helpers
     float GetCachedFrameTime() const;
 
@@ -416,11 +407,9 @@ private:
     USceneComponent* TerrainRoot;
     
     // ===== TERRAIN DATA =====
-    
     TArray<float> HeightMap;
     
     // ===== CHUNK MANAGEMENT =====
-    
     TSet<int32> PendingChunkUpdates;
     TSet<int32> PendingWaterChunkUpdates; // Separate queue for water-only updates
     

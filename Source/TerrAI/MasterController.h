@@ -366,6 +366,7 @@ struct TERRAI_API FWorldScalingConfig
     }
 };
 
+
 /**
  * AMasterWorldController - Central orchestrator for all world systems
  */
@@ -408,7 +409,7 @@ private:
     FWorldCoordinateSystem WorldCoordinateSystem;
     
     // Registered scalable systems
-    TArray<class IScalableSystem*> RegisteredScalableSystems;
+    TArray<UObject*> RegisteredScalableSystems;
     
     // Scaling coordination helpers
     void CalculateOptimalWorldScaling();
@@ -555,6 +556,14 @@ public:
     
     UFUNCTION(BlueprintCallable, Category = "World Scaling")
     void LogAllSystemScalingStatus();
+    
+    // ===== ATMOSPHERE INTEGRATION TEST =====
+    
+    UFUNCTION(BlueprintCallable, Category = "Atmosphere Testing")
+    void TestAtmosphereIntegration();
+    
+    UFUNCTION(BlueprintCallable, Category = "Atmosphere Testing")
+    void TestWindWaveIntegration();
     
     // ===== COORDINATE TRANSFORM FUNCTIONS - AUTHORITATIVE =====
     
@@ -718,8 +727,8 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug")
     bool bShowSystemDebugInfo = false;
     
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug")
-    bool bLogSystemUpdates = false;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Timing System")
+    bool bLogSystemUpdates = true;
     
     UFUNCTION(BlueprintCallable, Category = "Water System Debug")
     bool ValidateWaterSystemIntegration() const;
@@ -746,6 +755,9 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Debug")
     void LogSystemPerformance();
     
+    UFUNCTION(BlueprintCallable, Category = "Debug", meta = (CallInEditor = true))
+    void DebugTemporalSystem();
+    
     // ===== ADDITIONAL HELPER FUNCTIONS =====
     UFUNCTION(BlueprintCallable, Category = "Temporal Control")
     void ResetTemporalState();
@@ -759,6 +771,16 @@ public:
     // ===== INITIALIZATION STATUS =====
     UFUNCTION(BlueprintPure, Category = "System Status")
     bool IsInitializationComplete() const { return CurrentInitPhase == EInitializationPhase::Complete; }
+    
+    
+    UFUNCTION(BlueprintPure, Category = "World Scaling")
+    const FWorldScalingConfig& GetWorldScalingConfig() const { return WorldScalingConfig; }
+    
+    UFUNCTION(BlueprintPure, Category = "World Scaling")
+    const FWorldCoordinateSystem& GetWorldCoordinateSystem() const { return WorldCoordinateSystem; }
+
+    UFUNCTION(BlueprintCallable, Category = "Debug")
+    void TestAllSystemConnections();
     
 private:
     // ===== MISSING HELPER FUNCTIONS =====

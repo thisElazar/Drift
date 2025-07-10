@@ -133,16 +133,6 @@ void ADynamicTerrain::BeginPlay()
     // PHASE 2: Initialize basic data structures
     InitializeTerrainData();
     
-    // MasterController will call InitializeWithMasterController() directly
-    // No fallback or retry logic - authority is required
-    if (!CachedMasterController)
-    {
-        UE_LOG(LogTemp, Warning, TEXT("DynamicTerrain: Waiting for MasterController authority..."));
-        return;
-    }
-    
-    // Complete initialization with established authority
-    PerformCleanGeneration();
 }
 
 void ADynamicTerrain::Tick(float DeltaTime)
@@ -168,11 +158,12 @@ void ADynamicTerrain::Tick(float DeltaTime)
     }
     
     // Update atmospheric system
+    /*Removed for Master Controller/Temporal Manager
     if (AtmosphericSystem)
     {
         AtmosphericSystem->UpdateAtmosphericSimulation(DeltaTime);
     }
-    
+    */
     // Update performance statistics
     if (bShowPerformanceStats)
     {
@@ -184,6 +175,12 @@ void ADynamicTerrain::Tick(float DeltaTime)
 
 void ADynamicTerrain::InitializeWaterSystem()
 {
+    // Prevent Duplicate Water System Creation
+    if (WaterSystem && WaterSystem->IsSystemReady())
+        {
+            UE_LOG(LogTemp, Warning, TEXT("WaterSystem already initialized"));
+            return;
+        }
     // Ensure terrain dimensions are finalized FIRST
     if (TerrainWidth <= 0 || TerrainHeight <= 0)
     {
@@ -435,7 +432,12 @@ void ADynamicTerrain::ModifyTerrainAtIndex(int32 X, int32 Y, float Radius, float
         }
     }
     
-    // Performance: Removed per-modification logging
+    // Invalidate water cache after terrain changes
+       if (WaterSystem)
+       {
+           WaterSystem->ForceTerrainSync();
+           WaterSystem->UpdateWaterDepthTexture();
+       }
 }
 
 // ===== CHUNK SYSTEM =====
@@ -444,11 +446,12 @@ void ADynamicTerrain::InitializeChunks()
 {
     UE_LOG(LogTemp, Warning, TEXT("Initializing chunk system with %dx%d chunks"), ChunksX, ChunksY);
     
-  
-
-    
     // Clear existing chunks
     TerrainChunks.Empty();
+    
+    // Track statistics for batched logging
+    int32 FallbackMaterialCount = 0;
+    int32 FailedChunkCount = 0;
     
     // Create chunks
     for (int32 ChunkY = 0; ChunkY < ChunksY; ChunkY++)
@@ -479,7 +482,6 @@ void ADynamicTerrain::InitializeChunks()
                 FVector2D ChunkWorldPos = GetChunkWorldPosition(ChunkX, ChunkY);
                 NewChunk.MeshComponent->SetRelativeLocation(FVector(ChunkWorldPos.X, ChunkWorldPos.Y, 0.0f));
                 
-                
                 // Apply material BEFORE registering component
                 UMaterialInterface* MaterialToUse = CurrentActiveMaterial;
                 if (!MaterialToUse) {
@@ -487,6 +489,7 @@ void ADynamicTerrain::InitializeChunks()
                 }
                 if (!MaterialToUse && GEngine) {
                     MaterialToUse = GEngine->WireframeMaterial;
+                    FallbackMaterialCount++;
                 }
                 
                 if (MaterialToUse) {
@@ -503,9 +506,21 @@ void ADynamicTerrain::InitializeChunks()
             }
             else
             {
-                UE_LOG(LogTemp, Error, TEXT("Failed to create mesh component for chunk %d,%d"), ChunkX, ChunkY);
+                FailedChunkCount++;
             }
         }
+    }
+    
+    // Batch logging
+    if (FallbackMaterialCount > 0)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("Using fallback wireframe material for %d/%d chunks"),
+               FallbackMaterialCount, TerrainChunks.Num());
+    }
+    
+    if (FailedChunkCount > 0)
+    {
+        UE_LOG(LogTemp, Error, TEXT("Failed to create %d chunks"), FailedChunkCount);
     }
     
     UE_LOG(LogTemp, Warning, TEXT("✅ Created %d chunks with validated materials"), TerrainChunks.Num());
@@ -1631,7 +1646,7 @@ void ADynamicTerrain::ResetTerrainFully()
  * - BeginPlay() during normal startup
  * - ResetTerrainFully() for runtime resets
  */
-void ADynamicTerrain::PerformCleanGeneration()
+void ADynamicTerrain::PerformCleanGeneration(bool bInitializeSystems)
 {
     UE_LOG(LogTemp, Warning, TEXT("Performing clean terrain generation..."));
 
@@ -1663,11 +1678,11 @@ void ADynamicTerrain::PerformCleanGeneration()
     // Initialize chunk system
     InitializeChunks();
 
-    // Initialize water system AFTER chunk creation
-    InitializeWaterSystem();
-
-    // Initialize atmospheric system AFTER water system
-    InitializeAtmosphericSystem();
+    if (bInitializeSystems)
+       {
+           InitializeWaterSystem();
+           InitializeAtmosphericSystem();
+       }
 
     UE_LOG(LogTemp, Warning, TEXT("Clean terrain generation complete."));
 }
@@ -2154,9 +2169,16 @@ void ADynamicTerrain::InitializeTerrainData()
 
 void ADynamicTerrain::InitializeWithMasterController(AMasterWorldController* Master)
 {
-    if (!Master) 
+    if (!Master)
     {
         UE_LOG(LogTemp, Error, TEXT("InitializeWithMasterController called with null Master"));
+        return;
+    }
+    
+    // Prevent duplicate initialization
+    if (CachedMasterController == Master && HeightMap.Num() > 0)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("DynamicTerrain: Already initialized with this MasterController"));
         return;
     }
     
@@ -2180,13 +2202,15 @@ void ADynamicTerrain::InitializeWithMasterController(AMasterWorldController* Mas
     int32 TotalSize = TerrainWidth * TerrainHeight;
     HeightMap.SetNumZeroed(TotalSize);
     
-    UE_LOG(LogTemp, Warning, TEXT("DynamicTerrain: Authority established - %dx%d terrain, %dx%d chunks"), 
+    UE_LOG(LogTemp, Warning, TEXT("DynamicTerrain: Authority established - %dx%d terrain, %dx%d chunks"),
            TerrainWidth, TerrainHeight, ChunksX, ChunksY);
     
-    // Complete initialization
-    PerformCleanGeneration();
-    InitializeWaterSystem();
-    InitializeAtmosphericSystem();
+    // Only generate terrain geometry - DO NOT initialize systems here
+    // MasterController will call system initialization in Phase 5
+    GenerateProceduralTerrain();
+    InitializeChunks();
+    
+    UE_LOG(LogTemp, Warning, TEXT("DynamicTerrain: Terrain generation complete, awaiting system initialization"));
 }
 
 // DELETE ENTIRE FUNCTION - no fallback allowed

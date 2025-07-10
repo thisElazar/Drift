@@ -6,6 +6,7 @@
 #include "AtmosphereController.h"
 #include "DynamicTerrain.h"
 #include "WaterSystem.h"
+#include "AtmosphericSystem.h"
 #include "Engine/Engine.h"
 #include "DrawDebugHelpers.h"
 #include "Kismet/KismetMathLibrary.h"
@@ -13,6 +14,7 @@
 AAtmosphereController::AAtmosphereController()
 {
     PrimaryActorTick.bCanEverTick = true;
+    PrimaryActorTick.bStartWithTickEnabled = true;
     
     RootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("AtmosphereRoot"));
     
@@ -65,24 +67,55 @@ void AAtmosphereController::BeginPlay()
     Super::BeginPlay();
     
     InitializeSeasonalData();
+    
+    // CRITICAL: Apply blueprint defaults to current weather
+    ApplyBlueprintDefaults();
 }
 
 void AAtmosphereController::Tick(float DeltaTime)
 {
     Super::Tick(DeltaTime);
-    
-    if (bSystemInitialized)
+    // CRITICAL: Do NOT update weather/wind systems here!
+     // All atmospheric updates are now controlled by TemporalManager
+     // through the UpdateAtmosphericSystem function
+     
+     // You can still do non-simulation tasks here if needed
+     // For example: debug visualization updates
+}
+
+// NEW: Main update function called by MasterController
+void AAtmosphereController::UpdateAtmosphericSystem(float DeltaTime)
+{
+    // In AtmosphereController::UpdateAtmosphericSystem() at the very start
+    UE_LOG(LogTemp, Warning, TEXT("UpdateAtmosphericSystem: bSystemInitialized=%d"), bSystemInitialized);
+    if (!bSystemInitialized)
     {
-        if (bEnableWeatherSimulation)
-        {
-            UpdateWeatherSystem(DeltaTime);
-        }
+        UE_LOG(LogTemp, Error, TEXT("UpdateAtmosphericSystem FAILURE"));
+        return;
         
-        if (bEnableSeasonalCycle)
-        {
-            UpdateSeasonalCycle(DeltaTime);
-        }
+       
     }
+    
+    UE_LOG(LogTemp, Warning, TEXT("UpdateAtmosphericSystem called with DT=%.4f"), DeltaTime);
+    
+    // Track update time for debugging
+    LastSystemUpdateTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+    
+    // Update weather simulation if enabled
+    if (bEnableWeatherSimulation)
+    {
+        UpdateWeatherSystem(DeltaTime);
+    }
+    
+    // Update seasonal cycle if enabled
+    if (bEnableSeasonalCycle)
+    {
+        UpdateSeasonalCycle(DeltaTime);
+    }
+    
+    // Log update for debugging (optional)
+    UE_LOG(LogTemp, VeryVerbose, TEXT("AtmosphereController: System updated at %.2f (dt=%.4f)"),
+           LastSystemUpdateTime, DeltaTime);
 }
 
 // ===== INITIALIZATION =====
@@ -97,6 +130,22 @@ void AAtmosphereController::Initialize(ADynamicTerrain* Terrain, UWaterSystem* W
     
     TargetTerrain = Terrain;
     WaterSystem = Water;
+    
+    // Get AtmosphericSystem from terrain
+    if (Terrain)
+    {
+        AtmosphericSystem = Terrain->GetAtmosphericSystem();
+        if (AtmosphericSystem)
+        {
+            UE_LOG(LogTemp, Warning, TEXT("AtmosphereController: Connected to AtmosphericSystem"));
+        }
+        else
+        {
+            UE_LOG(LogTemp, Warning, TEXT("AtmosphereController: No AtmosphericSystem found on terrain"));
+        }
+        
+    }
+    
     bSystemInitialized = true;
     
     UE_LOG(LogTemp, Warning, TEXT("AtmosphereController: Successfully initialized"));
@@ -192,6 +241,8 @@ void AAtmosphereController::TriggerStorm(float Intensity, float Duration)
 void AAtmosphereController::UpdateSeasonalCycle(float DeltaTime)
 {
     SeasonTimer += DeltaTime;
+    UE_LOG(LogTemp, Warning, TEXT("UpdateSeasonalCycle: Timer=%.2f/%.2f"), SeasonTimer, SeasonDuration);
+       
     
     if (SeasonTimer >= SeasonDuration)
     {
@@ -233,6 +284,14 @@ void AAtmosphereController::SetTimeOfDay(float Hours)
 
 float AAtmosphereController::GetTemperatureAtLocation(FVector WorldLocation) const
 {
+    // Use physics-based temperature from AtmosphericSystem if available
+    if (AtmosphericSystem)
+    {
+        float KelvinTemp = AtmosphericSystem->GetTemperatureAt(WorldLocation);
+        return KelvinTemp - 273.15f; // Convert K to C
+    }
+    
+    // Fallback to simple calculation
     float Temperature = BaseTemperature;
     
     // Altitude effect
@@ -262,6 +321,13 @@ float AAtmosphereController::GetTemperatureAtLocation(FVector WorldLocation) con
 
 float AAtmosphereController::GetHumidityAtLocation(FVector WorldLocation) const
 {
+    // Use physics-based humidity from AtmosphericSystem if available
+    if (AtmosphericSystem)
+    {
+        return AtmosphericSystem->GetHumidityAt(WorldLocation);
+    }
+    
+    // Fallback to simple calculation
     float Humidity = CurrentWeather.Humidity;
     
     // Water proximity effect
@@ -283,6 +349,13 @@ float AAtmosphereController::GetHumidityAtLocation(FVector WorldLocation) const
 
 FVector AAtmosphereController::GetWindAtLocation(FVector WorldLocation) const
 {
+    // Use physics-based wind from AtmosphericSystem if available
+    if (AtmosphericSystem)
+    {
+        return AtmosphericSystem->GetWindAt(WorldLocation);
+    }
+    
+    // Fallback to simple calculation
     FVector Wind = CurrentWeather.WindDirection * CurrentWeather.WindSpeed;
     
     // Add terrain influence
@@ -305,6 +378,13 @@ FVector AAtmosphereController::GetWindAtLocation(FVector WorldLocation) const
 
 float AAtmosphereController::GetPrecipitationAtLocation(FVector WorldLocation) const
 {
+    // Use physics-based precipitation from AtmosphericSystem if available
+    if (AtmosphericSystem)
+    {
+        return AtmosphericSystem->GetPrecipitationAt(WorldLocation);
+    }
+    
+    // Fallback to simple calculation
     float Precipitation = CurrentWeather.PrecipitationRate;
     
     // Orographic effect (more rain on windward slopes)
@@ -318,6 +398,75 @@ float AAtmosphereController::GetPrecipitationAtLocation(FVector WorldLocation) c
     }
     
     return Precipitation;
+}
+
+// ===== WIND CONTROL FUNCTIONS =====
+
+void AAtmosphereController::SetWindDirection(FVector NewDirection)
+{
+    BaseWindDirection = NewDirection.GetSafeNormal();
+    CurrentWeather.WindDirection = BaseWindDirection;
+    
+    // Immediately update wind field
+    UpdateWindImmediate();
+    
+    UE_LOG(LogTemp, Warning, TEXT("AtmosphereController: Wind direction set to %s"), *BaseWindDirection.ToString());
+}
+
+void AAtmosphereController::SetWindSpeed(float NewSpeed)
+{
+    BaseWindSpeed = FMath::Clamp(NewSpeed, 0.0f, 100.0f);
+    CurrentWeather.WindSpeed = BaseWindSpeed;
+    
+    // Immediately update wind field
+    UpdateWindImmediate();
+    
+    UE_LOG(LogTemp, Warning, TEXT("AtmosphereController: Wind speed set to %.1f m/s"), BaseWindSpeed);
+}
+
+void AAtmosphereController::SetWind(FVector WindVector)
+{
+    float Speed = WindVector.Size();
+    if (Speed > 0.01f)
+    {
+        BaseWindDirection = WindVector.GetSafeNormal();
+        BaseWindSpeed = FMath::Clamp(Speed, 0.0f, 100.0f);
+        
+        CurrentWeather.WindDirection = BaseWindDirection;
+        CurrentWeather.WindSpeed = BaseWindSpeed;
+        
+        // Immediately update wind field
+        UpdateWindImmediate();
+        
+        UE_LOG(LogTemp, Warning, TEXT("AtmosphereController: Wind set to Dir:%s Speed:%.1f"), 
+               *BaseWindDirection.ToString(), BaseWindSpeed);
+    }
+}
+
+void AAtmosphereController::UpdateWindImmediate()
+{
+    if (AtmosphericSystem && TargetTerrain)
+    {
+        // Force immediate wind update (bypass timer)
+        WindFieldUpdateTimer = WindFieldUpdateInterval;
+        
+        // Apply wind pattern to entire terrain area
+        FVector TerrainCenter = TargetTerrain->GetActorLocation();
+        float TerrainSize = FMath::Max(TargetTerrain->TerrainWidth, TargetTerrain->TerrainHeight) * TargetTerrain->TerrainScale;
+        
+        AtmosphericSystem->ApplyWindBrush(
+            TerrainCenter,
+            TerrainSize,
+            FVector(CurrentWeather.WindDirection * CurrentWeather.WindSpeed),
+            1.0f
+        );
+        
+        // Update tracking
+        LastWindDirection = CurrentWeather.WindDirection;
+        LastWindSpeed = CurrentWeather.WindSpeed;
+        
+        UE_LOG(LogTemp, Warning, TEXT("AtmosphereController: Wind field updated immediately"));
+    }
 }
 
 // ===== SYSTEM COORDINATION =====
@@ -371,6 +520,7 @@ void AAtmosphereController::ShowWeatherMap(bool bEnable)
 void AAtmosphereController::PrintAtmosphereStats() const
 {
     UE_LOG(LogTemp, Warning, TEXT("=== ATMOSPHERE STATISTICS ==="));
+    UE_LOG(LogTemp, Warning, TEXT("bSystemInitialized: %s"), bSystemInitialized ? TEXT("TRUE") : TEXT("FALSE"));
     UE_LOG(LogTemp, Warning, TEXT("Current Weather: %d"), (int32)CurrentWeather.WeatherType);
     UE_LOG(LogTemp, Warning, TEXT("Temperature: %.1f°C"), CurrentWeather.Temperature);
     UE_LOG(LogTemp, Warning, TEXT("Humidity: %.2f"), CurrentWeather.Humidity);
@@ -379,6 +529,44 @@ void AAtmosphereController::PrintAtmosphereStats() const
     UE_LOG(LogTemp, Warning, TEXT("Season: %d (Progress: %.2f)"), (int32)CurrentSeason, SeasonProgress);
     UE_LOG(LogTemp, Warning, TEXT("Time of Day: %.1f hours"), TimeOfDay);
 }
+
+// ===== BLUEPRINT INTEGRATION =====
+
+void AAtmosphereController::ApplyBlueprintDefaults()
+{
+    CurrentWeather.WindSpeed = BaseWindSpeed;
+    CurrentWeather.WindDirection = BaseWindDirection.GetSafeNormal();
+    CurrentWeather.Temperature = BaseTemperature;
+    
+    UE_LOG(LogTemp, Warning, TEXT("AtmosphereController: Applied blueprint defaults - Wind: %.1f m/s, Temp: %.1f°C"), 
+           BaseWindSpeed, BaseTemperature);
+    
+    // For runtime updates
+    if (bSystemInitialized && AtmosphericSystem)
+    {
+        UpdateWindImmediate();
+    }
+}
+
+#if WITH_EDITOR
+void AAtmosphereController::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+    Super::PostEditChangeProperty(PropertyChangedEvent);
+    
+    FName PropertyName = PropertyChangedEvent.Property ? 
+        PropertyChangedEvent.Property->GetFName() : NAME_None;
+    
+    // Apply all blueprint defaults when any property changes
+    ApplyBlueprintDefaults();
+    
+    // Immediate updates for critical properties
+    if (PropertyName == GET_MEMBER_NAME_CHECKED(AAtmosphereController, BaseWindSpeed) ||
+        PropertyName == GET_MEMBER_NAME_CHECKED(AAtmosphereController, BaseWindDirection))
+    {
+        UpdateWindImmediate();
+    }
+}
+#endif
 
 // ===== PRIVATE FUNCTIONS =====
 
@@ -428,19 +616,140 @@ void AAtmosphereController::UpdateWindField(float DeltaTime)
     // Smooth wind transition
     CurrentWeather.WindDirection = FMath::VInterpTo(CurrentWeather.WindDirection, TargetWind.GetSafeNormal(), DeltaTime, 0.5f);
     CurrentWeather.WindSpeed = FMath::FInterpTo(CurrentWeather.WindSpeed, TargetWind.Size(), DeltaTime, 0.5f);
+    
+    // OPTIMIZATION: Only update wind field if it has changed significantly
+    bool bWindChanged = !CurrentWeather.WindDirection.Equals(LastWindDirection, 0.1f) ||
+                       !FMath::IsNearlyEqual(CurrentWeather.WindSpeed, LastWindSpeed, 0.5f);
+    
+    // OPTIMIZATION: Use timer to limit wind field updates
+    WindFieldUpdateTimer += DeltaTime;
+    bool bShouldUpdateWindField = WindFieldUpdateTimer >= WindFieldUpdateInterval;
+    
+    if (bWindChanged && bShouldUpdateWindField && AtmosphericSystem && TargetTerrain)
+    {
+        // Apply wind pattern to entire terrain area
+        FVector TerrainCenter = TargetTerrain->GetActorLocation();
+        float TerrainSize = FMath::Max(TargetTerrain->TerrainWidth, TargetTerrain->TerrainHeight) * TargetTerrain->TerrainScale;
+        
+        // Use wind brush to update atmospheric physics
+        AtmosphericSystem->ApplyWindBrush(
+            TerrainCenter,
+            TerrainSize,
+            FVector(CurrentWeather.WindDirection * CurrentWeather.WindSpeed),
+            1.0f // Full strength
+        );
+        
+        // Update tracking variables
+        LastWindDirection = CurrentWeather.WindDirection;
+        LastWindSpeed = CurrentWeather.WindSpeed;
+        WindFieldUpdateTimer = 0.0f;
+        
+        UE_LOG(LogTemp, Log, TEXT("AtmosphereController: Wind field updated - Dir: %s, Speed: %.1f"),
+               *CurrentWeather.WindDirection.ToString(), CurrentWeather.WindSpeed);
+    }
 }
 
 void AAtmosphereController::UpdatePrecipitation(float DeltaTime)
 {
-    // Start precipitation if conditions are right
-    if (WaterSystem && CurrentWeather.PrecipitationRate > 0.1f)
+    if (!AtmosphericSystem || !TargetTerrain) return;
+    
+    // CRITICAL FIX: Track when we last created weather patterns to avoid spam
+    static float LastWeatherPatternTime = -1.0f;
+    static EWeatherType LastWeatherType = EWeatherType::Clear;
+    static bool bRainActive = false;
+    
+    float CurrentTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+    
+    // Only create new weather patterns when weather type changes or every 60 seconds
+    bool bShouldUpdatePatterns = (CurrentWeather.WeatherType != LastWeatherType) ||
+                                 (CurrentTime - LastWeatherPatternTime > 60.0f);
+    
+    if (bShouldUpdatePatterns)
+    {
+        LastWeatherPatternTime = CurrentTime;
+        LastWeatherType = CurrentWeather.WeatherType;
+        
+        // Get terrain center for weather pattern placement
+        FVector2D TerrainCenter(TargetTerrain->GetActorLocation().X, TargetTerrain->GetActorLocation().Y);
+        
+        // Apply weather patterns based on current weather type
+        switch (CurrentWeather.WeatherType)
+        {
+            case EWeatherType::Clear:
+                // Create high pressure to clear skies (only once per weather change)
+                AtmosphericSystem->CreateHighPressureSystem(TerrainCenter, 2.0f);
+                UE_LOG(LogTemp, Log, TEXT("AtmosphereController: Created high pressure system for clear weather"));
+                break;
+                
+            case EWeatherType::Cloudy:
+                // Light low pressure for cloud formation
+                AtmosphericSystem->CreateLowPressureSystem(TerrainCenter, 0.5f);
+                UE_LOG(LogTemp, Log, TEXT("AtmosphereController: Created low pressure system for cloudy weather"));
+                break;
+                
+            case EWeatherType::Rain:
+                // Moderate low pressure for rain
+                AtmosphericSystem->CreateLowPressureSystem(TerrainCenter, 1.5f);
+                // Add rain brush for immediate effect
+                if (CurrentWeather.PrecipitationRate > 0.1f)
+                {
+                    AtmosphericSystem->ApplyPrecipitationBrush(
+                        FVector(TerrainCenter.X, TerrainCenter.Y, 0),
+                        10000.0f, // 10km radius
+                        CurrentWeather.PrecipitationRate,
+                        300.0f); // 5 minute duration
+                }
+                UE_LOG(LogTemp, Log, TEXT("AtmosphereController: Created rain system"));
+                break;
+                
+            case EWeatherType::Storm:
+                // Strong low pressure for storms
+                AtmosphericSystem->CreateLowPressureSystem(TerrainCenter, 3.0f);
+                // Multiple rain brushes for storm effect
+                AtmosphericSystem->ApplyPrecipitationBrush(
+                    FVector(TerrainCenter.X, TerrainCenter.Y, 0),
+                    15000.0f, // 15km radius
+                    CurrentWeather.PrecipitationRate,
+                    600.0f); // 10 minute duration
+                UE_LOG(LogTemp, Log, TEXT("AtmosphereController: Created storm system"));
+                break;
+                
+            case EWeatherType::Snow:
+                // Cold low pressure for snow
+                AtmosphericSystem->CreateLowPressureSystem(TerrainCenter, 1.0f);
+                AtmosphericSystem->ApplyTemperatureBrush(
+                    FVector(TerrainCenter.X, TerrainCenter.Y, 0),
+                    20000.0f, // 20km radius
+                    -10.0f, // Cold temperature
+                    1.0f);
+                UE_LOG(LogTemp, Log, TEXT("AtmosphereController: Created snow system"));
+                break;
+                
+            case EWeatherType::Fog:
+                // High humidity for fog
+                AtmosphericSystem->ApplyHumidityBrush(
+                    FVector(TerrainCenter.X, TerrainCenter.Y, 0),
+                    10000.0f, // 10km radius
+                    0.4f, // High humidity increase
+                    1.0f);
+                UE_LOG(LogTemp, Log, TEXT("AtmosphereController: Created fog system"));
+                break;
+        }
+    }
+    /* REMOVED FOR DEBUG TESTING ON RAIN AUTHORITY
+    // CRITICAL FIX: Only call StartRain/StopRain when state actually changes
+    bool bShouldRain = (WaterSystem && CurrentWeather.PrecipitationRate > 0.1f);
+    
+    if (bShouldRain && !bRainActive)
     {
         WaterSystem->StartRain(CurrentWeather.PrecipitationRate / 10.0f);
+        bRainActive = true;
     }
-    else if (WaterSystem)
+    else if (!bShouldRain && bRainActive)
     {
         WaterSystem->StopRain();
-    }
+        bRainActive = false;
+    }     */
 }
 
 void AAtmosphereController::ProcessWeatherTransition(float DeltaTime)
@@ -501,3 +810,30 @@ FSeasonalData AAtmosphereController::GetCurrentSeasonalData() const
     return DefaultSeason;
 }
         
+void AAtmosphereController::StartPhysicsBasedRain(float Intensity, float Radius)
+{
+    if (!AtmosphericSystem || !TargetTerrain) return;
+    
+    // Set weather to rain
+    SetWeather(EWeatherType::Rain, 1.0f);
+    CurrentWeather.PrecipitationRate = Intensity;
+    
+    // Apply precipitation brush for immediate effect
+    FVector TerrainCenter = TargetTerrain->GetActorLocation();
+    AtmosphericSystem->ApplyPrecipitationBrush(
+        TerrainCenter,
+        Radius,
+        Intensity,
+        300.0f // 5 minute duration
+    );
+    
+    UE_LOG(LogTemp, Warning, TEXT("Started physics-based rain: %.1f mm/hr"), Intensity);
+}
+
+void AAtmosphereController::StopPhysicsBasedRain()
+{
+    SetWeather(EWeatherType::Clear, 5.0f);
+    CurrentWeather.PrecipitationRate = 0.0f;
+    
+    UE_LOG(LogTemp, Warning, TEXT("Stopped physics-based rain"));
+}

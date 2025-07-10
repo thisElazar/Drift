@@ -30,6 +30,7 @@
 #include "Engine/World.h"
 #include "Stats/Stats.h"
 #include "MasterController.h"
+#include "AtmosphereController.h"
 #include "WaterSystem.generated.h"
 
 // Forward declarations
@@ -159,6 +160,7 @@ struct FWaterSimulationData
     }
 };
 
+
 /**
  * Surface-based water chunk for realistic water visualization
  * Creates smooth water surfaces with proper optical depth representation
@@ -211,6 +213,18 @@ struct FWaterSurfaceChunk
         bHasCaustics = false;
         bHasFoam = false;
     }
+    
+    
+    // Natural wave cache
+        struct FNaturalWaveCache
+        {
+            enum EWaterType { Puddle, Pond, Lake, River, Rapids, Waterfall } Type = Pond;
+            float FetchDistance = 10.0f;
+            float ChannelWidth = 5.0f;
+            float LastUpdateTime = 0.0f;
+            
+            bool NeedsUpdate(float Time) const { return (Time - LastUpdateTime) > 5.0f; }
+        } NaturalWaveCache;
 };
 
 UCLASS(BlueprintType)
@@ -251,6 +265,13 @@ public:
     
     UFUNCTION(BlueprintCallable, Category = "Water System")
     bool IsSystemReady() const;
+
+    
+    
+    // Cached atmospheric data for performance
+    UPROPERTY()
+    FVector CachedWindData;
+
 
     // ===== WATER PHYSICS SIMULATION =====
     
@@ -304,6 +325,9 @@ public:
     
     UFUNCTION(BlueprintCallable, Category = "Water Debug")
     void DrawDebugInfo() const;
+    
+    UFUNCTION(BlueprintCallable, Category = "Water Terrain")
+    float GetTerrainGradientMagnitude(FVector2D WorldPos) const;
 
     /**
      * ============================================
@@ -460,20 +484,6 @@ public:
     // Localized water mesh regions
     TArray<FWaterMeshRegion> WaterMeshRegions;
     
-    // ===== PERFORMANCE OPTIMIZATION FUNCTIONS =====
-    // LOD calculation moved to MasterController for single authority
-    // Use MasterController->CalculateSystemLOD() instead
-    
-    // ===== SCALABLE LOD FUNCTIONS =====
-    
-    UFUNCTION(BlueprintCallable, Category = "Scalable LOD")
-    float GetDynamicLODDistance(int32 LODLevel) const;
-    
-    UFUNCTION(BlueprintCallable, Category = "Scalable LOD", CallInEditor)
-    void SetLODScaling(float ScaleMultiplier, float LOD0Factor, float LOD1Factor, float LOD2Factor);
-    
-    UFUNCTION(BlueprintPure, Category = "Scalable LOD")
-    FString GetLODDebugInfo() const;
     
     UFUNCTION(BlueprintCallable, Category = "Water Performance")
     UProceduralMeshComponent* GetPooledMeshComponent();
@@ -512,9 +522,37 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Water Authority")
     bool ShouldGenerateSurfaceForChunk_AuthorityOnly(int32 ChunkIndex) const;
     
-    UFUNCTION(BlueprintCallable, Category = "Water Authority")
-    void UpdateWaterSurfaceChunks_AlwaysVisible();
+    // ===== MESH REGENERATION HELPER =====
     
+    UFUNCTION(BlueprintCallable, Category = "Water System")
+    void ForceFullMeshRegeneration();
+    
+    // ===== CHUNK BOUNDARY FIXES =====
+    
+    // Get exact world bounds for a chunk
+    FBox GetChunkWorldBounds(int32 ChunkIndex) const;
+    
+    // Enhanced mesh generation with proper boundary handling
+    void GenerateSmoothWaterSurface(FWaterSurfaceChunk& SurfaceChunk,
+                                                  TArray<FVector>& Vertices, TArray<int32>& Triangles,
+                                                  TArray<FVector>& Normals, TArray<FVector2D>& UVs,
+                                                  TArray<FColor>& VertexColors);
+    
+    // Seamless water depth interpolation
+    float GetInterpolatedWaterDepthSeamless(FVector2D WorldPosition) const;
+    
+    // Get proper chunk overlap for water
+    int32 GetWaterChunkOverlap() const;
+    
+    // Validate mesh bounds
+    bool ValidateWaterMeshBounds(const FWaterSurfaceChunk& Chunk) const;
+    
+    // Validation functions for testing boundary fixes
+    UFUNCTION(BlueprintCallable, Category = "Water System Debug")
+    void ValidateAllWaterChunkBoundaries();
+    
+    void CheckChunkBoundaryContinuity();
+
     UFUNCTION(BlueprintCallable, Category = "Water Authority")
     bool ValidateShaderDataForChunk(int32 ChunkIndex) const;
     
@@ -526,8 +564,8 @@ public:
     
     // ===== LOCALIZED MESH FUNCTIONS =====
     
-    UFUNCTION(BlueprintCallable, Category = "Localized Water")
-    void GenerateLocalizedWaterMeshes();
+    // UFUNCTION(BlueprintCallable, Category = "Localized Water") // DISABLED
+        void GenerateLocalizedWaterMeshes(); // System disabled - no longer callable from Blueprint
     
     UFUNCTION(BlueprintCallable, Category = "Localized Water")
     bool ShouldGenerateLocalizedMesh(FVector2D WorldPosition, float SampleRadius) const;
@@ -664,8 +702,7 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Water Shader")
     void UpdateWaterDepthTexture();
     
-    // UE5.4 Render Thread Texture Update
-    void UpdateWaterDepthTextureRenderThread();
+
     
     // UE5.4 Enhanced Input System Integration
     void HandleEnhancedInput(const struct FInputActionValue& ActionValue, FVector CursorWorldPosition);
@@ -732,11 +769,7 @@ public:
     void CreateWaterSurfaceMesh(FWaterSurfaceChunk& SurfaceChunk);
     
     void CreateWaterSurfaceMesh_AlwaysVisible(FWaterSurfaceChunk& SurfaceChunk);
-    
-    void GenerateSmoothWaterSurface(FWaterSurfaceChunk& SurfaceChunk,
-                                   TArray<FVector>& Vertices, TArray<int32>& Triangles,
-                                   TArray<FVector>& Normals, TArray<FVector2D>& UVs,
-                                   TArray<FColor>& VertexColors);
+
                                    
     void GenerateSmoothWaterSurface_HighQuality(FWaterSurfaceChunk& SurfaceChunk,
                                                 TArray<FVector>& Vertices, TArray<int32>& Triangles,
@@ -767,8 +800,8 @@ public:
     /** Get flow vector at world position */
  //   FVector2D GetFlowVectorAtWorld(FVector2D WorldPos) const;
     
-    /** Generate triangle indices for water surface */
-    void GenerateWaterSurfaceTriangles(int32 Resolution, TArray<int32>& Triangles);
+// Triangle generation
+    void GenerateWaterSurfaceTriangles(int32 Resolution, TArray<int32>& Triangles, const TArray<int32>& VertexIndexMap);
     
     // PHASE 1-2: SIMULATION AUTHORITY FUNCTIONS
     
@@ -863,12 +896,13 @@ public:
     // Get camera location helper
     FVector GetCameraLocation() const;
 
-private:
     // ===== AUTHORITY CONSOLIDATION =====
-    
     UPROPERTY()
     class AMasterWorldController* CachedMasterController = nullptr;
     
+    
+private:
+  
     // ===== ISCALABLESYSTEM STATE =====
     
     FWorldScalingConfig CurrentWorldConfig;
@@ -885,7 +919,7 @@ private:
     bool CheckForContiguousWater(int32 ChunkIndex) const;
     int32 FloodFillWaterArea(int32 StartX, int32 StartY, int32 MinX, int32 MinY, 
                             int32 MaxX, int32 MaxY, TSet<int32>& VisitedCells) const;
-    void ValidateAndCleanupPhantomChunks();
+
     
     // Missing function declarations
     int32 GetSimulationIndex(FVector2D WorldPos) const;
@@ -922,6 +956,12 @@ public:
     // Public interface function
     UFUNCTION(BlueprintPure, Category = "System Status")
     bool IsSystemScaled() const { return CachedMasterController != nullptr; }
+    
+    UFUNCTION(BlueprintCallable, Category = "Water Debug")
+    void DebugWaterCoordinates(FVector WorldPos);
+    
+    UFUNCTION(BlueprintCallable, Category = "Water Debug")
+    void DebugWaterAtCursor();
 
 private:
     
@@ -939,6 +979,10 @@ private:
     // Performance tracking
     TSet<int32> ChunksWithWater;
     float TotalWaterAmount = 0.0f;
+    
+    // Erosion throttling for performance
+    float ErosionEventTimer = 0.0f;
+    float ErosionEventInterval = 0.5f; // Only check erosion every 0.5 seconds
     
     // ===== INTERNAL FUNCTIONS =====
     
@@ -969,4 +1013,12 @@ private:
     // ===== CONSTRUCTOR INITIALIZATION =====
     void InitializeWaterQualityDefaults();
     
+    
+    float CalculateNaturalWaveOffset(FVector2D WorldPos, float Time, float WaterDepth,
+                                    FVector2D FlowVector, float WindStrength, FVector2D WindDirection,
+                                    float TerrainGradient, FWaterSurfaceChunk& Chunk);
+    
 };
+
+
+

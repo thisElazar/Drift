@@ -1,10 +1,10 @@
 /**
  * ============================================
- * TERRAI GEOLOGY CONTROLLER
+ * TERRAI GEOLOGY CONTROLLER (REFACTORED)
  * ============================================
- * Purpose: Rock formation, erosion behaviors, water table simulation
- * Scope: Sand dunes, sediment transport, groundwater flow
- * Integration: Realistic erosion patterns, water table effects
+ * Purpose: Rock formation, stratigraphy, water table, and geological processes
+ * Scope: Bedrock geology, mineral deposits, erosion, weathering
+ * Sand dunes moved to separate SandDuneController
  */
 #pragma once
 
@@ -16,6 +16,7 @@
 
 class UWaterSystem;
 class ADynamicTerrain;
+class ASandDuneController;
 
 UENUM(BlueprintType)
 enum class ERockType : uint8
@@ -23,11 +24,27 @@ enum class ERockType : uint8
     Granite        UMETA(DisplayName = "Granite"),
     Sandstone      UMETA(DisplayName = "Sandstone"),
     Limestone      UMETA(DisplayName = "Limestone"),
+    Shale          UMETA(DisplayName = "Shale"),
+    Basalt         UMETA(DisplayName = "Basalt"),
+    Marble         UMETA(DisplayName = "Marble"),
+    Quartzite      UMETA(DisplayName = "Quartzite"),
     Clay           UMETA(DisplayName = "Clay"),
     Sand           UMETA(DisplayName = "Sand"),
     Silt           UMETA(DisplayName = "Silt"),
     Gravel         UMETA(DisplayName = "Gravel"),
     Bedrock        UMETA(DisplayName = "Bedrock")
+};
+
+UENUM(BlueprintType)
+enum class EGeologicalProcess : uint8
+{
+    Sedimentation  UMETA(DisplayName = "Sedimentation"),
+    Erosion        UMETA(DisplayName = "Erosion"),
+    Weathering     UMETA(DisplayName = "Weathering"),
+    Metamorphism   UMETA(DisplayName = "Metamorphism"),
+    Volcanic       UMETA(DisplayName = "Volcanic Activity"),
+    Tectonic       UMETA(DisplayName = "Tectonic Movement"),
+    Glacial        UMETA(DisplayName = "Glacial Action")
 };
 
 USTRUCT(BlueprintType)
@@ -42,7 +59,10 @@ struct FRockLayer
     float Thickness = 10.0f;
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    float Hardness = 1.0f;
+    float Depth = 0.0f; // Depth from surface
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    float Hardness = 1.0f; // 0-1, affects erosion
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
     float Porosity = 0.3f; // 0-1, affects water table
@@ -54,31 +74,79 @@ struct FRockLayer
     float ErosionResistance = 1.0f;
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    float Age = 0.0f; // Geological age in millions of years
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite)
     FLinearColor LayerColor = FLinearColor::Gray;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    bool bContainsFossils = false;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    bool bHasMineralDeposits = false;
 };
 
 USTRUCT(BlueprintType)
-struct FSandDuneData
+struct FGeologicalColumn
 {
     GENERATED_BODY()
-
+    
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
     FVector Location = FVector::ZeroVector;
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    float Height = 50.0f;
+    TArray<FRockLayer> Layers;
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    float Width = 200.0f;
+    float TotalDepth = 0.0f;
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    FVector WindDirection = FVector(1, 0, 0);
+    bool bHasFaultLine = false;
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    float SandAccumulation = 0.0f;
+    float FaultDisplacement = 0.0f;
+};
+
+USTRUCT(BlueprintType)
+struct FMineralDeposit
+{
+    GENERATED_BODY()
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    float Stability = 1.0f; // resistance to wind erosion
+    FVector Location = FVector::ZeroVector;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    FString MineralType = "Iron";
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    float Concentration = 0.5f; // 0-1
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    float Volume = 1000.0f; // m³
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    float Depth = 50.0f;
+};
+
+USTRUCT(BlueprintType)
+struct FWaterTableData
+{
+    GENERATED_BODY()
+    
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly)
+    FVector Location = FVector::ZeroVector;
+    
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly)
+    float WaterLevel = 0.0f; // Absolute Z height
+    
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly)
+    float FlowVelocity = 0.0f;
+    
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly)
+    FVector FlowDirection = FVector::ZeroVector;
+    
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly)
+    bool bIsArtesian = false;
 };
 
 UCLASS(BlueprintType, Blueprintable)
@@ -106,33 +174,32 @@ public:
     bool bEnableGeologicalProcesses = true;
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rock Formation")
-    TArray<FRockLayer> RockLayers;
+    TArray<FGeologicalColumn> GeologicalColumns;
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rock Formation")
-    float SedimentationRate = 0.1f;
+    float SedimentationRate = 0.1f; // meters per geological time unit
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rock Formation")
     float BedrockDepth = 100.0f;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rock Formation")
+    float GeologicalTimeScale = 1000000.0f; // 1 million years per time unit
 
-    // ===== SAND DUNE SYSTEM =====
+    // ===== STRATIGRAPHY =====
     
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sand Dunes")
-    bool bEnableSandDunes = true;
+    UFUNCTION(BlueprintCallable, Category = "Stratigraphy")
+    void GenerateStratigraphicColumn(FVector Location);
     
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sand Dunes")
-    TArray<FSandDuneData> SandDunes;
+    // C++ only - pointers cannot be exposed to Blueprint
+    FGeologicalColumn* GetColumnAtLocation(FVector Location);
+    const FGeologicalColumn* GetColumnAtLocation(FVector Location) const;
     
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sand Dunes")
-    float WindStrength = 1.0f;
+    // Blueprint-friendly version that returns a copy
+    UFUNCTION(BlueprintPure, Category = "Stratigraphy")
+    FGeologicalColumn GetColumnAtLocationCopy(FVector Location) const;
     
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sand Dunes")
-    FVector PrevailingWindDirection = FVector(1, 0, 0);
-    
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sand Dunes")
-    float SandTransportRate = 0.5f;
-    
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sand Dunes")
-    float DuneFormationThreshold = 10.0f;
+    UFUNCTION(BlueprintCallable, Category = "Stratigraphy")
+    void AddGeologicalLayer(FVector Location, const FRockLayer& NewLayer);
 
     // ===== WATER TABLE SYSTEM =====
     
@@ -140,7 +207,10 @@ public:
     bool bEnableWaterTable = true;
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Table")
-    float WaterTableDepth = 50.0f;
+    TArray<FWaterTableData> WaterTableGrid;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Table")
+    float AverageWaterTableDepth = 50.0f;
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Table")
     float GroundwaterFlowRate = 0.1f;
@@ -150,6 +220,9 @@ public:
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Table")
     float SpringFormationThreshold = 20.0f;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Table")
+    float ArtesianPressureThreshold = 30.0f;
 
     // ===== EROSION & WEATHERING =====
     
@@ -157,10 +230,30 @@ public:
     bool bEnableChemicalWeathering = true;
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weathering")
-    float WeatheringRate = 0.5f;
+    bool bEnableMechanicalWeathering = true;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weathering")
+    float ChemicalWeatheringRate = 0.5f;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weathering")
+    float MechanicalWeatheringRate = 0.3f;
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weathering")
     float FrostWedgingEffect = 1.2f;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weathering")
+    float AcidRainPH = 5.6f;
+
+    // ===== MINERAL DEPOSITS =====
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Minerals")
+    TArray<FMineralDeposit> MineralDeposits;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Minerals")
+    bool bGenerateMineralDeposits = true;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Minerals")
+    float MineralFormationProbability = 0.1f;
 
     // ===== CORE FUNCTIONS =====
     
@@ -168,13 +261,16 @@ public:
     void UpdateGeologicalProcesses(float DeltaTime);
     
     UFUNCTION(BlueprintCallable, Category = "Geology")
-    void UpdateSandDunes(float DeltaTime);
-    
-    UFUNCTION(BlueprintCallable, Category = "Geology")
     void UpdateWaterTable(float DeltaTime);
     
     UFUNCTION(BlueprintCallable, Category = "Geology")
     void FormSedimentLayer(FVector Location, float Thickness, ERockType RockType);
+    
+    UFUNCTION(BlueprintCallable, Category = "Geology")
+    void ApplyMetamorphism(FVector Location, float Pressure, float Temperature);
+    
+    UFUNCTION(BlueprintCallable, Category = "Geology")
+    void CreateFaultLine(FVector Start, FVector End, float Displacement);
 
     // ===== GEOLOGICAL QUERIES =====
     
@@ -189,6 +285,12 @@ public:
     
     UFUNCTION(BlueprintPure, Category = "Geology")
     float GetGroundwaterFlowAtLocation(FVector WorldLocation) const;
+    
+    UFUNCTION(BlueprintPure, Category = "Geology")
+    bool IsLocationAboveWaterTable(FVector WorldLocation) const;
+    
+    UFUNCTION(BlueprintPure, Category = "Geology")
+    TArray<FMineralDeposit> GetNearbyMineralDeposits(FVector Location, float Radius) const;
 
     // ===== SYSTEM COORDINATION =====
     
@@ -196,10 +298,16 @@ public:
     void OnWaterFlowChanged(FVector Location, float FlowRate);
     
     UFUNCTION(BlueprintCallable, Category = "System Coordination")
-    void OnWindChanged(FVector WindDirection, float WindSpeed);
+    void OnErosionOccurred(FVector Location, float ErosionAmount, ERockType ErodedType);
     
     UFUNCTION(BlueprintCallable, Category = "System Coordination")
-    void OnErosionOccurred(FVector Location, float ErosionAmount);
+    void OnTemperatureChanged(float NewTemperature);
+    
+    UFUNCTION(BlueprintCallable, Category = "System Coordination")
+    ASandDuneController* GetSandDuneController() const { return SandDuneController; }
+    
+    UFUNCTION(BlueprintCallable, Category = "System Coordination")
+    void SetSandDuneController(ASandDuneController* Controller);
 
     // ===== VISUALIZATION =====
     
@@ -207,10 +315,13 @@ public:
     void ShowWaterTable(bool bEnable);
     
     UFUNCTION(BlueprintCallable, Category = "Visualization")
-    void ShowSandDunes(bool bEnable);
+    void ShowRockLayers(bool bEnable);
     
     UFUNCTION(BlueprintCallable, Category = "Visualization")
-    void ShowRockLayers(bool bEnable);
+    void ShowMineralDeposits(bool bEnable);
+    
+    UFUNCTION(BlueprintCallable, Category = "Visualization")
+    void ShowGeologicalColumns(bool bEnable);
     
     UFUNCTION(BlueprintCallable, Category = "Debug")
     void PrintGeologicalStats() const;
@@ -240,18 +351,17 @@ private:
     
     UPROPERTY()
     UWaterSystem* WaterSystem = nullptr;
+    
+    UPROPERTY()
+    ASandDuneController* SandDuneController = nullptr;
 
     // ===== INTERNAL STATE =====
     
-    // Use simpler storage for UE5.4 compatibility
-    UPROPERTY()
-    TArray<FRockLayer> DefaultRockLayers;
-    
-    UPROPERTY()
-    TArray<FVector> WaterTableGrid;
-    
     UPROPERTY()
     float GeologicalTimer = 0.0f;
+    
+    UPROPERTY()
+    float CurrentTemperature = 20.0f; // Celsius
     
     UPROPERTY()
     bool bSystemInitialized = false;
@@ -272,12 +382,29 @@ private:
 
     // ===== INTERNAL FUNCTIONS =====
     
-    void InitializeGeologicalLayers();
+    void InitializeGeologicalColumns();
     void ProcessSedimentation(float DeltaTime);
     void ProcessWeathering(float DeltaTime);
-    void ProcessSandTransport(float DeltaTime);
+    void ProcessErosion(float DeltaTime);
     void ProcessGroundwaterFlow(float DeltaTime);
+    void UpdateAquiferPressure(float DeltaTime);
     void CreateSpring(FVector Location);
+    void GenerateMineralDeposit(FVector Location, ERockType HostRock);
     FRockLayer CreateDefaultRockLayer(ERockType Type) const;
     float CalculateErosionResistance(const FRockLayer& Layer) const;
+    ERockType GetMetamorphicEquivalent(ERockType Original) const;
+    void ProcessAccumulatedSediment();
+    
+    // Performance optimization - accumulate sediment before creating layers
+    UPROPERTY()
+    TMap<FIntVector, float> AccumulatedSediment;
+    
+    UPROPERTY()
+    float SedimentAccumulationTimer = 0.0f;
+    
+    UPROPERTY()
+    float SedimentFormationInterval = 10.0f; // Only form layers every 10 seconds
+    
+    UPROPERTY()
+    float MinimumSedimentThickness = 1.0f; // Don't create layers smaller than 1m
 };

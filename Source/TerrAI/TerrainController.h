@@ -73,8 +73,13 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Visual Modes")
     ETerrainVisualMode CurrentVisualMode = ETerrainVisualMode::Wireframe;
     
+    
+    // ===== AUTHORITY INITIALIZATION =====
+    
+    UFUNCTION(BlueprintCallable, Category = "Authority")
+    void InitializeControllerWithAuthority();
 
-
+    
     // Editing mode system
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Editing")
     EEditingMode CurrentEditingMode = EEditingMode::Terrain;
@@ -379,25 +384,26 @@ protected:
     
     UFUNCTION(BlueprintCallable, Category = "Universal Brush")
     const FUniversalBrushSettings& GetCurrentBrushSettings() const;
+    
+    // ===== UNIVERSAL BRUSH SYSTEM DEBUG =====
+    
+    UFUNCTION(BlueprintCallable, Category = "Universal Brush Debug", CallInEditor)
+    void TestUniversalBrushConnection();
+    
+    // ===== BRUSH SIZE/STRENGTH ADJUSTMENT FUNCTIONS =====
+    
+    void IncreaseBrushSize(const FInputActionValue& Value);
+    void DecreaseBrushSize(const FInputActionValue& Value);
+    void IncreaseBrushStrength(const FInputActionValue& Value);
+    void DecreaseBrushStrength(const FInputActionValue& Value);
+
+    
+    void UpdateTerrainModification(float DeltaTime);
    
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terrain Editing")
-    float MinBrushRadius = 100.0f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terrain Editing")
-    float MaxBrushRadius = 2000.0f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terrain Editing")
-    float MinBrushStrength = 10.0f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terrain Editing")
-    float MaxBrushStrength = 1000.0f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terrain Editing")
-    float BrushSizeChangeRate = 50.0f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terrain Editing")
-    float BrushStrengthChangeRate = 20.0f;
+    // ===== DUPLICATE BRUSH PROPERTIES REMOVED =====
+    // Brush properties now managed by Universal Brush System in MasterController
+    // Use GetBrushRadius() and GetBrushStrength() instead
 
     // Water Editing Settings
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Editing")
@@ -500,7 +506,11 @@ public:
     void WarpToFirstPerson();
 
     UFUNCTION(BlueprintCallable, Category = "Camera")
-    void ReturnToOverhead();
+    void CycleCameraMode();  // Renamed from ReturnToOverhead
+    
+    // Simple camera system helper function
+    UFUNCTION(BlueprintCallable, Category = "Camera")
+    ECameraMode GetNextCameraMode() const;
 
     UFUNCTION(BlueprintCallable, Category = "Terrain Editing")
     FVector GetCursorWorldPosition() const;
@@ -515,15 +525,20 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Cursor System")
     bool ValidateCursorPosition(FVector CursorPos) const;
 
-    // AUTHORITY: Delegate to MasterController (no local brush storage)
-    UFUNCTION(BlueprintCallable, Category = "Authority")
-    void InitializeWithAuthority();
+
 
     // Camera system helper functions
     void UpdateCameraTransition(float DeltaTime);
     void UpdateOverheadCamera(float DeltaTime);
     void UpdateFirstPersonCamera(float DeltaTime);
     FVector GetTerrainHeightAtCursor() const;
+    
+    // Terrain reset detection
+    UFUNCTION(BlueprintCallable, Category = "Terrain Safety")
+    void SetTerrainResetting(bool bResetting);
+    
+    UFUNCTION(BlueprintCallable, Category = "Terrain Safety")
+    bool IsTerrainResetting() const { return bTerrainResetting; }
 
 protected:
     // Enhanced Input functions - Movement
@@ -538,10 +553,10 @@ protected:
     void StopRaiseTerrain(const FInputActionValue& Value);
     void StartLowerTerrain(const FInputActionValue& Value);
     void StopLowerTerrain(const FInputActionValue& Value);
-    void IncreaseBrushSize(const FInputActionValue& Value);
-    void DecreaseBrushSize(const FInputActionValue& Value);
-    void IncreaseBrushStrength(const FInputActionValue& Value);
-    void DecreaseBrushStrength(const FInputActionValue& Value);
+  //  void IncreaseBrushSize(const FInputActionValue& Value);
+  //  void DecreaseBrushSize(const FInputActionValue& Value);
+  //  void IncreaseBrushStrength(const FInputActionValue& Value);
+  //  void DecreaseBrushStrength(const FInputActionValue& Value);
     void ResetTerrain(const FInputActionValue& Value);
 
     // Enhanced Input functions - Water Editing
@@ -598,13 +613,11 @@ private:
     bool bLeftShiftHeld = false;
     bool bRightShiftHeld = false;
 
-    // Camera transition state
+    // Camera transition state - simplified
     bool bTransitioning = false;
     FVector TargetLocation;
     FRotator TargetRotation;
-    FVector StoredOverheadLocation;
-    FRotator StoredOverheadRotation;
-    float StoredCameraHeight;
+    ECameraMode TargetCameraMode = ECameraMode::Overhead; // Explicit target mode tracking
     float MinCameraHeight = 200.0f;
     float MaxCameraHeight = 10000.0f;
 
@@ -658,16 +671,21 @@ private:
 
     // Helper functions
     void UpdateCameraPosition(float DeltaTime);
-    void UpdateTerrainModification(float DeltaTime);
+   // void UpdateTerrainModification(float DeltaTime);
     void UpdateWaterModification(float DeltaTime);
     void UpdateUnifiedCursor(float DeltaTime);
     void UpdateAuthorityCache(float DeltaTime);
     void ValidateFirstPersonHeight(float DeltaTime);
     void ResetInputs();
+    void UpdateBrushPreview(float DeltaTime);  // Missing declaration
     
     // New optimization helper functions
     bool IsTerrainValid() const;
     float GetSafeTerrainHeight(const FVector& Position) const;
+    
+    // Fix race condition in height validation
+    float FirstPersonValidationTimer = 0.0f;
+    bool bTerrainResetting = false;
 
     void ApplyTerrainSmoothing(FVector Position, float Radius, float Strength);
     void RequestChunkUpdate(int32 ChunkIndex, float Priority);

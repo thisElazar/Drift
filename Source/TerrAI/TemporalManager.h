@@ -52,6 +52,10 @@ class TERRAI_API UTemporalManager : public UGameInstanceSubsystem
     GENERATED_BODY()
 
 public:
+    
+    UFUNCTION(BlueprintCallable, Category = "Temporal Management")
+    void MarkSystemUpdated(ESystemType SystemType);
+    
     // ===== CORE INTERFACE =====
     UFUNCTION(BlueprintCallable, Category = "Temporal")
     float GetSystemTime(ESystemType SystemType) const;
@@ -100,6 +104,9 @@ public:
     
     UFUNCTION(BlueprintCallable, Category = "Persistence")
     bool RestoreFromSnapshot(const FString& SnapshotData);
+    
+    UFUNCTION(BlueprintCallable, Category = "Temporal")
+    void ResetFrameCounter() { SystemUpdateCounter = 0; }
 
 protected:
     virtual void Initialize(FSubsystemCollectionBase& Collection) override;

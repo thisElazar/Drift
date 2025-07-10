@@ -142,12 +142,14 @@ bool UTemporalManager::ShouldSystemUpdate(ESystemType SystemType, float UpdateFr
 {
     if (!IsSystemTypeValid(SystemType) || bPauseAllSystems)
     {
+        UE_LOG(LogTemp, Warning, TEXT("TemporalManager: Fail 145"));
         return false;
     }
     
     // Performance throttling - limit systems per frame
     if (ShouldThrottleSystemUpdates())
     {
+        UE_LOG(LogTemp, Warning, TEXT("TemporalManager: Fail 152"));
         return false;
     }
     
@@ -533,4 +535,18 @@ void UTemporalManager::ResetAllTemporalSystems()
     UE_LOG(LogTemp, Warning, TEXT("TemporalManager: Reset all temporal systems"));
 }
 
-
+void UTemporalManager::MarkSystemUpdated(ESystemType SystemType)
+{
+    if (!IsSystemTypeValid(SystemType))
+    {
+        return;
+    }
+    
+    FScopeLock Lock(&TemporalStateMutex);
+    
+    float CurrentTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+    TemporalState.LastUpdateTimes.Add(SystemType, CurrentTime);
+    
+    // Increment update counter for this frame
+    SystemUpdateCounter++;
+}

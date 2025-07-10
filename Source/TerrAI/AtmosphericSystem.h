@@ -451,4 +451,8 @@ private:
     static const TArray<float> StandardAtmosphere_Temperature;
     static const TArray<float> StandardAtmosphere_Pressure;
     static const TArray<float> SaturationVaporPressure_LookupTable;
+    
+    
+    
+    void ApplyWeatherPatterns();
 };
