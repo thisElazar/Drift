@@ -172,7 +172,7 @@ bool UTemporalManager::ShouldSystemUpdate(ESystemType SystemType, float UpdateFr
     
     if (ShouldUpdate && bLogTemporalUpdates)
     {
-        UE_LOG(LogTemp, VeryVerbose, TEXT("TemporalManager: System %d updating (%.4fs since last)"), 
+        UE_LOG(LogTemp, Log, TEXT("TemporalManager: System %d updating (%.4fs since last)"),
                (int32)SystemType, TimeSinceLastUpdate);
     }
     
@@ -340,6 +340,7 @@ void UTemporalManager::UpdateTemporalState(float RealDeltaTime)
         
         if (TimeScale)
         {
+            UE_LOG(LogTemp, Log, TEXT("TemporalManager: UpdateTemporalStateCalled"));
             float ScaledDelta = RealDeltaTime * (*TimeScale) * MasterTimeScale;
             SystemTimePair.Value += ScaledDelta;
             TemporalState.SystemDeltas.Add(SystemType, ScaledDelta);

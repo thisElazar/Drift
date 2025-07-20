@@ -224,10 +224,10 @@ void UWaterSystem::UpdateWaterSimulation(float DeltaTime)
                     float ErosionAmount = FlowSpeed * 0.01f * ErosionEventInterval; // Scale by time interval
                     
                     // Query the rock type at this location
-                    ERockType ErodedRockType = GeologyController->GetRockTypeAtLocation(WorldPos, 0.0f);
+                    //ERockType ErodedRockType = GeologyController->GetRockTypeAtLocation(WorldPos, 0.0f);
                     
                     // Now call with all 3 parameters
-                    GeologyController->OnErosionOccurred(WorldPos, ErosionAmount, ErodedRockType);
+                   // GeologyController->OnErosionOccurred(WorldPos, ErosionAmount, ErodedRockType);
                 }
             }
         }
@@ -1693,7 +1693,7 @@ void UWaterSystem::RefreshTerrainHeightCache()
     }
     
     LastTerrainSyncTime = OwnerTerrain->GetWorld()->GetTimeSeconds();
-    UE_LOG(LogTemp, Warning, TEXT("Terrain height cache refreshed (%d cells)"), TotalCells);
+    UE_LOG(LogTemp, VeryVerbose, TEXT("Terrain height cache refreshed (%d cells)"), TotalCells);
 }
 
 void UWaterSystem::ForceWaterReflow()
@@ -1711,7 +1711,7 @@ void UWaterSystem::ForceWaterReflow()
     // Force immediate flow calculation for next frame
     bWaterChangedThisFrame = true;
     
-    UE_LOG(LogTemp, Warning, TEXT("Water velocities reset - forcing reflow"));
+    UE_LOG(LogTemp, VeryVerbose, TEXT("Water velocities reset - forcing reflow"));
 }
 
 void UWaterSystem::ForceTerrainSync()
@@ -1719,7 +1719,7 @@ void UWaterSystem::ForceTerrainSync()
     RefreshTerrainHeightCache();
     ForceWaterReflow();
     
-    UE_LOG(LogTemp, Warning, TEXT("Manual terrain sync completed"));
+    UE_LOG(LogTemp, VeryVerbose, TEXT("Manual terrain sync completed"));
 }
 
 
@@ -3002,6 +3002,7 @@ void UWaterSystem::ResetWaterSystem()
  *
  * Performance: Processes ~263k cells in 2-3ms
  * Edge Cases: Special handling for terrain boundaries (waterfall drainage)
+ * Setup for 8 directional flow
  */
 void UWaterSystem::CalculateWaterFlow(float DeltaTime)
 {
@@ -3017,143 +3018,238 @@ void UWaterSystem::CalculateWaterFlow(float DeltaTime)
     const int32 Width = SimulationData.TerrainWidth;
     const int32 Height = SimulationData.TerrainHeight;
     
-    // STEP 1: Process each cell for pressure-based flow
-    // Note: Includes edges for realistic waterfall drainage
+    // Process each cell for pressure-based flow
     for (int32 Y = 0; Y < Height; Y++)
     {
-    for (int32 X = 0; X < Width; X++)
-    {
-    int32 Index = Y * Width + X;
-    
-    // Skip cells with minimal water (performance optimization)
-    if (SimulationData.WaterDepthMap[Index] <= MinWaterDepth)
-    {
-        continue;
-                }
+        for (int32 X = 0; X < Width; X++)
+        {
+            int32 Index = Y * Width + X;
             
-        float TerrainHeight = OwnerTerrain->GetHeightSafe(X, Y);
+            // Skip cells with minimal water
+            if (SimulationData.WaterDepthMap[Index] <= MinWaterDepth)
+            {
+                continue;
+            }
             
-       
+            float TerrainHeight = OwnerTerrain->GetHeightSafe(X, Y);
             float WaterSurfaceHeight = TerrainHeight + SimulationData.WaterDepthMap[Index];
             
-            // Get neighbor indices (with edge handling)
-            int32 LeftIdx = (X > 0) ? Y * Width + (X - 1) : -1;
-            int32 RightIdx = (X < Width - 1) ? Y * Width + (X + 1) : -1;
-            int32 UpIdx = (Y > 0) ? (Y - 1) * Width + X : -1;
-            int32 DownIdx = (Y < Height - 1) ? (Y + 1) * Width + X : -1;
-            
-            // Calculate pressure gradients with proper neighbor terrain heights
             float TerrainScale = OwnerTerrain ? OwnerTerrain->TerrainScale : 100.0f;
             float ForceX = 0.0f;
             float ForceY = 0.0f;
             
-            // STEP 2: Calculate pressure gradients with edge handling
-            
-            // X-DIRECTION: Handle left boundary (configurable edge drainage)
-            if (X == 0) // Left edge - configurable drainage for waterfall effect
+            // Process all 8 neighbors if enabled
+            if (bUse8DirectionalFlow)
             {
-                if (RightIdx != -1)
+                // Define all 8 neighbors
+                TArray<FIntPoint> NeighborOffsets;
+                TArray<float> NeighborWeights;
+                
+                // Cardinal directions (weight = 1.0)
+                NeighborOffsets.Add(FIntPoint(-1, 0));  NeighborWeights.Add(1.0f);
+                NeighborOffsets.Add(FIntPoint(1, 0));   NeighborWeights.Add(1.0f);
+                NeighborOffsets.Add(FIntPoint(0, -1));  NeighborWeights.Add(1.0f);
+                NeighborOffsets.Add(FIntPoint(0, 1));   NeighborWeights.Add(1.0f);
+                
+                // Diagonal directions (weight = DiagonalFlowWeight)
+                NeighborOffsets.Add(FIntPoint(-1, -1)); NeighborWeights.Add(DiagonalFlowWeight);
+                NeighborOffsets.Add(FIntPoint(1, -1));  NeighborWeights.Add(DiagonalFlowWeight);
+                NeighborOffsets.Add(FIntPoint(-1, 1));  NeighborWeights.Add(DiagonalFlowWeight);
+                NeighborOffsets.Add(FIntPoint(1, 1));   NeighborWeights.Add(DiagonalFlowWeight);
+                
+                for (int32 i = 0; i < NeighborOffsets.Num(); i++)
                 {
-                    float RightTerrainHeight = GetTerrainHeightSafe(X + 1, Y);
-                    float RightWaterHeight = RightTerrainHeight + SimulationData.WaterDepthMap[RightIdx];
-                    ForceX = (WaterSurfaceHeight - RightWaterHeight) / TerrainScale;
+                    const FIntPoint& Offset = NeighborOffsets[i];
+                    float Weight = NeighborWeights[i];
                     
-                    if (bEnableEdgeDrainage)
+                    int32 NX = X + Offset.X;
+                    int32 NY = Y + Offset.Y;
+                    
+                    // Handle edge drainage
+                    if (NX < 0 || NX >= Width || NY < 0 || NY >= Height)
                     {
-                        float EdgeBonus = bEnhancedWaterfallEffect ?
-                            WaterSurfaceHeight * EdgeDrainageStrength : 0.0f;
-                        ForceX += EdgeBonus;
+                        if (bEnableEdgeDrainage)
+                        {
+                            // Water wants to flow off the edge
+                            float EdgeForce = WaterSurfaceHeight * EdgeDrainageStrength * Weight;
+                            if (bEnhancedWaterfallEffect)
+                            {
+                                EdgeForce *= WaterfallDrainageMultiplier;
+                            }
+                            
+                            // Force points TOWARD the edge (same direction as offset)
+                            ForceX += Offset.X * EdgeForce / TerrainScale;
+                            ForceY += Offset.Y * EdgeForce / TerrainScale;
+                        }
+                        continue;
                     }
-                }
-                else
-                {
-                    ForceX = bEnableEdgeDrainage ? WaterSurfaceHeight * WaterfallDrainageMultiplier : 0.0f;
+                    
+                    // Calculate neighbor water surface height
+                    int32 NIndex = NY * Width + NX;
+                    float NTerrainHeight = GetTerrainHeightSafe(NX, NY);
+                    float NWaterHeight = NTerrainHeight + SimulationData.WaterDepthMap[NIndex];
+                    
+                    // Calculate height difference (positive means we're higher)
+                    float HeightDiff = WaterSurfaceHeight - NWaterHeight;
+                    
+                    // Distance is different for diagonal neighbors
+                    float Distance = (FMath::Abs(Offset.X) + FMath::Abs(Offset.Y) == 2) ?
+                        TerrainScale * 1.414f : TerrainScale;
+                    
+                    // Force points from high to low (in direction of offset if we're higher)
+                    ForceX += (HeightDiff * Offset.X * Weight) / Distance;
+                    ForceY += (HeightDiff * Offset.Y * Weight) / Distance;
                 }
             }
-            else if (X == Width - 1) // Right edge - configurable drainage
+            else
             {
-                if (LeftIdx != -1)
+                // Original 4-directional code - KEEP EXACTLY AS IS
+                // Get neighbor indices
+                int32 LeftIdx = (X > 0) ? Y * Width + (X - 1) : -1;
+                int32 RightIdx = (X < Width - 1) ? Y * Width + (X + 1) : -1;
+                int32 UpIdx = (Y > 0) ? (Y - 1) * Width + X : -1;
+                int32 DownIdx = (Y < Height - 1) ? (Y + 1) * Width + X : -1;
+                
+                // X-DIRECTION
+                if (X == 0) // Left edge
+                {
+                    if (RightIdx != -1)
+                    {
+                        float RightTerrainHeight = GetTerrainHeightSafe(X + 1, Y);
+                        float RightWaterHeight = RightTerrainHeight + SimulationData.WaterDepthMap[RightIdx];
+                        ForceX = (WaterSurfaceHeight - RightWaterHeight) / TerrainScale;
+                        
+                        if (bEnableEdgeDrainage)
+                        {
+                            float EdgeBonus = bEnhancedWaterfallEffect ?
+                                WaterSurfaceHeight * EdgeDrainageStrength : 0.0f;
+                            ForceX += EdgeBonus;
+                        }
+                    }
+                    else
+                    {
+                        ForceX = bEnableEdgeDrainage ? WaterSurfaceHeight * WaterfallDrainageMultiplier : 0.0f;
+                    }
+                }
+                else if (X == Width - 1) // Right edge
+                {
+                    if (LeftIdx != -1)
+                    {
+                        float LeftTerrainHeight = GetTerrainHeightSafe(X - 1, Y);
+                        float LeftWaterHeight = LeftTerrainHeight + SimulationData.WaterDepthMap[LeftIdx];
+                        ForceX = (LeftWaterHeight - WaterSurfaceHeight) / TerrainScale;
+                        
+                        if (bEnableEdgeDrainage)
+                        {
+                            float EdgeBonus = bEnhancedWaterfallEffect ?
+                                WaterSurfaceHeight * EdgeDrainageStrength : 0.0f;
+                            ForceX += EdgeBonus;
+                        }
+                    }
+                    else
+                    {
+                        ForceX = bEnableEdgeDrainage ? WaterSurfaceHeight * (EdgeDrainageStrength * 0.5f) : 0.0f;
+                    }
+                }
+                else // Interior
                 {
                     float LeftTerrainHeight = GetTerrainHeightSafe(X - 1, Y);
+                    float RightTerrainHeight = GetTerrainHeightSafe(X + 1, Y);
                     float LeftWaterHeight = LeftTerrainHeight + SimulationData.WaterDepthMap[LeftIdx];
-                    ForceX = (LeftWaterHeight - WaterSurfaceHeight) / TerrainScale;
-                    
-                    if (bEnableEdgeDrainage)
+                    float RightWaterHeight = RightTerrainHeight + SimulationData.WaterDepthMap[RightIdx];
+                    ForceX = (LeftWaterHeight - RightWaterHeight) / (2.0f * TerrainScale);
+                }
+                
+                // Y-DIRECTION
+                if (Y == 0) // Top edge
+                {
+                    if (DownIdx != -1)
                     {
-                        float EdgeBonus = bEnhancedWaterfallEffect ?
-                            WaterSurfaceHeight * EdgeDrainageStrength : 0.0f;
-                        ForceX += EdgeBonus;
+                        float DownTerrainHeight = GetTerrainHeightSafe(X, Y + 1);
+                        float DownWaterHeight = DownTerrainHeight + SimulationData.WaterDepthMap[DownIdx];
+                        ForceY = (WaterSurfaceHeight - DownWaterHeight) / TerrainScale;
+                        
+                        if (bEnableEdgeDrainage)
+                        {
+                            float EdgeBonus = bEnhancedWaterfallEffect ?
+                                WaterSurfaceHeight * EdgeDrainageStrength : 0.0f;
+                            ForceY += EdgeBonus;
+                        }
+                    }
+                    else
+                    {
+                        ForceY = bEnableEdgeDrainage ? -WaterSurfaceHeight * WaterfallDrainageMultiplier : 0.0f;
                     }
                 }
-                else
+                else if (Y == Height - 1) // Bottom edge
                 {
-                    ForceX = bEnableEdgeDrainage ? WaterSurfaceHeight * (EdgeDrainageStrength * 0.5f) : 0.0f;
-                }
-            }
-            else // Interior - normal gradient with proper neighbor terrain heights
-            {
-                float LeftTerrainHeight = GetTerrainHeightSafe(X - 1, Y);
-                float RightTerrainHeight = GetTerrainHeightSafe(X + 1, Y);
-                float LeftWaterHeight = LeftTerrainHeight + SimulationData.WaterDepthMap[LeftIdx];
-                float RightWaterHeight = RightTerrainHeight + SimulationData.WaterDepthMap[RightIdx];
-                ForceX = (LeftWaterHeight - RightWaterHeight) / (2.0f * TerrainScale);
-            }
-            
-            // Y-direction force calculation with configurable edge drainage
-            if (Y == 0) // Top edge - configurable drainage
-            {
-                if (DownIdx != -1)
-                {
-                    float DownTerrainHeight = GetTerrainHeightSafe(X, Y + 1);
-                    float DownWaterHeight = DownTerrainHeight + SimulationData.WaterDepthMap[DownIdx];
-                    ForceY = (WaterSurfaceHeight - DownWaterHeight) / TerrainScale;
-                    
-                    if (bEnableEdgeDrainage)
+                    if (UpIdx != -1)
                     {
-                        float EdgeBonus = bEnhancedWaterfallEffect ?
-                            WaterSurfaceHeight * EdgeDrainageStrength : 0.0f;
-                        ForceY += EdgeBonus;
+                        float UpTerrainHeight = GetTerrainHeightSafe(X, Y - 1);
+                        float UpWaterHeight = UpTerrainHeight + SimulationData.WaterDepthMap[UpIdx];
+                        ForceY = (UpWaterHeight - WaterSurfaceHeight) / TerrainScale;
+                        
+                        if (bEnableEdgeDrainage)
+                        {
+                            float EdgeBonus = bEnhancedWaterfallEffect ?
+                                WaterSurfaceHeight * EdgeDrainageStrength : 0.0f;
+                            ForceY += EdgeBonus;
+                        }
+                    }
+                    else
+                    {
+                        ForceY = bEnableEdgeDrainage ? WaterSurfaceHeight * EdgeDrainageStrength : 0.0f;
                     }
                 }
-                else
-                {
-                    ForceY = bEnableEdgeDrainage ? -WaterSurfaceHeight * WaterfallDrainageMultiplier : 0.0f;
-                }
-            }
-            else if (Y == Height - 1) // Bottom edge - configurable drainage
-            {
-                if (UpIdx != -1)
+                else // Interior
                 {
                     float UpTerrainHeight = GetTerrainHeightSafe(X, Y - 1);
+                    float DownTerrainHeight = GetTerrainHeightSafe(X, Y + 1);
                     float UpWaterHeight = UpTerrainHeight + SimulationData.WaterDepthMap[UpIdx];
-                    ForceY = (UpWaterHeight - WaterSurfaceHeight) / TerrainScale;
-                    
-                    if (bEnableEdgeDrainage)
-                    {
-                        float EdgeBonus = bEnhancedWaterfallEffect ?
-                            WaterSurfaceHeight * EdgeDrainageStrength : 0.0f;
-                        ForceY += EdgeBonus;
-                    }
+                    float DownWaterHeight = DownTerrainHeight + SimulationData.WaterDepthMap[DownIdx];
+                    ForceY = (UpWaterHeight - DownWaterHeight) / (2.0f * TerrainScale);
                 }
-                else
-                {
-                    ForceY = bEnableEdgeDrainage ? WaterSurfaceHeight * WaterfallDrainageMultiplier : 0.0f;
-                }
-            }
-            else // Interior - normal gradient with proper neighbor terrain heights
-            {
-                float UpTerrainHeight = GetTerrainHeightSafe(X, Y - 1);
-                float DownTerrainHeight = GetTerrainHeightSafe(X, Y + 1);
-                float UpWaterHeight = UpTerrainHeight + SimulationData.WaterDepthMap[UpIdx];
-                float DownWaterHeight = DownTerrainHeight + SimulationData.WaterDepthMap[DownIdx];
-                ForceY = (UpWaterHeight - DownWaterHeight) / (2.0f * TerrainScale);
             }
             
-            // Apply forces to velocity with damping to prevent oscillation
+            // Apply viscosity if using 8-directional flow
+            if (bUse8DirectionalFlow && WaterViscosity > 0.0f)
+            {
+                float ViscX = 0.0f, ViscY = 0.0f;
+                int32 NeighborCount = 0;
+                
+                // Average neighbor velocities
+                for (int32 dy = -1; dy <= 1; dy++)
+                {
+                    for (int32 dx = -1; dx <= 1; dx++)
+                    {
+                        if (dx == 0 && dy == 0) continue;
+                        
+                        int32 NX = X + dx;
+                        int32 NY = Y + dy;
+                        if (NX >= 0 && NX < Width && NY >= 0 && NY < Height)
+                        {
+                            int32 NIdx = NY * Width + NX;
+                            ViscX += SimulationData.WaterVelocityX[NIdx];
+                            ViscY += SimulationData.WaterVelocityY[NIdx];
+                            NeighborCount++;
+                        }
+                    }
+                }
+                
+                if (NeighborCount > 0)
+                {
+                    ViscX = (ViscX / NeighborCount) - SimulationData.WaterVelocityX[Index];
+                    ViscY = (ViscY / NeighborCount) - SimulationData.WaterVelocityY[Index];
+                    ForceX += ViscX * WaterViscosity;
+                    ForceY += ViscY * WaterViscosity;
+                }
+            }
+            
+            // Apply forces to velocity with damping
             NewVelocityX[Index] = (SimulationData.WaterVelocityX[Index] + ForceX * WaterFlowSpeed * DeltaTime) * WaterDamping;
             NewVelocityY[Index] = (SimulationData.WaterVelocityY[Index] + ForceY * WaterFlowSpeed * DeltaTime) * WaterDamping;
             
-            // Limit velocity to prevent instability
+            // Limit velocity
             NewVelocityX[Index] = FMath::Clamp(NewVelocityX[Index], -MaxWaterVelocity, MaxWaterVelocity);
             NewVelocityY[Index] = FMath::Clamp(NewVelocityY[Index], -MaxWaterVelocity, MaxWaterVelocity);
         }
@@ -3163,7 +3259,7 @@ void UWaterSystem::CalculateWaterFlow(float DeltaTime)
     SimulationData.WaterVelocityX = NewVelocityX;
     SimulationData.WaterVelocityY = NewVelocityY;
     
-    // Mark that water has changed for volumetric updates
+    // Mark that water has changed
     bWaterChangedThisFrame = true;
 }
 
@@ -3253,17 +3349,61 @@ void UWaterSystem::ProcessWaterEvaporation(float DeltaTime)
         return;
     }
     
+    // WATER CONSERVATION: Transfer to atmosphere and groundwater, not destroy
+    if (!CachedMasterController || !CachedMasterController->MainTerrain)
+    {
+        return; // Can't transfer without master controller
+    }
+    
+    auto* AtmosphericSystem = CachedMasterController->MainTerrain->AtmosphericSystem;
+    auto* GeologyController = CachedMasterController->GeologyController;
+    
+    if (!AtmosphericSystem || !GeologyController)
+    {
+        return; // Can't transfer without target systems
+    }
+    
     for (int32 i = 0; i < SimulationData.WaterDepthMap.Num(); i++)
     {
         if (SimulationData.WaterDepthMap[i] > MinWaterDepth)
         {
-            // Evaporation (faster in shallow areas)
-            float EvaporationAmount = WaterEvaporationRate * DeltaTime;
-            SimulationData.WaterDepthMap[i] -= EvaporationAmount;
+            int32 X = i % SimulationData.TerrainWidth;
+            int32 Y = i / SimulationData.TerrainWidth;
             
-            // Absorption into terrain
-            float AbsorptionAmount = WaterAbsorptionRate * DeltaTime;
-            SimulationData.WaterDepthMap[i] -= AbsorptionAmount;
+            // EVAPORATION: Transfer to atmosphere
+            float EvaporationDepth = WaterEvaporationRate * DeltaTime;
+            if (EvaporationDepth > 0.0f && EvaporationDepth <= SimulationData.WaterDepthMap[i])
+            {
+                // Convert grid position and transfer
+                FVector2D WaterGridPos(X, Y);
+                FVector2D AtmosGridPos;
+                float MoistureMass = CachedMasterController->TransferEvaporationToAtmosphere(
+                    EvaporationDepth, WaterGridPos, AtmosGridPos);
+                
+                // Add moisture to atmosphere
+                int32 AtmosX = FMath::FloorToInt(AtmosGridPos.X);
+                int32 AtmosY = FMath::FloorToInt(AtmosGridPos.Y);
+                if (AtmosX >= 0 && AtmosX < AtmosphericSystem->GridWidth && 
+                    AtmosY >= 0 && AtmosY < AtmosphericSystem->GridHeight)
+                {
+                    int32 AtmosIndex = AtmosY * AtmosphericSystem->GridWidth + AtmosX;
+                    AtmosphericSystem->AtmosphericGrid[AtmosIndex].MoistureMass += MoistureMass;
+                }
+                
+                // Remove from surface
+                SimulationData.WaterDepthMap[i] -= EvaporationDepth;
+            }
+            
+            // INFILTRATION: Transfer to groundwater
+            float InfiltrationDepth = WaterAbsorptionRate * DeltaTime;
+            if (InfiltrationDepth > 0.0f && InfiltrationDepth <= SimulationData.WaterDepthMap[i])
+            {
+                FVector WorldPos = OwnerTerrain->TerrainToWorldPosition(X, Y);
+                GeologyController->ApplyInfiltration(WorldPos, InfiltrationDepth);
+                
+                // Remove from surface
+                SimulationData.WaterDepthMap[i] -= InfiltrationDepth;
+            }
             
             // Ensure water depth doesn't go negative
             SimulationData.WaterDepthMap[i] = FMath::Max(0.0f, SimulationData.WaterDepthMap[i]);
@@ -3477,51 +3617,24 @@ void UWaterSystem::ApplyRain(float DeltaTime)
 
 void UWaterSystem::AddWater(FVector WorldPosition, float Amount)
 {
-    SCOPE_CYCLE_COUNTER(STAT_WaterAddition); // UE5.4 profiling
-    
-    if (!SimulationData.IsValid())
+    if (!IsSystemReady())
     {
-        UE_LOG(LogTemp, Error, TEXT("[WATER ADD] SimulationData invalid"));
         return;
     }
     
-    // Coordinate transformation with fallback
-    // ✅ FIX: FORCE MasterController dependency - NO FALLBACKS
-    if (!CachedMasterController)
-    {
-        UE_LOG(LogTemp, Error, TEXT("[AUTHORITY VIOLATION] Water placement failed - no MasterController"));
-        return; // FAIL rather than use wrong coordinates
-    }
-
-    FVector2D TerrainCoords = CachedMasterController->WorldToTerrainCoordinates(WorldPosition);
-
-    // Validate coordinates are within bounds
-    if (!CachedMasterController->ValidateWorldPosition(WorldPosition))
-    {
-        UE_LOG(LogTemp, Error, TEXT("[WATER ADD] Position outside world bounds"));
-        return;
-    }
+    // FIXED: Never add water to just a single cell - always use radius
+    // Convert single-point water addition to radius-based addition
+    float MinRadius = 3.0f; // Minimum 3 cells to prevent spikes
     
+    FVector2D TerrainCoords = WorldToTerrainCoordinates(WorldPosition);
     int32 X = FMath::FloorToInt(TerrainCoords.X);
     int32 Y = FMath::FloorToInt(TerrainCoords.Y);
     
-
-    
-    if (IsValidCoordinate(X, Y))
-    {
-        int32 Index = Y * SimulationData.TerrainWidth + X;
-        float OldDepth = SimulationData.WaterDepthMap[Index];
-        SimulationData.WaterDepthMap[Index] += Amount;
-        float NewDepth = SimulationData.WaterDepthMap[Index];
-        bWaterChangedThisFrame = true;
-      
-    }
-    else
-    {
-        UE_LOG(LogTemp, Error, TEXT("[WATER ADD] Invalid coordinates for terrain"));
-    }
+    // Use radius-based water addition instead of single point
+    AddWaterInRadius(X, Y, MinRadius, Amount);
 }
 
+// Enhanced radius-based water addition with better distribution
 void UWaterSystem::AddWaterInRadius(int32 CenterX, int32 CenterY, float Radius, float Amount)
 {
     if (!IsValidCoordinate(CenterX, CenterY) || !SimulationData.IsValid())
@@ -3529,10 +3642,29 @@ void UWaterSystem::AddWaterInRadius(int32 CenterX, int32 CenterY, float Radius, 
         return;
     }
     
+    // FIXED: Ensure minimum radius to prevent spikes
+    Radius = FMath::Max(Radius, 2.0f);
+    
     int32 IntRadius = FMath::CeilToInt(Radius);
     TSet<int32> AffectedChunks;
     
-    // Add water in circular pattern with quadratic falloff (matches terrain brush)
+    // Calculate total distribution area for proper normalization
+    float TotalWeight = 0.0f;
+    for (int32 OffsetY = -IntRadius; OffsetY <= IntRadius; OffsetY++)
+    {
+        for (int32 OffsetX = -IntRadius; OffsetX <= IntRadius; OffsetX++)
+        {
+            float Distance = FMath::Sqrt((float)(OffsetX * OffsetX + OffsetY * OffsetY));
+            if (Distance <= Radius)
+            {
+                // Gaussian distribution instead of quadratic for smoother spread
+                float Falloff = FMath::Exp(-2.0f * (Distance * Distance) / (Radius * Radius));
+                TotalWeight += Falloff;
+            }
+        }
+    }
+    
+    // Add water with proper distribution
     for (int32 OffsetY = -IntRadius; OffsetY <= IntRadius; OffsetY++)
     {
         for (int32 OffsetX = -IntRadius; OffsetX <= IntRadius; OffsetX++)
@@ -3545,24 +3677,14 @@ void UWaterSystem::AddWaterInRadius(int32 CenterX, int32 CenterY, float Radius, 
                 float Distance = FMath::Sqrt((float)(OffsetX * OffsetX + OffsetY * OffsetY));
                 if (Distance <= Radius)
                 {
-                    // Quadratic falloff: more water at center, smooth edges
-                    float Falloff = FMath::Pow(1.0f - (Distance / Radius), 2.0f);
-                    float WaterAmount = Amount * Falloff;
+                    // FIXED: Use Gaussian distribution for natural water spread
+                    float Falloff = FMath::Exp(-2.0f * (Distance * Distance) / (Radius * Radius));
+                    float WaterAmount = (Amount * Falloff) / TotalWeight;
                     
                     int32 Index = GetTerrainIndex(CurrentX, CurrentY);
                     if (Index >= 0 && Index < SimulationData.WaterDepthMap.Num())
                     {
                         SimulationData.WaterDepthMap[Index] += WaterAmount;
-                        
-                        // CRITICAL: Reduce update frequency during water placement
-                        static float LastWaterModTime = 0.0f;
-                        float CurrentTime = OwnerTerrain ? OwnerTerrain->GetCachedFrameTime() : 0.0f;
-                        
-                        if (CurrentTime - LastWaterModTime < 0.1f) // 10 Hz max
-                        {
-                            continue; // Skip this cell
-                        }
-                        LastWaterModTime = CurrentTime;
                         
                         // Track affected chunks for visual updates
                         if (OwnerTerrain)
@@ -3574,7 +3696,6 @@ void UWaterSystem::AddWaterInRadius(int32 CenterX, int32 CenterY, float Radius, 
                             }
                         }
                         
-                        // Mark water as changed for volumetric updates
                         bWaterChangedThisFrame = true;
                     }
                 }
@@ -3610,7 +3731,7 @@ void UWaterSystem::AddWaterAtIndex(int32 X, int32 Y, float Amount)
         // Mark water as changed for volumetric updates
         bWaterChangedThisFrame = true;
             
-            UE_LOG(LogTemp, VeryVerbose, TEXT("WaterSystem: Added %.2f water at (%d,%d), depth now %.2f"),
+            UE_LOG(LogTemp, Warning, TEXT("WaterSystem: Added %.2f water at (%d,%d), depth now %.2f"),
                    Amount, X, Y, SimulationData.WaterDepthMap[Index]);
     }
 }
@@ -3631,7 +3752,16 @@ void UWaterSystem::RemoveWater(FVector WorldPosition, float Amount)
         int32 Index = GetTerrainIndex(X, Y);
         if (Index >= 0 && Index < SimulationData.WaterDepthMap.Num())
         {
-            SimulationData.WaterDepthMap[Index] = FMath::Max(0.0f, SimulationData.WaterDepthMap[Index] - Amount);
+            float OldDepth = SimulationData.WaterDepthMap[Index];
+            SimulationData.WaterDepthMap[Index] = FMath::Max(0.0f, OldDepth - Amount);
+            float ActualRemoved = OldDepth - SimulationData.WaterDepthMap[Index];
+            
+            // Track user water removal
+            if (CachedMasterController && ActualRemoved > 0)
+            {
+                float VolumeRemoved = CachedMasterController->GetWaterCellVolume(ActualRemoved);
+                CachedMasterController->TrackUserWaterRemoval(VolumeRemoved);
+            }
             
             // Mark chunk for visual update
             MarkChunkForUpdate(X, Y);
@@ -5221,8 +5351,8 @@ void UWaterSystem::CheckChunkBoundaryContinuity()
 }
 
 float UWaterSystem::CalculateNaturalWaveOffset(FVector2D WorldPos, float Time, float WaterDepth,
-FVector2D FlowVector, float WindStrength, FVector2D WindDirection,
-float TerrainGradient, FWaterSurfaceChunk& Chunk)
+    FVector2D FlowVector, float WindStrength, FVector2D WindDirection,
+    float TerrainGradient, FWaterSurfaceChunk& Chunk)
 {
     using FNaturalWaveCache = FWaterSurfaceChunk::FNaturalWaveCache;
     
@@ -5231,7 +5361,7 @@ float TerrainGradient, FWaterSurfaceChunk& Chunk)
     {
         Chunk.NaturalWaveCache.LastUpdateTime = Time;
         
-        // Simple classification based on your existing thresholds
+        // Classification based on existing thresholds
         float FlowSpeed = FlowVector.Size();
         
         if (FlowSpeed > 10.0f && TerrainGradient > 30.0f)
@@ -5244,18 +5374,99 @@ float TerrainGradient, FWaterSurfaceChunk& Chunk)
             Chunk.NaturalWaveCache.Type = FNaturalWaveCache::Pond;
         else
             Chunk.NaturalWaveCache.Type = FNaturalWaveCache::Lake;
-            
-        // Estimate fetch for lakes
-        if (Chunk.NaturalWaveCache.Type == FNaturalWaveCache::Lake)
-        {
-            float ChunkSize = OwnerTerrain->ChunkSize * OwnerTerrain->TerrainScale;
-            Chunk.NaturalWaveCache.FetchDistance = FMath::Sqrt(ChunkSize * ChunkSize) * 2.0f;
-        }
     }
     
     // Calculate waves based on type
     switch (Chunk.NaturalWaveCache.Type)
     {
+        case FNaturalWaveCache::River:
+        {
+            // FIXED: Improved river wave calculation to prevent parallel lines
+            FVector2D FlowNormal = FlowVector.GetSafeNormal();
+            FVector2D CrossFlow(-FlowNormal.Y, FlowNormal.X);
+            
+            float Fr = FlowVector.Size() / FMath::Sqrt(9.81f * WaterDepth); // Froude number
+            
+            // Base wave pattern
+            float Wavelength = WaterDepth * 4.0f; // Longer wavelength for smoother waves
+            float Amplitude = WaterDepth * 0.05f * FMath::Min(Fr, 1.5f); // Reduced amplitude
+            
+            // Calculate position along and across flow
+            float CrossPos = FVector2D::DotProduct(WorldPos * 0.01f, CrossFlow);
+            float StreamPos = FVector2D::DotProduct(WorldPos * 0.01f, FlowNormal);
+            
+            // Primary wave pattern with angle variation
+            float Wave = 0.0f;
+            
+            // Add multiple wave components at different angles to break up parallel lines
+            for (int i = 0; i < 3; i++)
+            {
+                float AngleOffset = (i - 1) * 0.2f; // -0.2, 0, 0.2 radians
+                FVector2D RotatedCross(
+                    CrossFlow.X * FMath::Cos(AngleOffset) - CrossFlow.Y * FMath::Sin(AngleOffset),
+                    CrossFlow.X * FMath::Sin(AngleOffset) + CrossFlow.Y * FMath::Cos(AngleOffset)
+                );
+                
+                float RotatedCrossPos = FVector2D::DotProduct(WorldPos * 0.01f, RotatedCross);
+                float WaveComponent = FMath::Sin(RotatedCrossPos / Wavelength * 2.0f * PI + i * 0.5f);
+                
+                // Vary amplitude by component
+                float ComponentAmplitude = Amplitude * (1.0f - i * 0.3f);
+                Wave += WaveComponent * ComponentAmplitude;
+            }
+            
+            // Add flow-based modulation to break up regularity
+            float FlowModulation = 0.7f + 0.3f * FMath::Sin(StreamPos * 0.1f - Time * FlowVector.Size() * 0.05f);
+            Wave *= FlowModulation;
+            
+            // Add small-scale turbulence
+            float Turbulence = FMath::Sin(WorldPos.X * 0.05f + Time * 3.0f) *
+                              FMath::Cos(WorldPos.Y * 0.07f - Time * 2.5f) * 0.01f;
+            Wave += Turbulence * FlowVector.Size() / 10.0f;
+            
+            return Wave;
+        }
+        
+        case FNaturalWaveCache::Rapids:
+        {
+            // FIXED: Enhanced rapids calculation with better turbulence
+            float Turbulence = 0.0f;
+            float TurbScale = FMath::Min(TerrainGradient / 30.0f, 2.0f);
+            
+            // Multi-scale turbulent flow
+            for (int i = 0; i < 5; i++)
+            {
+                float Scale = FMath::Pow(2.0f, -i * 0.7f);
+                float Freq = 0.15f * Scale;
+                
+                // Use different hash functions for each scale to avoid repetition
+                float Phase1 = WorldPos.X * Freq + WorldPos.Y * Freq * 1.618f;
+                float Phase2 = WorldPos.X * Freq * 0.866f - WorldPos.Y * Freq * 0.5f;
+                
+                float Noise = FMath::Sin(Phase1 + Time * Scale * 8.0f) *
+                             FMath::Cos(Phase2 - Time * Scale * 6.0f);
+                
+                // Kolmogorov turbulence scaling
+                Turbulence += Noise * TurbScale * FMath::Pow(Scale, 2.0f/3.0f) * 0.15f;
+            }
+            
+            // Hydraulic jumps with spatial variation
+            float Fr = FlowVector.Size() / FMath::Sqrt(9.81f * WaterDepth);
+            if (Fr > 1.0f)
+            {
+                float JumpHeight = WaterDepth * (FMath::Sqrt(1.0f + 8.0f * Fr * Fr) - 1.0f) * 0.05f;
+                FVector2D FlowNorm = FlowVector.GetSafeNormal();
+                float FlowProj = FVector2D::DotProduct(WorldPos * 0.01f, FlowNorm);
+                
+                // Add spatial variation to hydraulic jumps
+                float JumpPhase = FlowProj * 2.0f + FMath::Sin(WorldPos.X * 0.03f) * 0.5f;
+                Turbulence += JumpHeight * (0.5f + 0.5f * FMath::Sin(JumpPhase + Time * 3.0f));
+            }
+            
+            return Turbulence;
+        }
+        
+        // Other cases remain the same...
         case FNaturalWaveCache::Puddle:
         {
             // Capillary waves - tiny ripples
@@ -5263,7 +5474,7 @@ float TerrainGradient, FWaterSurfaceChunk& Chunk)
             for (int i = 0; i < 3; i++)
             {
                 float Scale = FMath::Exp(-i * 0.5f);
-                float Wavelength = 0.017f * Scale; // Capillary length
+                float Wavelength = 0.017f * Scale;
                 float Phase = (WorldPos.Size() * 0.01f / Wavelength) * 2.0f * PI - Time * 0.23f / Wavelength;
                 Wave += FMath::Sin(Phase) * Scale * 0.002f;
             }
@@ -5272,7 +5483,6 @@ float TerrainGradient, FWaterSurfaceChunk& Chunk)
         
         case FNaturalWaveCache::Pond:
         {
-            // Small wind ripples
             float Wave = FMath::Sin(WorldPos.X * 0.3f + Time * 2.0f) *
                         FMath::Sin(WorldPos.Y * 0.3f - Time * 1.5f) * 0.01f;
             if (WindStrength > 1.0f)
@@ -5285,78 +5495,22 @@ float TerrainGradient, FWaterSurfaceChunk& Chunk)
         
         case FNaturalWaveCache::Lake:
         {
-            // Fetch-limited waves using simplified JONSWAP
             float Fetch = Chunk.NaturalWaveCache.FetchDistance;
             float Hs = FMath::Min(0.0016f * FMath::Sqrt(9.81f * Fetch) * FMath::Sqrt(WindStrength), WaterDepth * 0.5f);
             
             float Wave = 0.0f;
             for (int i = 0; i < 3; i++)
             {
-                float WaveLength = 20.0f * FMath::Pow(1.618f, -i * 0.7f); // Golden ratio spacing
+                float WaveLength = 20.0f * FMath::Pow(1.618f, -i * 0.7f);
                 float k = 2.0f * PI / WaveLength;
                 float w = FMath::Sqrt(9.81f * k);
                 float Amplitude = (Hs / 4.0f) * FMath::Exp(-0.5f * i);
                 
-                // Wave propagates in wind direction
                 float WindProj = FVector2D::DotProduct(WorldPos * 0.01f, WindDirection);
                 float Phase = k * WindProj - w * Time;
                 Wave += Amplitude * FMath::Cos(Phase);
             }
             return Wave;
-        }
-        
-        case FNaturalWaveCache::River:
-        {
-            // Standing waves perpendicular to flow
-            FVector2D FlowNormal = FlowVector.GetSafeNormal();
-            FVector2D CrossFlow(-FlowNormal.Y, FlowNormal.X);
-            
-            float Fr = FlowVector.Size() / FMath::Sqrt(9.81f * WaterDepth); // Froude number
-            if (Fr > 0.5f && Fr < 1.5f)
-            {
-                float Wavelength = WaterDepth * 2.0f * PI / FMath::Sqrt(FMath::Abs(Fr - 1.0f) + 0.1f);
-                float Amplitude = WaterDepth * 0.1f * FMath::Min(Fr, 2.0f);
-                
-                float CrossPos = FVector2D::DotProduct(WorldPos * 0.01f, CrossFlow);
-                float StreamPos = FVector2D::DotProduct(WorldPos * 0.01f, FlowNormal);
-                
-                float StandingWave = FMath::Sin(CrossPos / Wavelength * 2.0f * PI);
-                float Modulation = 0.7f + 0.3f * FMath::Sin(StreamPos * 0.5f - Time * FlowVector.Size() * 0.1f);
-                
-                return Amplitude * StandingWave * Modulation;
-            }
-            
-            // Default river waves
-            return FMath::Sin((WorldPos.X * CrossFlow.X + WorldPos.Y * CrossFlow.Y) * 0.04f +
-                             Time * FlowVector.Size() * 0.3f) * FMath::Min(FlowVector.Size() * 0.08f, 3.0f);
-        }
-        
-        case FNaturalWaveCache::Rapids:
-        {
-            // Turbulent multi-scale waves
-            float Turbulence = 0.0f;
-            float TurbScale = FMath::Min(TerrainGradient / 50.0f, 2.0f);
-            
-            for (int i = 0; i < 4; i++)
-            {
-                float Scale = FMath::Pow(1.618f, -i); // Golden ratio
-                float Freq = 0.1f * Scale;
-                float Noise = FMath::Sin(WorldPos.X * 0.01f * Freq + Time * Scale * 10.0f) *
-                             FMath::Cos(WorldPos.Y * 0.01f * Freq * 1.414f - Time * Scale * 7.0f);
-                Turbulence += Noise * TurbScale * FMath::Pow(Scale, 5.0f/3.0f) * 0.1f;
-            }
-            
-            // Hydraulic jumps
-            float Fr = FlowVector.Size() / FMath::Sqrt(9.81f * WaterDepth);
-            if (Fr > 1.0f)
-            {
-                float JumpHeight = WaterDepth * (FMath::Sqrt(1.0f + 8.0f * Fr * Fr) - 1.0f) * 0.1f;
-                FVector2D FlowNorm = FlowVector.GetSafeNormal();
-                float FlowProj = FVector2D::DotProduct(WorldPos * 0.01f, FlowNorm);
-                Turbulence += JumpHeight * (0.5f + 0.5f * FMath::Sin(FlowProj * 2.0f + Time * 3.0f));
-            }
-            
-            return Turbulence;
         }
         
         default:

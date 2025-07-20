@@ -266,7 +266,71 @@ public:
     
     UPROPERTY()
     class UAtmosphericSystem* AtmosphericSystem = nullptr;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cloud System")
+        UStaticMesh* CloudStaticMesh = nullptr;
+        
+        UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cloud System")
+        UMaterialInterface* CloudMaterial = nullptr;
+        
+        UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cloud System")
+        bool bEnableCloudRendering = true;
+        
+        UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cloud System", meta = (ClampMin = "500.0", ClampMax = "5000.0"))
+        float CloudAltitude = 2000.0f;
+        
+        UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cloud System", meta = (ClampMin = "0.1", ClampMax = "1.0"))
+        float CloudOpacity = 0.8f;
+        
+        UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cloud System", meta = (ClampMin = "1", ClampMax = "256"))
+        int32 MaxCloudMeshes = 64;
+    
+        
+      /*  // Cloud debug commands
+        UFUNCTION(BlueprintCallable, Category = "Cloud System", CallInEditor)
+        void DebugCloudSystem();
+        
+        UFUNCTION(BlueprintCallable, Category = "Cloud System", CallInEditor)
+        void ForceGenerateClouds(float Coverage = 0.8f);
+       
+       */
+    
+    
+    /** Apply weather change immediately without transition */
+    UFUNCTION(BlueprintCallable, Category = "Weather")
+    void SetWeatherImmediate(EWeatherType NewWeather);
+    
+    /** Apply current weather state to physics simulation */
+    UFUNCTION(BlueprintCallable, Category = "Weather")
+    void ApplyWeatherToPhysics();
+    
+    // ===== CONSOLE COMMANDS FOR TESTING =====
+    
+    /** Set weather to clear immediately */
+    UFUNCTION(CallInEditor, Category = "Weather Commands")
+    void SetWeatherClear();
+    
+    /** Set weather to rain immediately */
+    UFUNCTION(CallInEditor, Category = "Weather Commands")
+    void SetWeatherRain();
+    
+    /** Set weather to storm immediately */
+    UFUNCTION(CallInEditor, Category = "Weather Commands")
+    void SetWeatherStorm();
+    
+    /** Display atmospheric system debug information */
+    UFUNCTION(CallInEditor, Category = "Weather Commands")
+    void ShowAtmosphericDebug();
+    
+    // ===== PHASE 1 VALIDATION =====
+    
+    /** Validate that Phase 1 implementation is working correctly */
+    UFUNCTION(CallInEditor, Category = "Testing")
+    void ValidatePhase1Implementation();
 
+    
+    UPROPERTY()
+    bool bSystemInitialized = false;
 
     
 #if WITH_EDITOR
@@ -285,9 +349,7 @@ private:
     
     UPROPERTY()
     FWeatherData TargetWeather;
-    
-    UPROPERTY()
-    bool bSystemInitialized = false;
+
 
     // ===== INTERNAL FUNCTIONS =====
     

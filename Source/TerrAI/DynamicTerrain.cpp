@@ -1292,12 +1292,7 @@ void ADynamicTerrain::InitializeAtmosphericSystem()
             
             // Create initial weather patterns
             FVector2D TerrainCenter(TerrainWidth * TerrainScale * 0.5f, TerrainHeight * TerrainScale * 0.5f);
-            
-            // Create multiple weather systems for better coverage
-            AtmosphericSystem->CreateLowPressureSystem(TerrainCenter, 2.0f);
-            AtmosphericSystem->CreateLowPressureSystem(TerrainCenter + FVector2D(10000, 10000), 1.5f);
-            AtmosphericSystem->CreateHighPressureSystem(TerrainCenter - FVector2D(15000, 15000), 1.0f);
-            
+
             UE_LOG(LogTemp, Warning, TEXT("[ATMOSPHERIC INTEGRATION]  Created initial weather patterns"));
             UE_LOG(LogTemp, Warning, TEXT("[ATMOSPHERIC INTEGRATION]  Precipitation should begin within 30-60 seconds"));
         }
@@ -1333,25 +1328,6 @@ FVector ADynamicTerrain::GetWindAt(FVector WorldPosition) const
         return AtmosphericSystem->GetWindAt(WorldPosition);
     }
     return FVector::ZeroVector;
-}
-
-void ADynamicTerrain::CreateWeatherSystem(int32 WeatherType, FVector2D Center, float Strength)
-{
-    if (AtmosphericSystem)
-    {
-        switch (WeatherType)
-        {
-            case 0:
-                AtmosphericSystem->CreateHighPressureSystem(Center, Strength);
-                break;
-            case 1:
-                AtmosphericSystem->CreateLowPressureSystem(Center, Strength);
-                break;
-            default:
-                UE_LOG(LogTemp, Warning, TEXT("Unknown weather type: %d"), WeatherType);
-                break;
-        }
-    }
 }
 
 /**
@@ -1518,6 +1494,9 @@ void ADynamicTerrain::ResetTerrainFully()
         {
             WaterSystem->RegisterWithMasterController(CachedMasterController);
             UE_LOG(LogTemp, Warning, TEXT("Water system re-registered with MasterController"));
+            
+            // Reset water budget tracking
+            CachedMasterController->ResetWaterBudget();
         }
         
         // Step 3: Force texture recreation

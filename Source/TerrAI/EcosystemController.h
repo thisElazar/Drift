@@ -215,8 +215,13 @@ public:
     
     UFUNCTION(BlueprintPure, Category = "World Scaling")
     FString GetScalingDebugInfo() const;
-
-private:
+    
+    
+    // ===== TEMPORAL INTEGRATION =====
+    
+    UFUNCTION(BlueprintCallable, Category = "Temporal Integration")
+    void UpdateEcosystemSystem(float DeltaTime);
+    
     // ===== SYSTEM REFERENCES =====
     
     UPROPERTY()
@@ -224,6 +229,9 @@ private:
     
     UPROPERTY()
     UWaterSystem* WaterSystem = nullptr;
+
+private:
+  
 
     // ===== INSTANCED MESH COMPONENTS =====
     
@@ -258,6 +266,7 @@ private:
     UPROPERTY()
     bool bIsRegisteredWithMaster = false;
 
+    
     // ===== INTERNAL FUNCTIONS =====
     
     void InitializeVegetationMeshes();

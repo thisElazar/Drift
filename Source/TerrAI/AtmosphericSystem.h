@@ -5,6 +5,7 @@
 #include "UObject/NoExportTypes.h"
 #include "Engine/Texture2D.h"
 #include "MasterController.h"
+#include "GeologyController.h" // For ERockType
 #include "Materials/MaterialParameterCollection.h"
 #include "Components/StaticMeshComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
@@ -14,8 +15,13 @@
 // Forward declarations
 class ADynamicTerrain;
 class UWaterSystem;
+class AGeologyController;
+class AEcosystemController;
 class UTemporalManager;
 class AMasterWorldController;
+
+
+
 
 // ===== ATMOSPHERIC PHYSICS CONSTANTS =====
 namespace AtmosphericConstants
@@ -29,55 +35,34 @@ namespace AtmosphericConstants
     constexpr float CORIOLIS_COEFFICIENT = 1.458e-4f; // rad/s at 45° latitude
 }
 
-// ===== ATMOSPHERIC CELL - FUNDAMENTAL UNIT =====
+// Add this to AtmosphericSystem.h, replacing the current FAtmosphericCell struct
+
+// ===== SIMPLIFIED ATMOSPHERIC CELL - CORE WATER CYCLE =====
 USTRUCT(BlueprintType)
-struct TERRAI_API FAtmosphericCell
+struct TERRAI_API FSimplifiedAtmosphericCell
 {
     GENERATED_BODY()
 
-    // === THERMODYNAMIC STATE ===
-    float Temperature = 288.15f;        // Kelvin (15°C default)
-    float Pressure = 101325.0f;         // Pascals (sea level)
-    float Density = 1.225f;             // kg/m³
-    float Humidity = 0.5f;              // Relative humidity (0-1)
-    float WaterVaporMass = 0.0f;        // kg water vapor per m³
-    
-    // === FLUID DYNAMICS ===
-    FVector Velocity = FVector::ZeroVector;     // m/s wind velocity
-    FVector Acceleration = FVector::ZeroVector; // m/s² for next frame
-    float Vorticity = 0.0f;             // s⁻¹ rotational component
-    float Divergence = 0.0f;            // s⁻¹ flow divergence
-    
-    // === CLOUD PHYSICS ===
-    float CloudWaterContent = 0.0f;     // kg/m³ liquid water in clouds
-    float CloudDropletSize = 0.0f;      // μm average droplet diameter
-    float CloudCoverFraction = 0.0f;    // 0-1 visual cloud coverage
-    float PrecipitationRate = 0.0f;     // mm/hr falling rate
-    
-    // === RADIATIVE PROPERTIES ===
-    float SolarRadiation = 0.0f;        // W/m² incoming solar
-    float LongwaveRadiation = 0.0f;     // W/m² outgoing thermal
-    float Albedo = 0.3f;                // Surface reflectance
-    
-    // === CALCULATED PROPERTIES ===
-    float GetSaturationVaporPressure() const
+    // Core state (reduced from 20+ variables to 6)
+    float Temperature = 288.15f;         // Kelvin
+    float Humidity = 0.5f;               // 0-1 relative
+    float MoistureMass = 10.0f;          // kg/m² actual water (KEY VARIABLE)
+    float CloudCover = 0.0f;             // 0-1 visual
+    float PrecipitationRate = 0.0f;      // mm/hr
+    FVector2D WindVector = FVector2D(5, 0); // m/s surface wind
+
+    // Helper functions
+    float GetSaturationCapacity() const
     {
-        // August-Roche-Magnus formula
+        // Simplified Magnus formula
         float TempC = Temperature - 273.15f;
-        return 611.2f * FMath::Exp((17.67f * TempC) / (TempC + 243.5f));
+        float SaturationPressure = 6.11f * FMath::Exp((17.27f * TempC) / (TempC + 237.3f));
+        return SaturationPressure * 0.01f; // Convert to kg/m²
     }
-    
-    float GetDewPoint() const
-    {
-        float SatPress = GetSaturationVaporPressure();
-        float ActualPress = Humidity * SatPress;
-        float Ln = FMath::Loge(ActualPress / 611.2f);
-        return 243.5f * Ln / (17.67f - Ln) + 273.15f;
-    }
-    
+
     bool IsCondensationLevel() const
     {
-        return Temperature <= GetDewPoint() + 0.1f; // Small threshold for stability
+        return MoistureMass > GetSaturationCapacity();
     }
 };
 
@@ -160,22 +145,20 @@ public:
     
     // ===== ATMOSPHERIC GRID SETTINGS =====
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Atmospheric Grid")
-    int32 GridWidth = 64;               // Atmospheric resolution (lower than terrain)
+    int32 GridWidth = 32;               // Reduced resolution for 2D grid
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Atmospheric Grid")
-    int32 GridHeight = 64;
+    int32 GridHeight = 32;
+    
+    // REMOVED: GridLayers - no more 3D grid!
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Atmospheric Grid")
-    int32 GridLayers = 12;              // Vertical atmospheric layers
+    float CellSize = 2000.0f;           // Larger cells for simplified grid
     
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Atmospheric Grid")
-    float CellSize = 1000.0f;           // Meters per atmospheric cell
-    
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Atmospheric Grid")
-    float LayerHeight = 500.0f;         // Meters per vertical layer
 
-    // 3D atmospheric state
-    TArray<FAtmosphericCell> AtmosphericGrid;
+    // 2D atmospheric state (was 3D)
+    TArray<FSimplifiedAtmosphericCell> AtmosphericGrid;
+
     
     // ===== CLIMATE PARAMETERS =====
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Climate")
@@ -245,46 +228,17 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Atmospheric Query")
     float GetCloudCoverAt(FVector WorldPosition) const;
 
+    
     // ===== CONTROL INTERFACE =====
+
     UFUNCTION(BlueprintCallable, Category = "Atmospheric Control")
-    void CreateHighPressureSystem(FVector2D Center, float Strength);
+    void CreateWeatherEffect(FVector2D Location, float Radius, float Intensity);
+
+
+    void ProcessCondensationAndPrecipitation(float DeltaTime);
     
-    UFUNCTION(BlueprintCallable, Category = "Atmospheric Control")
-    void CreateLowPressureSystem(FVector2D Center, float Strength);
-    
-    UFUNCTION(BlueprintCallable, Category = "Atmospheric Control")
-    void CreateFrontalSystem(FVector2D Start, FVector2D End, float Intensity);
-    
-    UFUNCTION(BlueprintCallable, Category = "Atmospheric Control")
-    void SetSeasonProgress(float Progress); // 0.0 = winter, 1.0 = next winter
-    
-    UFUNCTION(BlueprintCallable, Category = "Atmospheric Control")
-    void SetTimeOfDay(float Hours); // 0.0 = midnight, 12.0 = noon
-    
-    UFUNCTION(BlueprintCallable, Category = "Atmospheric Control")
-    void ForceTestPrecipitation(); // Force precipitation for immediate testing
-    
-    // ===== ATMOSPHERIC BRUSHES =====
-    UFUNCTION(BlueprintCallable, Category = "Atmospheric Brushes")
-    void ApplyTemperatureBrush(FVector WorldPosition, float Radius, float TemperatureChange, float Strength = 1.0f);
-    
-    UFUNCTION(BlueprintCallable, Category = "Atmospheric Brushes")
-    void ApplyHumidityBrush(FVector WorldPosition, float Radius, float HumidityChange, float Strength = 1.0f);
-    
-    UFUNCTION(BlueprintCallable, Category = "Atmospheric Brushes")
-    void ApplyPressureBrush(FVector WorldPosition, float Radius, float PressureChange, float Strength = 1.0f);
-    
-    UFUNCTION(BlueprintCallable, Category = "Atmospheric Brushes")
-    void ApplyWindBrush(FVector WorldPosition, float Radius, FVector WindVelocity, float Strength = 1.0f);
-    
-    UFUNCTION(BlueprintCallable, Category = "Atmospheric Brushes")
-    void ApplyPrecipitationBrush(FVector WorldPosition, float Radius, float RainIntensity, float Duration = 300.0f);
-    
-    UFUNCTION(BlueprintCallable, Category = "Atmospheric Brushes")
-    void ApplyCloudBrush(FVector WorldPosition, float Radius, float CloudDensity, float Strength = 1.0f);
-    
-    UFUNCTION(BlueprintCallable, Category = "Atmospheric Brushes")
-    void ClearWeatherBrush(FVector WorldPosition, float Radius, float Strength = 1.0f);
+    UFUNCTION(CallInEditor, Category = "Testing")
+    void TriggerImmediatePrecipitation(FVector2D Location, float Radius, float IntensityMMPerHour);
 
     // ===== DEBUG VISUALIZATION =====
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug")
@@ -327,6 +281,25 @@ public:
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Performance")
     bool bUseAdaptiveTimeStep = true;
+    
+    
+    // ===== DEBUG COMMANDS =====
+        UFUNCTION(BlueprintCallable, Category = "Debug", CallInEditor)
+        void DebugAtmosphericState();
+        
+        UFUNCTION(BlueprintCallable, Category = "Debug", CallInEditor)
+        void DebugCloudSystem();
+        
+        UFUNCTION(BlueprintCallable, Category = "Debug", CallInEditor)
+        void ForceGenerateClouds(float Coverage = 0.8f);
+        
+        UFUNCTION(BlueprintCallable, Category = "Debug", CallInEditor)
+        void DebugMoistureDistribution();
+        
+        UFUNCTION(BlueprintCallable, Category = "Debug", CallInEditor)
+        void EnableAtmosphericDebugVisualization(bool bEnable);
+    
+    
 
 private:
     // ===== MASTER CONTROLLER INTEGRATION =====
@@ -347,10 +320,8 @@ private:
     // ===== ATMOSPHERIC PHYSICS =====
     
     // Core physics update steps
-    void UpdateThermodynamics(float DeltaTime);
-    void UpdateFluidDynamics(float DeltaTime);
+ 
     void UpdateCloudPhysics(float DeltaTime);
-    void UpdateRadiation(float DeltaTime);
     
     // Thermodynamic calculations
     void CalculateTemperatureField();
@@ -358,31 +329,14 @@ private:
     void CalculateHumidityTransport(float DeltaTime);
     void ProcessPhaseChanges(float DeltaTime);
     
-    // Fluid dynamics (simplified Navier-Stokes)
-    void CalculatePressureGradientForce();
-    void CalculateCoriolisForce();
-    void CalculateViscousForces();
-    void AdvectWindField(float DeltaTime);
-    void EnforceContinuityEquation();
-    
-    // Cloud microphysics
-    void ProcessCondensation(float DeltaTime);
-    void ProcessEvaporation(float DeltaTime);
-    void ProcessCollisionCoalescence(float DeltaTime);
-    void CalculateCloudDropletGrowth(float DeltaTime);
-    
+ 
+
     // ===== WEATHER PATTERN SYSTEMS =====
     void UpdateWeatherPatterns(float DeltaTime);
     void ApplyWeatherPatternToGrid(const FWeatherPattern& Pattern);
     void GenerateNewWeatherPattern();
     void RemoveExpiredWeatherPatterns();
     
-    // Pattern-specific physics
-    void ApplyHighPressureSystem(const FWeatherPattern& Pattern);
-    void ApplyLowPressureSystem(const FWeatherPattern& Pattern);
-    void ApplyFrontalSystem(const FWeatherPattern& Pattern);
-    void ApplyConvectiveForcing(const FWeatherPattern& Pattern);
-    void ApplyOrographicLift();
     
     // ===== BOUNDARY CONDITIONS =====
     void ApplyTerrainInteraction();
@@ -391,29 +345,22 @@ private:
     void ApplyTopographicEffects();
     
   
-    // ===== NUMERICAL METHODS =====
-public:
-    // Grid access and interpolation
-    int32 GetGridIndex(int32 X, int32 Y, int32 Z) const;
-    FAtmosphericCell& GetCell(int32 X, int32 Y, int32 Z);
-    const FAtmosphericCell& GetCell(int32 X, int32 Y, int32 Z) const;
 private:
-    // Spatial derivatives for physics calculations
-    float CalculateGradientX(const TArray<float>& Field, int32 X, int32 Y, int32 Z) const;
-    float CalculateGradientY(const TArray<float>& Field, int32 X, int32 Y, int32 Z) const;
-    float CalculateGradientZ(const TArray<float>& Field, int32 X, int32 Y, int32 Z) const;
-    float CalculateLaplacian(const TArray<float>& Field, int32 X, int32 Y, int32 Z) const;
-    
+    // Grid access (now 2D only)
+    int32 GetGridIndex(int32 X, int32 Y) const;
+    FSimplifiedAtmosphericCell& GetCell(int32 X, int32 Y);
+    const FSimplifiedAtmosphericCell& GetCell(int32 X, int32 Y) const;
+
     // Interpolation for smooth field queries
     float InterpolateField(const TArray<float>& Field, FVector WorldPosition) const;
     FVector InterpolateVectorField(const TArray<FVector>& Field, FVector WorldPosition) const;
     
     // Coordinate transformations
-    FVector WorldToGridCoordinates(FVector WorldPosition) const;
-    FVector GridToWorldCoordinates(int32 X, int32 Y, int32 Z) const;
+    FVector2D WorldToGridCoordinates(FVector WorldPosition) const;
+    FVector GridToWorldCoordinates(int32 X, int32 Y) const;
     
-    // CRITICAL FIX: Add coordinate transform function
-    FVector2D WorldToTerrainCoordinates(FVector WorldPosition) const;
+    
+    //FVector2D WorldToTerrainCoordinates(FVector WorldPosition) const;
     
     // ===== INTEGRATION WITH OTHER SYSTEMS =====
     void UpdateWaterSystemInterface();
@@ -454,5 +401,38 @@ private:
     
     
     
+    
+    // ===== PHASE 2: MOISTURE TRANSPORT =====
+    void AdvectMoisture(float DeltaTime);
+    float CalculateSaturationMoisture(float TempKelvin);
+    void UpdateCloudCoverFromMoisture();
+    
+    // ===== PHASE 3: OROGRAPHIC EFFECTS ====
+    void ApplyOrographicEffects(float DeltaTime);
+    FVector2D GetTerrainGradient(int32 GridX, int32 GridY);
+    void ClearConsumedPrecipitation();
+    
+    // ===== PHASE 4: EVAPORATION SYSTEM  =====
+    void ProcessEvaporation(float DeltaTime);
+    void ProcessEvapotranspiration(float DeltaTime);
+    
+    // ===== PHASE 5: INFILTRATION & GROUNDWATER (Coming Soon) =====
+    void ProcessPrecipitation(float DeltaTime);
+    void ProcessGroundwaterDischarge(float DeltaTime);
+    void UpdateSimplifiedWaterTable(float DeltaTime);
+    
+    void LogPrecipitationActivity();
+    
+    // ===== PHASE 5: INFILTRATION & GROUNDWATER =====
+     // float GetInfiltrationRate(ERockType Rock);
+      
+      // Constants for geology interaction
+      static const int32 GeologyGridWidth;
+      static const int32 GeologyGridHeight;
+      static const float SpringFlowRate;
+    
     void ApplyWeatherPatterns();
 };
+
+
+   

@@ -385,6 +385,58 @@ protected:
     virtual void Tick(float DeltaTime) override;
     virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
     
+    // ===== WATER BUDGET TRACKING =====
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Water Budget")
+    float TotalAtmosphericWater = 0.0f;
+    
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Water Budget")
+    float TotalSurfaceWater = 0.0f;
+    
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Water Budget")
+    float TotalGroundwater = 0.0f;
+    
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Water Budget")
+    float InitialTotalWater = -1.0f;
+    
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Water Budget")
+    float UserAddedWater = 0.0f;
+    
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Water Budget")
+    float UserRemovedWater = 0.0f;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Budget")
+    float WaterBudgetUpdateInterval = 1.0f;
+    
+    float WaterBudgetTimer = 0.0f;
+
+public:
+    // ===== WATER BUDGET FUNCTIONS =====
+    
+    UFUNCTION(BlueprintCallable, Category = "Water Budget")
+    void UpdateSystemWaterBudget();
+    
+    UFUNCTION(BlueprintPure, Category = "Water Budget")
+    bool IsWaterConserved(float Tolerance = 1.0f) const;
+    
+    UFUNCTION(BlueprintPure, Category = "Water Budget")
+    FString GetWaterBudgetDebugString() const;
+    
+    UFUNCTION(BlueprintPure, Category = "Water Budget")
+    float GetTotalWaterVolume() const;
+    
+    UFUNCTION(BlueprintCallable, Category = "Water Budget")
+    void TrackUserWaterAddition(float VolumeAdded);
+    
+    UFUNCTION(BlueprintCallable, Category = "Water Budget")
+    void TrackUserWaterRemoval(float VolumeRemoved);
+    
+    UFUNCTION(BlueprintCallable, Category = "Water Budget")
+    void ResetWaterBudget();
+    
+    // ===== DEBUG SETTINGS =====
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Budget")
+    bool bShowWaterBudgetDebug = false;
+    
     // ===== INITIALIZATION PHASES =====
     void InitializeTemporalManager();
     void InitializeSystemControllers();
@@ -730,8 +782,18 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Timing System")
     bool bLogSystemUpdates = true;
     
+    UFUNCTION(Exec, Category = "World Scaling", CallInEditor)
+    void TestWorldScalingIntegrationWithWait();
+
+    UFUNCTION(Exec, Category = "World Scaling", CallInEditor)
+    void ForceSystemReregistration();
+    
     UFUNCTION(BlueprintCallable, Category = "Water System Debug")
     bool ValidateWaterSystemIntegration() const;
+    
+    UFUNCTION(Exec, Category = "Debug")
+    void LogDetailedScalingInfo();
+    
     
     // ===== FUNCTIONS =====
     UFUNCTION(BlueprintCallable, Category = "World Management")
@@ -779,6 +841,101 @@ public:
     UFUNCTION(BlueprintPure, Category = "World Scaling")
     const FWorldCoordinateSystem& GetWorldCoordinateSystem() const { return WorldCoordinateSystem; }
 
+    // ===== WATER VOLUME AUTHORITY CONSTANTS =====
+    static constexpr float WATER_DENSITY_KG_PER_M3 = 1000.0f;
+    static constexpr float SECONDS_PER_HOUR = 3600.0f;
+    static constexpr float MM_TO_M = 0.001f;
+    static constexpr float M_TO_MM = 1000.0f;
+    
+    // Water Depth Scale: 1.0 simulation unit = 1cm of actual water
+    static constexpr float WATER_DEPTH_SCALE = 0.01f; // Critical for DEM integration
+
+    // ===== WATER VOLUME CONVERSIONS =====
+    
+    /**
+     * Convert depth (meters) to moisture mass (kg/m²)
+     */
+    UFUNCTION(BlueprintPure, Category = "Water Authority")
+    static float DepthToMoistureMass(float DepthMeters)
+    {
+        return DepthMeters * WATER_DENSITY_KG_PER_M3;
+    }
+    
+    /**
+     * Convert moisture mass (kg/m²) to depth (meters)
+     */
+    UFUNCTION(BlueprintPure, Category = "Water Authority")
+    static float MoistureMassToDepth(float MassKgPerM2)
+    {
+        return MassKgPerM2 / WATER_DENSITY_KG_PER_M3;
+    }
+    
+    /**
+     * Convert precipitation rate (mm/hr) to meters per second
+     */
+    UFUNCTION(BlueprintPure, Category = "Water Authority")
+    static float PrecipitationRateToMetersPerSecond(float PrecipMMPerHour)
+    {
+        return (PrecipMMPerHour * MM_TO_M) / SECONDS_PER_HOUR;
+    }
+    
+    /**
+     * Convert meters per second to precipitation rate (mm/hr)
+     */
+    UFUNCTION(BlueprintPure, Category = "Water Authority")
+    static float MetersPerSecondToPrecipitationRate(float MetersPerSec)
+    {
+        return (MetersPerSec * M_TO_MM) * SECONDS_PER_HOUR;
+    }
+    
+    // ===== CELL VOLUME CALCULATIONS =====
+    
+    UFUNCTION(BlueprintPure, Category = "Water Authority")
+    float GetAtmosphericCellWaterVolume(float MoistureMass) const;
+    
+    UFUNCTION(BlueprintPure, Category = "Water Authority")
+    float GetWaterCellVolume(float WaterDepth) const;
+    
+    UFUNCTION(BlueprintPure, Category = "Water Authority")
+    float GetGeologyCellWaterVolume(float WaterDepth, float Porosity = 0.3f) const;
+    
+    // ===== INTER-SYSTEM TRANSFER FUNCTIONS =====
+    
+    UFUNCTION(BlueprintCallable, Category = "Water Authority")
+    float TransferPrecipitationToSurface(
+        float PrecipitationRate,
+        float DeltaTime,
+        FVector2D AtmosphericGridPos,
+        FVector2D& OutWaterGridPos) const;
+    
+    UFUNCTION(BlueprintCallable, Category = "Water Authority")
+    float TransferEvaporationToAtmosphere(
+        float EvaporationDepth,
+        FVector2D WaterGridPos,
+        FVector2D& OutAtmosphericGridPos) const;
+    
+    // ===== GRID CONVERSIONS =====
+    
+    UFUNCTION(BlueprintPure, Category = "Water Authority")
+    FVector2D ConvertAtmosphericToWaterGrid(FVector2D AtmosPos) const;
+    
+    UFUNCTION(BlueprintPure, Category = "Water Authority")
+    FVector2D ConvertWaterToAtmosphericGrid(FVector2D WaterPos) const;
+    
+    UFUNCTION(BlueprintPure, Category = "Water Authority")
+    FVector2D ConvertWaterToGeologyGrid(FVector2D WaterPos) const;
+    
+    UFUNCTION(BlueprintPure, Category = "Water Authority")
+    FVector2D ConvertGeologyToWaterGrid(FVector2D GeologyPos) const;
+    
+    // ===== WATER AUTHORITY GRID HELPERS =====
+    
+    UFUNCTION(BlueprintPure, Category = "Water Authority")
+    FVector WaterGridToWorld(FVector2D WaterGridPos) const;
+    
+    UFUNCTION(BlueprintPure, Category = "Water Authority")
+    FVector2D WorldToWaterGrid(FVector WorldPos) const;
+
     UFUNCTION(BlueprintCallable, Category = "Debug")
     void TestAllSystemConnections();
     
@@ -812,5 +969,23 @@ private:
     // Sequential system initialization (no retry logic)
     void InitializeSystemControllersSequentially();
 
+    
+public:
+    /** Diagnose TemporalManager integration issues */
+    UFUNCTION(CallInEditor, Category = "Diagnostics")
+    void DiagnoseTemporalManagerIntegration();
+    
+    // ===== WATER VOLUME AUTHORITY VALIDATION =====
+    
+    UFUNCTION(BlueprintCallable, Category = "Water Authority Testing")
+    void ValidateWaterVolumeAuthority();
+    
+    UFUNCTION(BlueprintCallable, Category = "Water Authority Testing")
+    void TestWaterConservation();
+    
+    UFUNCTION(BlueprintCallable, Category = "Water Authority Testing")
+    void TestConversionAccuracy();
+    
+    
 };
 

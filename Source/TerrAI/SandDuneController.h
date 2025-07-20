@@ -206,6 +206,14 @@ public:
     
     UFUNCTION(BlueprintPure, Category = "World Scaling")
     FString GetScalingDebugInfo() const;
+    
+    // Authority Control
+    
+    UPROPERTY()
+    float DuneUpdateTimer = 0.0f;
+    
+    UPROPERTY()
+    bool bSystemInitialized = false;
 
 private:
     // ===== SYSTEM REFERENCES =====
@@ -227,11 +235,7 @@ private:
     UPROPERTY()
     FVector CurrentWindVector = FVector::ZeroVector;
     
-    UPROPERTY()
-    float DuneUpdateTimer = 0.0f;
-    
-    UPROPERTY()
-    bool bSystemInitialized = false;
+
     
     // ===== WORLD SCALING STATE =====
     

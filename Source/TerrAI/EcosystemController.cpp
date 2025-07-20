@@ -13,7 +13,8 @@
 
 AEcosystemController::AEcosystemController()
 {
-    PrimaryActorTick.bCanEverTick = true;
+    // DISABLE individual ticking - only update through MasterController
+    PrimaryActorTick.bCanEverTick = false;
     
     RootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("EcosystemRoot"));
     
@@ -48,13 +49,30 @@ void AEcosystemController::BeginPlay()
     Super::BeginPlay();
     
     InitializeVegetationMeshes();
+    
+    // ENSURE ticking is disabled
+    SetActorTickEnabled(false);
 }
 
 void AEcosystemController::Tick(float DeltaTime)
 {
     Super::Tick(DeltaTime);
+    // REMOVE all ecosystem simulation from Tick
+    // Only update through MasterController temporal calls
+}
+
+// NEW: Temporal update function called by MasterController
+void AEcosystemController::UpdateEcosystemSystem(float DeltaTime)
+{
+    if (!bSystemInitialized)
+    {
+        return;
+    }
     
-    if (bSystemInitialized && bEnableVegetationGrowth)
+    UE_LOG(LogTemp, VeryVerbose, TEXT("EcosystemController: Temporal update (dt=%.4f)"), DeltaTime);
+    
+    // Move all ecosystem simulation logic here from Tick
+    if (bEnableVegetationGrowth)
     {
         VegetationUpdateTimer += DeltaTime;
         if (VegetationUpdateTimer >= VegetationUpdateInterval)

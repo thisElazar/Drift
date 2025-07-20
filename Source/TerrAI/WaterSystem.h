@@ -901,6 +901,9 @@ public:
     class AMasterWorldController* CachedMasterController = nullptr;
     
     
+    
+    
+    
 private:
   
     // ===== ISCALABLESYSTEM STATE =====
@@ -962,6 +965,24 @@ public:
     
     UFUNCTION(BlueprintCallable, Category = "Water Debug")
     void DebugWaterAtCursor();
+    
+    UFUNCTION(BlueprintPure, Category = "Water Simulation")
+    const FWaterSimulationData& GetSimulationData() const { return SimulationData; }
+    
+    // Water simulation data
+    FWaterSimulationData SimulationData;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Physics|8-Directional Flow")
+    bool bUse8DirectionalFlow = true;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Physics|8-Directional Flow",
+        meta = (ClampMin = "0.0", ClampMax = "1.0"))
+    float DiagonalFlowWeight = 0.7071f; // 1/sqrt(2)
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Physics|8-Directional Flow",
+        meta = (ClampMin = "0.0", ClampMax = "1.0"))
+    float WaterViscosity = 0.01f;
+
 
 private:
     
@@ -970,8 +991,7 @@ private:
     UPROPERTY()
     ADynamicTerrain* OwnerTerrain = nullptr;
     
-    // Water simulation data
-    FWaterSimulationData SimulationData;
+
     
     // Weather system
     float WeatherTimer = 0.0f;

@@ -2,6 +2,8 @@
 #include "AtmosphericSystem.h"
 #include "DynamicTerrain.h"
 #include "WaterSystem.h"
+#include "GeologyController.h"
+#include "EcosystemController.h"
 #include "TemporalManager.h"
 #include "MasterController.h"
 #include "Engine/Engine.h"
@@ -17,9 +19,8 @@ UAtmosphericSystem::UAtmosphericSystem()
     // Initialize default atmospheric settings
     GridWidth = 64;
     GridHeight = 64;
-    GridLayers = 12;
     CellSize = 1000.0f;
-    LayerHeight = 500.0f;
+  
     
     // Climate defaults for temperate zone
     BaseTemperature = 288.15f;  // 15°C
@@ -86,9 +87,6 @@ void UAtmosphericSystem::Initialize(ADynamicTerrain* InTerrain, UWaterSystem* In
     GridWidth = FMath::Max(32, FMath::RoundToInt(TerrainWidth / CellSize));
     GridHeight = FMath::Max(32, FMath::RoundToInt(TerrainHeight / CellSize));
     
-    UE_LOG(LogTemp, Warning, TEXT("AtmosphericSystem: Grid size %dx%dx%d covering %.1fkm terrain"),
-           GridWidth, GridHeight, GridLayers, TerrainWidth / 1000.0f);
-    
     InitializeAtmosphericGrid();
     
     // Get temporal manager reference
@@ -142,1275 +140,313 @@ void UAtmosphericSystem::Initialize(ADynamicTerrain* InTerrain, UWaterSystem* In
        }
 }
 
+// In AtmosphericSystem.cpp
+
 void UAtmosphericSystem::InitializeAtmosphericGrid()
 {
-    int32 TotalCells = GridWidth * GridHeight * GridLayers;
+    if (!TerrainSystem)
+    {
+        UE_LOG(LogTemp, Error, TEXT("AtmosphericSystem: Cannot initialize grid without terrain"));
+        return;
+    }
+    
+    // CRITICAL CHANGE: 2D grid with single layer instead of 3D
+    int32 TotalCells = GridWidth * GridHeight;
     AtmosphericGrid.SetNum(TotalCells);
     
-    // Initialize each atmospheric cell with realistic values
-    for (int32 Z = 0; Z < GridLayers; Z++)
+    UE_LOG(LogTemp, Warning, TEXT("AtmosphericSystem: Initializing SIMPLIFIED 2D grid %dx%d"),
+           GridWidth, GridHeight);
+    
+    // Initialize with prevailing wind pattern
+    for (int32 Y = 0; Y < GridHeight; Y++)
     {
-        float Altitude = Z * LayerHeight;
-        
-        for (int32 Y = 0; Y < GridHeight; Y++)
+        for (int32 X = 0; X < GridWidth; X++)
         {
-            for (int32 X = 0; X < GridWidth; X++)
-            {
-                int32 Index = GetGridIndex(X, Y, Z);
-                FAtmosphericCell& Cell = AtmosphericGrid[Index];
-                
-                // Temperature decreases with altitude (lapse rate)
-                Cell.Temperature = BaseTemperature - (Altitude / 1000.0f) * AltitudeGradient;
-                
-                // Pressure decreases exponentially with altitude (barometric formula)
-                Cell.Pressure = 101325.0f * FMath::Pow(1.0f - (0.0065f * Altitude) / 288.15f, 5.255f);
-                
-                // Density from ideal gas law
-                Cell.Density = Cell.Pressure / (AtmosphericConstants::GAS_CONSTANT * Cell.Temperature);
-                
-                // Humidity decreases with altitude
-                Cell.Humidity = FMath::Max(0.1f, 0.7f * FMath::Exp(-Altitude / 3000.0f));
-                
-                // Initial water vapor mass
-                float SaturationPressure = Cell.GetSaturationVaporPressure();
-                Cell.WaterVaporMass = (Cell.Humidity * SaturationPressure) / 
-                                     (AtmosphericConstants::GAS_CONSTANT * Cell.Temperature) * 0.622f;
-                
-                // Initialize wind with prevailing pattern + some variation
-                float WindVariation = FMath::RandRange(-2.0f, 2.0f);
-                Cell.Velocity = FVector(
-                    WindPattern.X + WindVariation,
-                    WindPattern.Y + WindVariation * 0.5f,
-                    0.0f
-                );
-                
-                // Initialize other properties
-                Cell.CloudWaterContent = 0.0f;
-                Cell.CloudCoverFraction = 0.0f;
-                Cell.PrecipitationRate = 0.0f;
-                Cell.Albedo = 0.3f;
-                
-                // Calculate initial radiation based on altitude
-                Cell.SolarRadiation = 1361.0f * FMath::Pow(0.7f, Z); // Atmospheric absorption
-            }
+            int32 Index = Y * GridWidth + X;
+            FSimplifiedAtmosphericCell& Cell = AtmosphericGrid[Index];
+            
+            // Simple initialization
+            Cell.Temperature = BaseTemperature;
+            Cell.Humidity = 0.5f;
+            Cell.MoistureMass = 0.2f;      // kg/m² starting moisture WAS 1.5f too much than .1 nothing at all
+            Cell.CloudCover = 0.0f;
+            Cell.PrecipitationRate = 0.0f;
+            
+            // Initialize with prevailing wind pattern
+            Cell.WindVector = WindPattern;
         }
     }
     
-    UE_LOG(LogTemp, Warning, TEXT("AtmosphericSystem: Initialized %d cells with realistic atmosphere"),
+    UE_LOG(LogTemp, Warning, TEXT("AtmosphericSystem: Initialized %d cells with simplified atmosphere"),
            TotalCells);
+}
+
+// Simplified grid access (2D only)
+int32 UAtmosphericSystem::GetGridIndex(int32 X, int32 Y) const
+{
+    if (X < 0 || X >= GridWidth || Y < 0 || Y >= GridHeight)
+    {
+        return 0;
+    }
+    return Y * GridWidth + X;
+}
+
+FSimplifiedAtmosphericCell& UAtmosphericSystem::GetCell(int32 X, int32 Y)
+{
+    return AtmosphericGrid[GetGridIndex(X, Y)];
+}
+
+const FSimplifiedAtmosphericCell& UAtmosphericSystem::GetCell(int32 X, int32 Y) const
+{
+    return AtmosphericGrid[GetGridIndex(X, Y)];
 }
 
 // ===== CORE SIMULATION =====
 
 void UAtmosphericSystem::UpdateAtmosphericSimulation(float DeltaTime)
 {
+    
+    UE_LOG(LogTemp, VeryVerbose, TEXT("🌧️ UpdateAtmosphericSimulation CALLED with DT=%.4f"), DeltaTime);
+      
+      if (!TerrainSystem || AtmosphericGrid.Num() == 0)
+      {
+          UE_LOG(LogTemp, Error, TEXT("🌧️ UpdateAtmosphericSimulation FAILED - no terrain or grid"));
+          return;
+      }
+      
+     // UE_LOG(LogTemp, Warning, TEXT("🌧️ Processing atmospheric simulation steps..."));
+      
     if (!TerrainSystem || AtmosphericGrid.Num() == 0)
     {
         return;
     }
     
-    float ScaledDeltaTime = DeltaTime;
-    float AtmosphericTime = 0.0f;
+    // LOGICAL ORDER: Transport → Condensation → Terrain Effects → Water Transfer
     
-    // Use temporal manager if available
-    if (bUseTemporalManager && TemporalManager)
-    {
-        // Check if atmospheric system should update this frame
-        if (!TemporalManager->ShouldSystemUpdate(ESystemType::Atmospheric, TemporalUpdateFrequency))
-        {
-            return;
-        }
-        
-        // Get temporally scaled delta time
-        ScaledDeltaTime = TemporalManager->GetSystemDeltaTime(ESystemType::Atmospheric, DeltaTime);
-        AtmosphericTime = TemporalManager->GetSystemTime(ESystemType::Atmospheric);
-    }
-    else
-    {
-        // Fallback to accumulating real time
-        AccumulatedTime += DeltaTime;
-        AtmosphericTime = AccumulatedTime;
-        
-        // Use adaptive time stepping
-        if (bUseAdaptiveTimeStep)
-        {
-            float TimeStep = 1.0f / UpdateFrequency;
-            if (AccumulatedTime < TimeStep)
-            {
-                return;
-            }
-            ScaledDeltaTime = AccumulatedTime;
-            AccumulatedTime = 0.0f;
-        }
-    }
+    // 1. Transport moisture with wind
+    AdvectMoisture(DeltaTime);
     
-    // Core atmospheric physics updates (using scaled time)
-    UpdateThermodynamics(ScaledDeltaTime);
-    UpdateFluidDynamics(ScaledDeltaTime);
-    UpdateCloudPhysics(ScaledDeltaTime);
-    UpdateRadiation(ScaledDeltaTime);
+    // 2. MAIN PRECIPITATION PROCESS - where rain actually forms
+    ProcessCondensationAndPrecipitation(DeltaTime);
     
-    // Weather pattern systems
-    UpdateWeatherPatterns(ScaledDeltaTime);
+    // 3. Terrain effects modify existing precipitation patterns
+    ApplyOrographicEffects(DeltaTime);
     
-    // Boundary interactions
-    ApplyTerrainInteraction();
+    // 4. Transfer precipitation to water system
+    //UE_LOG(LogTemp, Warning, TEXT("🌧️ Calling ProcessPrecipitation..."));
+    ProcessPrecipitation(DeltaTime);
     
-    // Interface with other systems
-    UpdateWaterSystemInterface();
+    // 5. Process evaporation (adds moisture back) Evaporation managed in water system and evapotrans is too complex
+    //ProcessEvaporation(DeltaTime);
+    //ProcessEvapotranspiration(DeltaTime);
     
-    // Update cloud rendering system
-    if (bEnableCloudRendering)
-    {
-        UpdateCloudRendering(ScaledDeltaTime);
-    }
+    // 6. Process springs (groundwater → surface water) managed in geology controller
+    //ProcessGroundwaterDischarge(DeltaTime);
     
-    // Debug logging with temporal information
-    static float LastDebugTime = 0.0f;
-    if (bUseTemporalManager && TemporalManager && AtmosphericTime - LastDebugTime > 60.0f) // Log every simulated minute
-    {
-        UE_LOG(LogTemp, VeryVerbose, TEXT("AtmosphericSystem: Simulated time %.2f, Real time scale %.2fx"), 
-               AtmosphericTime, TemporalManager->GetSystemTimeScale(ESystemType::Atmospheric));
-        LastDebugTime = AtmosphericTime;
-    }
+    // 7. Update visual states
+    UpdateCloudCoverFromMoisture();
 }
 
-// ===== THERMODYNAMICS =====
-
-void UAtmosphericSystem::UpdateThermodynamics(float DeltaTime)
+// ===== MAIN PRECIPITATION PROCESS =====
+void UAtmosphericSystem::ProcessCondensationAndPrecipitation(float DeltaTime)
 {
-    CalculateTemperatureField();
-    CalculatePressureField();
-    CalculateHumidityTransport(DeltaTime);
-    ProcessPhaseChanges(DeltaTime);
-}
-
-void UAtmosphericSystem::CalculateTemperatureField()
-{
-    if (!TerrainSystem || !TerrainSystem->GetWorld())
-    {
-        return;
-    }
-    
-    UWorld* World = TerrainSystem->GetWorld();
-    float TimeOfDay = FMath::Fmod(World->GetTimeSeconds() / 3600.0f, 24.0f);
-    float SeasonProgress = FMath::Fmod(World->GetTimeSeconds() / (24.0f * 3600.0f * 365.0f), 1.0f);
-    
-    float SolarElevation = FMath::Sin((TimeOfDay - 6.0f) * PI / 12.0f);
-    float SeasonalFactor = FMath::Cos(SeasonProgress * 2.0f * PI);
-    
-    ParallelFor(GridLayers, [&](int32 Z)
-    {
-        float Altitude = Z * LayerHeight;
-        
-        for (int32 Y = 0; Y < GridHeight; Y++)
-        {
-            for (int32 X = 0; X < GridWidth; X++)
-            {
-                int32 Index = GetGridIndex(X, Y, Z);
-                FAtmosphericCell& Cell = AtmosphericGrid[Index];
-                
-                float BaseTemp = BaseTemperature - (Altitude / 1000.0f) * AltitudeGradient;
-                float SeasonalTemp = BaseTemp + SeasonalAmplitude * SeasonalFactor;
-                float DiurnalFactor = FMath::Max(0.0f, SolarElevation);
-                float SurfaceWeight = FMath::Exp(-Altitude / 1000.0f);
-                float DiurnalTemp = SeasonalTemp + DiurnalAmplitude * DiurnalFactor * SurfaceWeight;
-                
-                Cell.Temperature = FMath::FInterpTo(Cell.Temperature, DiurnalTemp, 0.1f, 0.1f);
-                
-                if (Z == 0)
-                {
-                    Cell.SolarRadiation = 1361.0f * FMath::Max(0.0f, SolarElevation) * 
-                                         (1.0f - Cell.CloudCoverFraction * 0.8f);
-                }
-            }
-        }
-    });
-}
-
-void UAtmosphericSystem::CalculatePressureField()
-{
-    // Update pressure based on temperature changes (hydrostatic equilibrium)
     for (int32 Y = 0; Y < GridHeight; Y++)
     {
         for (int32 X = 0; X < GridWidth; X++)
         {
-            // Start from surface and work upward
-            for (int32 Z = 1; Z < GridLayers; Z++)
+            FSimplifiedAtmosphericCell& Cell = AtmosphericGrid[GetGridIndex(X, Y)];
+            
+            // Calculate saturation point for this temperature
+            float SaturationMoisture = CalculateSaturationMoisture(Cell.Temperature);
+            
+            // CONDENSATION: If moisture exceeds saturation, form precipitation
+            if (Cell.MoistureMass > SaturationMoisture)
             {
-                int32 Index = GetGridIndex(X, Y, Z);
-                int32 BelowIndex = GetGridIndex(X, Y, Z - 1);
+                float ExcessMoisture = Cell.MoistureMass - SaturationMoisture;
                 
-                FAtmosphericCell& Cell = AtmosphericGrid[Index];
-                const FAtmosphericCell& BelowCell = AtmosphericGrid[BelowIndex];
+                // Condensation rate - how fast excess moisture becomes rain
+                float CondensationRate = 0.8f; // 80% of excess converts per frame
+                float CondensedMoisture = ExcessMoisture * CondensationRate * DeltaTime;
                 
-                // Barometric formula for pressure decrease
-                float DeltaAltitude = LayerHeight;
-                float AvgTemp = (Cell.Temperature + BelowCell.Temperature) * 0.5f;
-                float PressureRatio = FMath::Exp(-AtmosphericConstants::GRAVITY * DeltaAltitude / 
-                                                (AtmosphericConstants::GAS_CONSTANT * AvgTemp));
+                // Convert condensed moisture to precipitation rate using Water Volume Authority
+                float DepthPerSec = AMasterWorldController::MoistureMassToDepth(CondensedMoisture);
+                float NewPrecipitation = AMasterWorldController::MetersPerSecondToPrecipitationRate(DepthPerSec);
                 
-                Cell.Pressure = BelowCell.Pressure * PressureRatio;
+                // ✅ NOW apply rate limiting (after initialization)
+                NewPrecipitation = FMath::Min(NewPrecipitation, 75.0f); // Cap at heavy rain
                 
-                // Update density from ideal gas law
-                Cell.Density = Cell.Pressure / (AtmosphericConstants::GAS_CONSTANT * Cell.Temperature);
-            }
-        }
-    }
-}
-
-void UAtmosphericSystem::CalculateHumidityTransport(float DeltaTime)
-{
-    // TODO: Humidity advection with wind
-}
-
-void UAtmosphericSystem::ProcessPhaseChanges(float DeltaTime)
-{
-    // TODO: Condensation and evaporation
-}
-
-// ===== FLUID DYNAMICS =====
-
-void UAtmosphericSystem::UpdateFluidDynamics(float DeltaTime)
-{
-    CalculatePressureGradientForce();
-    CalculateCoriolisForce();
-    CalculateViscousForces();
-    AdvectWindField(DeltaTime);
-    EnforceContinuityEquation();
-}
-
-void UAtmosphericSystem::CalculatePressureGradientForce()
-{
-    for (int32 Z = 0; Z < GridLayers; Z++)
-    {
-        for (int32 Y = 1; Y < GridHeight - 1; Y++)
-        {
-            for (int32 X = 1; X < GridWidth - 1; X++)
-            {
-                int32 Index = GetGridIndex(X, Y, Z);
-                FAtmosphericCell& Cell = AtmosphericGrid[Index];
+                // Update precipitation rate (SET, don't accumulate)
+                Cell.PrecipitationRate = NewPrecipitation;
                 
-                float PressureLeft = AtmosphericGrid[GetGridIndex(X - 1, Y, Z)].Pressure;
-                float PressureRight = AtmosphericGrid[GetGridIndex(X + 1, Y, Z)].Pressure;
-                float PressureUp = AtmosphericGrid[GetGridIndex(X, Y - 1, Z)].Pressure;
-                float PressureDown = AtmosphericGrid[GetGridIndex(X, Y + 1, Z)].Pressure;
+                // Remove condensed moisture from atmosphere
+                Cell.MoistureMass -= CondensedMoisture;
                 
-                FVector PressureForce;
-                PressureForce.X = -(PressureRight - PressureLeft) / (2.0f * CellSize * Cell.Density);
-                PressureForce.Y = -(PressureDown - PressureUp) / (2.0f * CellSize * Cell.Density);
-                PressureForce.Z = 0.0f;
+                // Update cloud cover based on precipitation intensity
+                Cell.CloudCover = FMath::Clamp(Cell.PrecipitationRate / 20.0f, 0.0f, 1.0f);
                 
-                Cell.Acceleration = PressureForce;
-            }
-        }
-    }
-}
-
-void UAtmosphericSystem::CalculateCoriolisForce()
-{
-    float CoriolisParameter = 2.0f * AtmosphericConstants::CORIOLIS_COEFFICIENT;
-    
-    for (FAtmosphericCell& Cell : AtmosphericGrid)
-    {
-        FVector CoriolisForce;
-        CoriolisForce.X = CoriolisParameter * Cell.Velocity.Y;
-        CoriolisForce.Y = -CoriolisParameter * Cell.Velocity.X;
-        CoriolisForce.Z = 0.0f;
-        
-        Cell.Acceleration += CoriolisForce;
-    }
-}
-
-void UAtmosphericSystem::CalculateViscousForces()
-{
-    float ViscosityCoefficient = 0.01f;
-    
-    for (FAtmosphericCell& Cell : AtmosphericGrid)
-    {
-        Cell.Acceleration += -Cell.Velocity * ViscosityCoefficient;
-    }
-}
-
-void UAtmosphericSystem::AdvectWindField(float DeltaTime)
-{
-    for (FAtmosphericCell& Cell : AtmosphericGrid)
-    {
-        Cell.Velocity += Cell.Acceleration * DeltaTime;
-        Cell.Velocity *= 0.99f;
-        
-        float MaxWindSpeed = 50.0f;
-        if (Cell.Velocity.Size() > MaxWindSpeed)
-        {
-            Cell.Velocity = Cell.Velocity.GetSafeNormal() * MaxWindSpeed;
-        }
-    }
-}
-
-void UAtmosphericSystem::EnforceContinuityEquation()
-{
-    for (int32 Z = 0; Z < GridLayers; Z++)
-    {
-        for (int32 Y = 1; Y < GridHeight - 1; Y++)
-        {
-            for (int32 X = 1; X < GridWidth - 1; X++)
-            {
-                int32 Index = GetGridIndex(X, Y, Z);
-                FAtmosphericCell& Cell = AtmosphericGrid[Index];
-                
-                float VelLeft = AtmosphericGrid[GetGridIndex(X - 1, Y, Z)].Velocity.X;
-                float VelRight = AtmosphericGrid[GetGridIndex(X + 1, Y, Z)].Velocity.X;
-                float VelUp = AtmosphericGrid[GetGridIndex(X, Y - 1, Z)].Velocity.Y;
-                float VelDown = AtmosphericGrid[GetGridIndex(X, Y + 1, Z)].Velocity.Y;
-                
-                Cell.Divergence = (VelRight - VelLeft) / (2.0f * CellSize) + 
-                                 (VelDown - VelUp) / (2.0f * CellSize);
-            }
-        }
-    }
-}
-
-// ===== CLOUD PHYSICS =====
-
-void UAtmosphericSystem::UpdateCloudPhysics(float DeltaTime)
-{
-    // Enhanced cloud and precipitation generation
-    for (int32 Z = 0; Z < GridLayers; Z++)
-    {
-        for (int32 Y = 0; Y < GridHeight; Y++)
-        {
-            for (int32 X = 0; X < GridWidth; X++)
-            {
-                int32 Index = GetGridIndex(X, Y, Z);
-                FAtmosphericCell& Cell = AtmosphericGrid[Index];
-                
-                // Cloud formation at condensation level
-                if (Cell.IsCondensationLevel())
+                // Log significant precipitation events
+                if (Cell.PrecipitationRate > 5.0f)
                 {
-                    // Generate clouds based on humidity and altitude
-                    float Altitude = Z * LayerHeight;
-                    float CloudFormationRate = 0.1f;
-                    
-                    if (Altitude >= 1000.0f && Altitude <= 4000.0f) // Typical cloud altitudes
+                    static int32 LoggedCells = 0;
+                    if (LoggedCells < 5) // Limit spam
                     {
-                        float HumidityFactor = FMath::Clamp((Cell.Humidity - 0.6f) / 0.4f, 0.0f, 1.0f);
-                        float AltitudeFactor = 1.0f - FMath::Abs(Altitude - 2500.0f) / 1500.0f; // Peak at 2.5km
-                        AltitudeFactor = FMath::Clamp(AltitudeFactor, 0.0f, 1.0f);
-                        
-                        // Increase cloud cover
-                        Cell.CloudCoverFraction += CloudFormationRate * HumidityFactor * AltitudeFactor * DeltaTime;
-                        Cell.CloudCoverFraction = FMath::Clamp(Cell.CloudCoverFraction, 0.0f, 1.0f);
-                        
-                        // Generate cloud water content
-                        Cell.CloudWaterContent = Cell.CloudCoverFraction * 0.5f; // kg/m³
+                        UE_LOG(LogTemp, Warning, TEXT("🌧️ CONDENSATION RAIN: %.1f mm/hr at grid (%d,%d)"),
+                               Cell.PrecipitationRate, X, Y);
+                        LoggedCells++;
                     }
                 }
-                else
-                {
-                    // Gradual cloud dissipation
-                    Cell.CloudCoverFraction *= 0.99f;
-                    Cell.CloudWaterContent *= 0.99f;
-                }
+            }
+            
+            // EVAPORATION: Precipitation naturally decreases over time
+            if (Cell.PrecipitationRate > 0.0f)
+            {
+                float EvaporationRate = 0.001f; // .1% decay per second lowered from 5 than lowered from 1
+                Cell.PrecipitationRate *= (1.0f - EvaporationRate * DeltaTime);
                 
-                // Enhanced precipitation generation
-                if (Cell.CloudCoverFraction > 0.3f && Cell.Humidity > 0.7f)
+                // Threshold - stop very light rain
+                if (Cell.PrecipitationRate < 0.01f)
                 {
-                    // Calculate precipitation based on cloud water content and conditions
-                    float BaseRate = Cell.CloudWaterContent * 100.0f; // Convert to mm/hr
-                    
-                    // Temperature factor (more rain in warmer conditions)
-                    float TempFactor = FMath::Clamp((Cell.Temperature - 0.0f) / 20.0f, 0.1f, 1.0f);
-                    
-                    // Apply weather pattern influence
-                    float PatternBoost = 1.0f;
-                    for (const FWeatherPattern& Pattern : ActiveWeatherPatterns)
-                    {
-                        FVector2D GridPos(X * CellSize, Y * CellSize);
-                        float Distance = FVector2D::Distance(GridPos, Pattern.Center);
-                        
-                        if (Distance < Pattern.Radius)
-                        {
-                            float Influence = 1.0f - (Distance / Pattern.Radius);
-                            if (Pattern.PatternType == EWeatherPattern::LowPressure)
-                            {
-                                PatternBoost += Influence * Pattern.Intensity * 2.0f;
-                            }
-                        }
-                    }
-                    
-                    // Calculate final precipitation rate
-                    Cell.PrecipitationRate = BaseRate * TempFactor * PatternBoost;
-                    
-                    // Reduce cloud water as it precipitates
-                    Cell.CloudWaterContent *= (1.0f - 0.1f * DeltaTime);
-                    
-                    // Increase precipitation if supersaturated
-                    if (Cell.Humidity > 0.95f)
-                    {
-                        Cell.PrecipitationRate *= 2.0f;
-                        Cell.Humidity = 0.9f; // Remove excess humidity
-                    }
-                }
-                else
-                {
-                    // Gradually reduce precipitation
-                    Cell.PrecipitationRate *= 0.95f;
-                    if (Cell.PrecipitationRate < 0.01f)
-                    {
-                        Cell.PrecipitationRate = 0.0f;
-                    }
+                    Cell.PrecipitationRate = 0.0f;
                 }
             }
         }
     }
-}
-
-void UAtmosphericSystem::ProcessCondensation(float DeltaTime)
-{
-    // TODO: Water vapor to cloud droplets
-}
-
-void UAtmosphericSystem::ProcessEvaporation(float DeltaTime)
-{
-    // TODO: Cloud droplets back to vapor
-}
-
-void UAtmosphericSystem::ProcessCollisionCoalescence(float DeltaTime)
-{
-    // TODO: Droplet growth and precipitation
-}
-
-void UAtmosphericSystem::CalculateCloudDropletGrowth(float DeltaTime)
-{
-    // TODO: Detailed cloud microphysics
-}
-
-// ===== RADIATION =====
-
-void UAtmosphericSystem::UpdateRadiation(float DeltaTime)
-{
-    // TODO: Solar and thermal radiation
 }
 
 // ===== WEATHER PATTERNS =====
 
-void UAtmosphericSystem::UpdateWeatherPatterns(float DeltaTime)
+void UAtmosphericSystem::CreateWeatherEffect(FVector2D Location, float Radius, float Intensity)
 {
-    // Update existing patterns
-    for (FWeatherPattern& Pattern : ActiveWeatherPatterns)
-    {
-        // Move patterns across the landscape
-        Pattern.Center += Pattern.Movement * DeltaTime * 10.0f; // 10x speed for visible movement
-        Pattern.Age += DeltaTime;
-        
-        // Gradually weaken patterns over time
-        Pattern.Intensity *= (1.0f - DeltaTime * 0.01f); // 1% decay per second
-        
-        // Apply pattern effects to atmospheric grid
-        // * USE Just Single Implementation// ApplyWeatherPatternToGrid(Pattern);
-    }
+    UE_LOG(LogTemp, Warning, TEXT("AtmosphericSystem: Creating weather effect - Intensity %.2f at %s"),
+           Intensity, *Location.ToString());
     
-    // Remove expired patterns
-    ActiveWeatherPatterns.RemoveAll([](const FWeatherPattern& Pattern) {
-        return Pattern.Age > 1800.0f || Pattern.Intensity < 0.1f; // Remove after 30 min or weak
-    });
-    
-    // CRITICAL: Remove expired patterns to prevent memory issues
-    ActiveWeatherPatterns.RemoveAll([DeltaTime](FWeatherPattern& Pattern) {
-        Pattern.Age += DeltaTime;
-        return Pattern.Age > Pattern.LifeTime;
-    });
-    
-    // CRITICAL: Limit total number of active patterns
-    const int32 MaxActivePatterns = 10;
-    if (ActiveWeatherPatterns.Num() > MaxActivePatterns)
-    {
-        // Remove oldest patterns
-        ActiveWeatherPatterns.Sort([](const FWeatherPattern& A, const FWeatherPattern& B) {
-            return A.Age > B.Age;
-        });
-        ActiveWeatherPatterns.SetNum(MaxActivePatterns);
-    }
-    
-    // Update pattern positions
-    for (FWeatherPattern& Pattern : ActiveWeatherPatterns)
-    {
-        Pattern.Center += Pattern.Movement * DeltaTime;
-    }
-    
-    // Apply patterns to atmospheric grid
-    ApplyWeatherPatterns();
-
-    
-    // Generate new patterns occasionally (every 5-10 minutes)
-    static float PatternTimer = 0.0f;
-    PatternTimer += DeltaTime;
-    if (PatternTimer > 300.0f && FMath::RandRange(0.0f, 1.0f) < 0.1f)
-    {
-        GenerateNewWeatherPattern();
-        PatternTimer = 0.0f;
-    }
-    
-    UE_LOG(LogTemp, VeryVerbose, TEXT("[WEATHER] %d active patterns"), ActiveWeatherPatterns.Num());
-}
-
-void UAtmosphericSystem::ApplyWeatherPatterns()
-{
-    // Apply all active weather patterns to the atmospheric grid
-    for (const FWeatherPattern& Pattern : ActiveWeatherPatterns)
-    {
-        ApplyWeatherPatternToGrid(Pattern);
-    }
-}
-
-void UAtmosphericSystem::ApplyWeatherPatternToGrid(const FWeatherPattern& Pattern)
-{
-    float CellSize = (TerrainSystem->TerrainWidth * TerrainSystem->TerrainScale) / GridWidth;
-    
-    for (int32 Z = 0; Z < GridLayers; Z++)
-    {
-        for (int32 Y = 0; Y < GridHeight; Y++)
-        {
-            for (int32 X = 0; X < GridWidth; X++)
-            {
-                int32 Index = GetGridIndex(X, Y, Z);
-                FAtmosphericCell& Cell = AtmosphericGrid[Index];
-                
-                // Calculate distance from pattern center
-                FVector2D GridPos(X * CellSize, Y * CellSize);
-                float DistanceToPattern = FVector2D::Distance(GridPos, Pattern.Center);
-                
-                if (DistanceToPattern < Pattern.Radius)
-                {
-                    float PatternInfluence = 1.0f - (DistanceToPattern / Pattern.Radius);
-                    float AltitudeFactor = 1.0f;
-                    
-                    // Height-based effects (more activity at mid-altitudes)
-                    float Altitude = Z * LayerHeight;
-                    if (Altitude >= 1000.0f && Altitude <= 8000.0f)
-                    {
-                        AltitudeFactor = 1.0f - FMath::Abs(Altitude - 4000.0f) / 4000.0f;
-                        AltitudeFactor = FMath::Clamp(AltitudeFactor, 0.3f, 1.0f);
-                    }
-                    else
-                    {
-                        AltitudeFactor = 0.1f; // Minimal activity outside optimal altitude
-                    }
-                    
-                    if (Pattern.PatternType == EWeatherPattern::LowPressure)
-                    {
-                        // Low pressure systems create rising air, clouds, and precipitation
-                        float Effect = PatternInfluence * Pattern.Intensity * AltitudeFactor;
-                        
-                        Cell.Humidity = FMath::Min(Cell.Humidity + Effect * 0.2f, 1.0f);
-                        Cell.CloudCoverFraction = FMath::Min(Cell.CloudCoverFraction + Effect * 0.3f, 1.0f);
-                        Cell.CloudWaterContent = FMath::Min(Cell.CloudWaterContent + Effect * 0.5f, 2.0f);
-                        Cell.PrecipitationRate = FMath::Min(Cell.PrecipitationRate + Effect * 8.0f, 25.0f);
-                        
-                        // Add some turbulence
-                        Cell.Pressure -= Effect * 500.0f; // Lower pressure
-                        Cell.Temperature += Effect * 2.0f; // Slight warming from condensation
-                    }
-                    else if (Pattern.PatternType == EWeatherPattern::HighPressure)
-                    {
-                        // High pressure systems create descending air, clear skies
-                        float Effect = PatternInfluence * Pattern.Intensity * AltitudeFactor;
-                        
-                        Cell.CloudCoverFraction = FMath::Max(Cell.CloudCoverFraction - Effect * 0.2f, 0.0f);
-                        Cell.PrecipitationRate = FMath::Max(Cell.PrecipitationRate - Effect * 3.0f, 0.0f);
-                        Cell.Pressure += Effect * 300.0f; // Higher pressure
-                    }
-                }
-            }
-        }
-    }
-}
-
-void UAtmosphericSystem::ApplyHighPressureSystem(const FWeatherPattern& Pattern)
-{
-    // TODO: Clear, stable weather effects
-}
-
-void UAtmosphericSystem::ApplyLowPressureSystem(const FWeatherPattern& Pattern)
-{
-    // TODO: Stormy, unstable weather effects
-}
-
-void UAtmosphericSystem::ApplyFrontalSystem(const FWeatherPattern& Pattern)
-{
-    // TODO: Weather front effects
-}
-
-void UAtmosphericSystem::ApplyConvectiveForcing(const FWeatherPattern& Pattern)
-{
-    // TODO: Thunderstorm effects
-}
-
-void UAtmosphericSystem::GenerateNewWeatherPattern()
-{
-    //UE_LOG(LogTemp, Warning, TEXT("GenerateNewWeatherPatternsRemoved");
-           /*
-    if (!TerrainSystem) return;
-    
-    FWeatherPattern NewPattern;
-    
-    // Random position within terrain bounds
-    float TerrainWorldWidth = TerrainSystem->TerrainWidth * TerrainSystem->TerrainScale;
-    float TerrainWorldHeight = TerrainSystem->TerrainHeight * TerrainSystem->TerrainScale;
-    
-    NewPattern.Center = FVector2D(
-        FMath::RandRange(0.0f, TerrainWorldWidth),
-        FMath::RandRange(0.0f, TerrainWorldHeight)
-    );
-    
-    // Random pattern type (70% low pressure for more rain)
-    NewPattern.PatternType = (FMath::RandRange(0.0f, 1.0f) < 0.7f) ? 
-        EWeatherPattern::LowPressure : EWeatherPattern::HighPressure;
-    
-    // Random properties
-    NewPattern.Intensity = FMath::RandRange(0.5f, 2.0f);
-    NewPattern.Radius = FMath::RandRange(5000.0f, 15000.0f);
-    NewPattern.Age = 0.0f;
-    
-    // Random movement direction
-    float Angle = FMath::RandRange(0.0f, 2.0f * PI);
-    float Speed = FMath::RandRange(2.0f, 8.0f); // m/s typical weather system speed
-    NewPattern.Movement = FVector2D(FMath::Cos(Angle) * Speed, FMath::Sin(Angle) * Speed);
-    
-    ActiveWeatherPatterns.Add(NewPattern);
-    
-    UE_LOG(LogTemp, Warning, TEXT("[WEATHER] Created new %s system at (%.0f, %.0f)"),
-           (NewPattern.PatternType == EWeatherPattern::LowPressure) ? TEXT("LOW") : TEXT("HIGH"),
-           NewPattern.Center.X, NewPattern.Center.Y);
-    */
-}
-
-void UAtmosphericSystem::RemoveExpiredWeatherPatterns()
-{
-    // TODO: Remove old weather patterns
-}
-
-void UAtmosphericSystem::ApplyOrographicLift()
-{
-    // TODO: Mountain effects on air masses
-}
-
-// ===== SYSTEM INTEGRATION =====
-
-void UAtmosphericSystem::UpdateWaterSystemInterface()
-{
-    if (!WaterSystem || !TerrainSystem)
-    {
-        return; // Fail silently without spam
-    }
-    
-    // CRITICAL FIX: Don't try coordinate transforms without MasterController
-    if (!MasterController)
-    {
-        static float LastErrorTime = 0.0f;
-        float CurrentTime = TerrainSystem->GetWorld() ? TerrainSystem->GetWorld()->GetTimeSeconds() : 0.0f;
-        if (CurrentTime - LastErrorTime > 5.0f) // Only log every 5 seconds
-        {
-            UE_LOG(LogTemp, Warning, TEXT("[ATMOSPHERIC] Waiting for MasterController connection..."));
-            LastErrorTime = CurrentTime;
-        }
-        return;
-    }
-    
-    // DEBUGGING: Check if atmospheric simulation is actually generating precipitation
-    static float LastDebugTime = 0.0f;
-    float CurrentTime = TerrainSystem->GetWorld() ? TerrainSystem->GetWorld()->GetTimeSeconds() : 0.0f;
-    bool bShouldLogDebug = (CurrentTime - LastDebugTime) > 10.0f; // Every 10 seconds
-    
-    if (bShouldLogDebug)
-    {
-        UE_LOG(LogTemp, Warning, TEXT("[ATMOSPHERIC DEBUG] UpdateWaterSystemInterface called - Time: %.1fs"), CurrentTime);
-        UE_LOG(LogTemp, Warning, TEXT("[ATMOSPHERIC DEBUG] Active weather patterns: %d"), ActiveWeatherPatterns.Num());
-        
-        // Check if any cells have precipitation
-        int32 CellsWithPrecipitation = 0;
-        float MaxPrecipitation = 0.0f;
-        for (int32 Y = 0; Y < GridHeight; Y++)
-        {
-            for (int32 X = 0; X < GridWidth; X++)
-            {
-                float Precipitation = GetPrecipitationAt(GridToWorldCoordinates(X, Y, 0));
-                if (Precipitation > 0.01f)
-                {
-                    CellsWithPrecipitation++;
-                    MaxPrecipitation = FMath::Max(MaxPrecipitation, Precipitation);
-                }
-            }
-        }
-        
-        UE_LOG(LogTemp, Warning, TEXT("[ATMOSPHERIC DEBUG] Cells with precipitation: %d, Max: %.3f mm/hr"), 
-               CellsWithPrecipitation, MaxPrecipitation);
-        LastDebugTime = CurrentTime;
-    }
-    
-    // OPTIMIZED PRECIPITATION APPLICATION: Collect affected chunks first
-    TSet<int32> AffectedChunks;
-    float TotalPrecipitationApplied = 0.0f;
-    int32 CellsWithPrecipitation = 0;
-    
-    // Apply precipitation to water system and collect chunk updates
     for (int32 Y = 0; Y < GridHeight; Y++)
     {
         for (int32 X = 0; X < GridWidth; X++)
         {
-            float Precipitation = GetPrecipitationAt(GridToWorldCoordinates(X, Y, 0));
+            FVector2D CellPos(X * CellSize, Y * CellSize);
+            float Distance = FVector2D::Distance(CellPos, Location);
             
-            if (Precipitation > 0.1f) // Minimum threshold (0.1 mm/hr)
+            if (Distance < Radius)
             {
-                // CRITICAL FIX: Proper precipitation rate conversion
-                // mm/hr to m/s: divide by 3,600,000 (3600 seconds * 1000 mm/m)
-                // Then multiply by DeltaTime to get actual water depth addition per frame
-                float WaterDepthPerSecond = Precipitation / 3600000.0f; // mm/hr to m/s
+                FSimplifiedAtmosphericCell& Cell = AtmosphericGrid[GetGridIndex(X, Y)];
                 
-                // Get frame time from world context
-                float DeltaTime = 0.016f; // Default 60 FPS fallback
-                if (TerrainSystem && TerrainSystem->GetWorld())
-                {
-                    DeltaTime = TerrainSystem->GetWorld()->GetDeltaSeconds();
-                }
+                float Influence = 1.0f - (Distance / Radius);
                 
-                float WaterAmount = WaterDepthPerSecond * DeltaTime;
+                // ADD MOISTURE (which will condense into precipitation naturally)
+                float MoistureBoost = Intensity * Influence * 1.0f; // Significant moisture injection WITH 15.0f
+                Cell.MoistureMass += MoistureBoost;
                 
-                // Apply to multiple terrain points within this atmospheric cell for natural distribution
-                int32 TerrainPointsPerCell = FMath::RandRange(4, 12); // Variable rain density
-                for (int32 i = 0; i < TerrainPointsPerCell; i++)
-                {
-                    // Create natural precipitation pattern with some clustering
-                    FVector2D RandomOffset(
-                        FMath::RandRange(-CellSize * 0.4f, CellSize * 0.4f),
-                        FMath::RandRange(-CellSize * 0.4f, CellSize * 0.4f)
-                    );
-                    
-                    FVector WorldPos = GridToWorldCoordinates(X, Y, 0);
-                    WorldPos.X += RandomOffset.X;
-                    WorldPos.Y += RandomOffset.Y;
-                    
-                    // CRITICAL: Apply rain to water system
-                    // Divide water amount by number of points to maintain correct total
-                    WaterSystem->AddWater(WorldPos, WaterAmount / TerrainPointsPerCell);
-                    TotalPrecipitationApplied += WaterAmount / TerrainPointsPerCell;
-                    
-                    // OPTIMIZATION: Track affected chunks for batch update
-                    FVector2D TerrainCoords = MasterController->WorldToTerrainCoordinates(WorldPos);
-                    int32 ChunkIndex = TerrainSystem->GetChunkIndexFromCoordinates(
-                        FMath::FloorToInt(TerrainCoords.X), 
-                        FMath::FloorToInt(TerrainCoords.Y)
-                    );
-                    if (ChunkIndex >= 0)
-                    {
-                        AffectedChunks.Add(ChunkIndex);
-                    }
-                }
+                // Boost temperature slightly (storm energy)
+                Cell.Temperature += Influence * 2.0f;
                 
-                CellsWithPrecipitation++;
+                // Create convergent wind pattern (storms have inward flow)
+                FVector2D ToCenter = (Location - CellPos).GetSafeNormal();
+                Cell.WindVector += ToCenter * Influence * Intensity * 3.0f;
+                
+                UE_LOG(LogTemp, VeryVerbose, TEXT("Added %.1f moisture to cell (%d,%d)"),
+                       MoistureBoost, X, Y);
             }
         }
     }
     
-    // CRITICAL OPTIMIZATION: Use new batch water update system
-    if (AffectedChunks.Num() > 0)
+    UE_LOG(LogTemp, Warning, TEXT("✅ Weather effect created - moisture added, precipitation will form naturally"));
+}
+
+// ===== SYSTEM INTEGRATION =====
+/*
+void UAtmosphericSystem::UpdateWaterSystemInterface()
+{
+    if (!WaterSystem) return;
+    
+    // Atmosphere's only job: rain becomes surface water
+    float DeltaTime = GetWorld()->GetDeltaSeconds();
+    
+    for (const auto& Cell : AtmosphericGrid)
     {
-        TerrainSystem->BatchUpdateWaterChunks(AffectedChunks.Array());
-        
-        if (bShouldLogDebug)
+        if (Cell.PrecipitationRate > 0.01f) // Raining?
         {
-            UE_LOG(LogTemp, Warning, TEXT("[ATMOSPHERIC INTEGRATION] Batch updated %d water chunks for precipitation"), AffectedChunks.Num());
+            // mm/hr → m/s → simulation units
+            float WaterToAdd = Cell.PrecipitationRate * 2.78e-7f / AMasterWorldController::WATER_DEPTH_SCALE * DeltaTime;
+            WaterSystem->AddWater(Cell.WorldPosition, WaterToAdd);
+        }
+    }
+}
+*/
+void UAtmosphericSystem::LogPrecipitationActivity()
+{
+    static float LastLogTime = 0.0f;
+    float CurrentTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+    
+    // Only log every 5 seconds for performance
+    if (CurrentTime - LastLogTime < 5.0f) return;
+    
+    LastLogTime = CurrentTime;
+    
+    // Count active precipitation cells
+    int32 ActiveCells = 0;
+    float TotalPrecipitation = 0.0f;
+    
+    for (const FSimplifiedAtmosphericCell& Cell : AtmosphericGrid)
+    {
+        if (Cell.PrecipitationRate > 0.1f)
+        {
+            ActiveCells++;
+            TotalPrecipitation += Cell.PrecipitationRate;
         }
     }
     
-    // Log precipitation integration activity (throttled)
-    static float LastPrecipitationLogTime = 0.0f;
-    if (TerrainSystem && TerrainSystem->GetWorld())
+    if (ActiveCells > 0)
     {
-        float CurrentTime = TerrainSystem->GetWorld()->GetTimeSeconds();
-        if (TotalPrecipitationApplied > 0.0f && (CurrentTime - LastPrecipitationLogTime) > 5.0f)
-        {
-            UE_LOG(LogTemp, Warning, TEXT("[ATMOSPHERIC INTEGRATION] Applied precipitation: %.6f m total to %d cells, updated %d chunks"),
-                   TotalPrecipitationApplied, CellsWithPrecipitation, AffectedChunks.Num());
-            LastPrecipitationLogTime = CurrentTime;
-        }
-        else if (TotalPrecipitationApplied == 0.0f && (CurrentTime - LastPrecipitationLogTime) > 15.0f)
-        {
-            UE_LOG(LogTemp, Warning, TEXT("[ATMOSPHERIC INTEGRATION] No precipitation generated yet - atmospheric simulation may need more time"));
-            LastPrecipitationLogTime = CurrentTime;
-        }
+        UE_LOG(LogTemp, Log, TEXT("[ATMOSPHERIC] Active precipitation: %d cells, Total: %.1f mm/hr"),
+               ActiveCells, TotalPrecipitation);
     }
-}
-
-void UAtmosphericSystem::ApplyTerrainInteraction()
-{
-    // TODO: Terrain effects on atmosphere
-}
-
-void UAtmosphericSystem::ProcessSurfaceHeatFlux()
-{
-    // TODO: Surface heating effects
-}
-
-void UAtmosphericSystem::CalculateEvapotranspiration()
-{
-    // TODO: Water evaporation from surface
-}
-
-void UAtmosphericSystem::ApplyTopographicEffects()
-{
-    // TODO: Terrain-driven atmospheric effects
-}
-
-void UAtmosphericSystem::UpdateTerrainInterface()
-{
-    // TODO: Interface with terrain system
 }
 
 // ===== QUERY INTERFACE =====
 
 float UAtmosphericSystem::GetTemperatureAt(FVector WorldPosition) const
 {
-    FVector GridPos = WorldToGridCoordinates(WorldPosition);
+    FVector2D GridPos = WorldToGridCoordinates(WorldPosition);
     
     int32 X = FMath::FloorToInt(GridPos.X);
     int32 Y = FMath::FloorToInt(GridPos.Y);
-    int32 Z = FMath::FloorToInt(GridPos.Z);
     
-    if (X >= 0 && X < GridWidth - 1 && Y >= 0 && Y < GridHeight - 1 && Z >= 0 && Z < GridLayers - 1)
+    if (X >= 0 && X < GridWidth - 1 && Y >= 0 && Y < GridHeight - 1)
     {
-        // Trilinear interpolation
+        // Simple bilinear interpolation (no Z component!)
         float FracX = GridPos.X - X;
         float FracY = GridPos.Y - Y;
-        float FracZ = GridPos.Z - Z;
         
-        float T000 = AtmosphericGrid[GetGridIndex(X, Y, Z)].Temperature;
-        float T100 = AtmosphericGrid[GetGridIndex(X + 1, Y, Z)].Temperature;
-        float T010 = AtmosphericGrid[GetGridIndex(X, Y + 1, Z)].Temperature;
-        float T110 = AtmosphericGrid[GetGridIndex(X + 1, Y + 1, Z)].Temperature;
-        float T001 = AtmosphericGrid[GetGridIndex(X, Y, Z + 1)].Temperature;
-        float T101 = AtmosphericGrid[GetGridIndex(X + 1, Y, Z + 1)].Temperature;
-        float T011 = AtmosphericGrid[GetGridIndex(X, Y + 1, Z + 1)].Temperature;
-        float T111 = AtmosphericGrid[GetGridIndex(X + 1, Y + 1, Z + 1)].Temperature;
+        float T00 = AtmosphericGrid[GetGridIndex(X, Y)].Temperature;
+        float T10 = AtmosphericGrid[GetGridIndex(X + 1, Y)].Temperature;
+        float T01 = AtmosphericGrid[GetGridIndex(X, Y + 1)].Temperature;
+        float T11 = AtmosphericGrid[GetGridIndex(X + 1, Y + 1)].Temperature;
         
-        float T00 = FMath::Lerp(T000, T100, FracX);
-        float T10 = FMath::Lerp(T010, T110, FracX);
-        float T01 = FMath::Lerp(T001, T101, FracX);
-        float T11 = FMath::Lerp(T011, T111, FracX);
+        float T0 = FMath::Lerp(T00, T10, FracX);
+        float T1 = FMath::Lerp(T01, T11, FracX);
         
-        float T0 = FMath::Lerp(T00, T10, FracY);
-        float T1 = FMath::Lerp(T01, T11, FracY);
-        
-        return FMath::Lerp(T0, T1, FracZ);
+        return FMath::Lerp(T0, T1, FracY);
     }
     
     return BaseTemperature;
 }
 
-float UAtmosphericSystem::GetPressureAt(FVector WorldPosition) const
-{
-    // TODO: Interpolate pressure at position
-    return 101325.0f;
-}
-
 float UAtmosphericSystem::GetHumidityAt(FVector WorldPosition) const
 {
-    // TODO: Interpolate humidity at position
+    // Similar simplified interpolation
+    FVector2D GridPos = WorldToGridCoordinates(WorldPosition);
+    int32 X = FMath::FloorToInt(GridPos.X);
+    int32 Y = FMath::FloorToInt(GridPos.Y);
+    
+    if (X >= 0 && X < GridWidth && Y >= 0 && Y < GridHeight)
+    {
+        return AtmosphericGrid[GetGridIndex(X, Y)].Humidity;
+    }
+    
     return 0.5f;
 }
 
-FVector UAtmosphericSystem::GetWindAt(FVector WorldPosition) const
-{
-    // TODO: Interpolate wind at position
-    return FVector::ZeroVector;
-}
-
-float UAtmosphericSystem::GetPrecipitationAt(FVector WorldPosition) const
-{
-    if (!TerrainSystem || AtmosphericGrid.Num() == 0)
-    {
-        return 0.0f;
-    }
-    
-    // Convert world position to grid coordinates
-    FVector LocalPosition = TerrainSystem->GetActorTransform().InverseTransformPosition(WorldPosition);
-    
-    float CellSize = (TerrainSystem->TerrainWidth * TerrainSystem->TerrainScale) / GridWidth;
-    int32 X = FMath::Clamp(FMath::FloorToInt(LocalPosition.X / CellSize), 0, GridWidth - 1);
-    int32 Y = FMath::Clamp(FMath::FloorToInt(LocalPosition.Y / CellSize), 0, GridHeight - 1);
-    
-    // CRITICAL FIX: Return MAXIMUM precipitation across all layers, not average
-    float MaxPrecipitation = 0.0f;
-    for (int32 Z = 0; Z < GridLayers; Z++)
-    {
-        int32 Index = GetGridIndex(X, Y, Z);
-        if (Index >= 0 && Index < AtmosphericGrid.Num())
-        {
-            MaxPrecipitation = FMath::Max(MaxPrecipitation, AtmosphericGrid[Index].PrecipitationRate);
-        }
-    }
-    
-    return MaxPrecipitation;
-}
-
-float UAtmosphericSystem::GetCloudCoverAt(FVector WorldPosition) const
-{
-    // TODO: Interpolate cloud cover at position
-    return 0.0f;
-}
-
-// ===== CONTROL INTERFACE =====
-
-void UAtmosphericSystem::CreateHighPressureSystem(FVector2D Center, float Strength)
-{
-    FWeatherPattern NewPattern;
-    NewPattern.PatternType = EWeatherPattern::HighPressure;
-    NewPattern.Center = Center;
-    NewPattern.Intensity = Strength;
-    NewPattern.Radius = 15000.0f;
-    NewPattern.LifeTime = 7200.0f; // 2 hours
-    NewPattern.Movement = FVector2D(2.0f, 1.0f);
-    NewPattern.Age = 0.0f;
-    
-    ActiveWeatherPatterns.Add(NewPattern);
-    UE_LOG(LogTemp, VeryVerbose, TEXT("Created high pressure system at (%.0f, %.0f)"), Center.X, Center.Y);
-}
-
-void UAtmosphericSystem::CreateLowPressureSystem(FVector2D Center, float Strength)
-{
-    FWeatherPattern NewPattern;
-    NewPattern.PatternType = EWeatherPattern::LowPressure;
-    NewPattern.Center = Center;
-    NewPattern.Intensity = Strength;
-    NewPattern.Radius = 20000.0f;
-    NewPattern.LifeTime = 10800.0f; // 3 hours
-    NewPattern.Movement = FVector2D(-1.0f, 2.0f);
-    NewPattern.Age = 0.0f;
-    
-    ActiveWeatherPatterns.Add(NewPattern);
-    UE_LOG(LogTemp, VeryVerbose, TEXT("Created low pressure system at (%.0f, %.0f)"), Center.X, Center.Y);
-}
-
-void UAtmosphericSystem::CreateFrontalSystem(FVector2D Start, FVector2D End, float Intensity)
-{
-    // TODO: Create weather front
-}
-
-void UAtmosphericSystem::SetSeasonProgress(float Progress)
-{
-    // TODO: Set seasonal progression
-}
-
-void UAtmosphericSystem::SetTimeOfDay(float Hours)
-{
-    // TODO: Set time of day for solar heating
-}
-
-void UAtmosphericSystem::ForceTestPrecipitation()
-{
-    UE_LOG(LogTemp, Warning, TEXT("[ATMOS] TEST PRECIPITATION REMOVED"));
-    /*
-    // Force precipitation in central region for immediate testing
-    int32 CenterX = GridWidth / 2;
-    int32 CenterY = GridHeight / 2;
-    int32 TestRadius = 8; // 16x16 cell area
-    
-    for (int32 Y = CenterY - TestRadius; Y <= CenterY + TestRadius; Y++)
-    {
-        for (int32 X = CenterX - TestRadius; X <= CenterX + TestRadius; X++)
-        {
-            if (X >= 0 && X < GridWidth && Y >= 0 && Y < GridHeight)
-            {
-                for (int32 Z = 1; Z < GridLayers - 1; Z++) // Skip ground and top layer
-                {
-                    int32 Index = GetGridIndex(X, Y, Z);
-                    if (Index >= 0 && Index < AtmosphericGrid.Num())
-                    {
-                        AtmosphericGrid[Index].CloudCoverFraction = 0.9f;
-                        AtmosphericGrid[Index].CloudWaterContent = 2.0f;
-                        AtmosphericGrid[Index].Humidity = 0.95f;
-                        AtmosphericGrid[Index].PrecipitationRate = 12.0f; // Heavy rain
-                    }
-                }
-            }
-        }
-    }
-    
-    UE_LOG(LogTemp, Warning, TEXT("[ATMOS] Test precipitation active - check water system"));
-*/
-}
-
-// ===== ATMOSPHERIC BRUSHES =====
-
-void UAtmosphericSystem::ApplyTemperatureBrush(FVector WorldPosition, float Radius, float TemperatureChange, float Strength)
-{
-    FVector GridPos = WorldToGridCoordinates(WorldPosition);
-    int32 CenterX = FMath::RoundToInt(GridPos.X);
-    int32 CenterY = FMath::RoundToInt(GridPos.Y);
-    int32 RadiusInCells = FMath::CeilToInt(Radius / CellSize);
-    
-    for (int32 Z = 0; Z < GridLayers; Z++)
-    {
-        for (int32 Y = CenterY - RadiusInCells; Y <= CenterY + RadiusInCells; Y++)
-        {
-            for (int32 X = CenterX - RadiusInCells; X <= CenterX + RadiusInCells; X++)
-            {
-                if (X >= 0 && X < GridWidth && Y >= 0 && Y < GridHeight)
-                {
-                    float Distance = FMath::Sqrt((float)(FMath::Square(X - CenterX) + FMath::Square(Y - CenterY)));
-                    if (Distance <= RadiusInCells)
-                    {
-                        float Falloff = 1.0f - (Distance / RadiusInCells);
-                        Falloff = FMath::Pow(Falloff, 2.0f); // Quadratic falloff
-                        
-                        int32 Index = GetGridIndex(X, Y, Z);
-                        AtmosphericGrid[Index].Temperature += TemperatureChange * Falloff * Strength;
-                        AtmosphericGrid[Index].Temperature = FMath::Clamp(AtmosphericGrid[Index].Temperature, 200.0f, 350.0f);
-                    }
-                }
-            }
-        }
-    }
-    
-    UE_LOG(LogTemp, Warning, TEXT("[BRUSH] Applied temperature brush: %.1f°C at (%.0f, %.0f)"), 
-           TemperatureChange, WorldPosition.X, WorldPosition.Y);
-}
-
-void UAtmosphericSystem::ApplyHumidityBrush(FVector WorldPosition, float Radius, float HumidityChange, float Strength)
-{
-    FVector GridPos = WorldToGridCoordinates(WorldPosition);
-    int32 CenterX = FMath::RoundToInt(GridPos.X);
-    int32 CenterY = FMath::RoundToInt(GridPos.Y);
-    int32 RadiusInCells = FMath::CeilToInt(Radius / CellSize);
-    
-    for (int32 Z = 0; Z < 6; Z++) // Focus on lower atmosphere
-    {
-        for (int32 Y = CenterY - RadiusInCells; Y <= CenterY + RadiusInCells; Y++)
-        {
-            for (int32 X = CenterX - RadiusInCells; X <= CenterX + RadiusInCells; X++)
-            {
-                if (X >= 0 && X < GridWidth && Y >= 0 && Y < GridHeight)
-                {
-                    float Distance = FMath::Sqrt((float)(FMath::Square(X - CenterX) + FMath::Square(Y - CenterY)));
-                    if (Distance <= RadiusInCells)
-                    {
-                        float Falloff = 1.0f - (Distance / RadiusInCells);
-                        
-                        int32 Index = GetGridIndex(X, Y, Z);
-                        AtmosphericGrid[Index].Humidity += HumidityChange * Falloff * Strength;
-                        AtmosphericGrid[Index].Humidity = FMath::Clamp(AtmosphericGrid[Index].Humidity, 0.0f, 1.0f);
-                    }
-                }
-            }
-        }
-    }
-    
-    UE_LOG(LogTemp, Warning, TEXT("[BRUSH] Applied humidity brush: %.2f at (%.0f, %.0f)"), 
-           HumidityChange, WorldPosition.X, WorldPosition.Y);
-}
-
-void UAtmosphericSystem::ApplyPrecipitationBrush(FVector WorldPosition, float Radius, float RainIntensity, float Duration)
-{
-    FVector GridPos = WorldToGridCoordinates(WorldPosition);
-    int32 CenterX = FMath::RoundToInt(GridPos.X);
-    int32 CenterY = FMath::RoundToInt(GridPos.Y);
-    int32 RadiusInCells = FMath::CeilToInt(Radius / CellSize);
-    
-    // Create temporary weather pattern for sustained rain
-    FWeatherPattern RainPattern;
-    RainPattern.PatternType = EWeatherPattern::LowPressure;
-    RainPattern.Center = FVector2D(WorldPosition.X, WorldPosition.Y);
-    RainPattern.Intensity = RainIntensity / 10.0f; // Scale intensity
-    RainPattern.Radius = Radius;
-    RainPattern.Movement = FVector2D::ZeroVector; // Stationary
-    RainPattern.LifeTime = Duration;
-    RainPattern.Age = 0.0f;
-    
-    ActiveWeatherPatterns.Add(RainPattern);
-    
-    // Immediate precipitation effect
-    for (int32 Z = 2; Z < 8; Z++) // Rain formation layers
-    {
-        for (int32 Y = CenterY - RadiusInCells; Y <= CenterY + RadiusInCells; Y++)
-        {
-            for (int32 X = CenterX - RadiusInCells; X <= CenterX + RadiusInCells; X++)
-            {
-                if (X >= 0 && X < GridWidth && Y >= 0 && Y < GridHeight)
-                {
-                    float Distance = FMath::Sqrt((float)FMath::Square(X - CenterX) + FMath::Square(Y - CenterY));
-                    if (Distance <= RadiusInCells)
-                    {
-                        float Falloff = 1.0f - (Distance / RadiusInCells);
-                        
-                        int32 Index = GetGridIndex(X, Y, Z);
-                        AtmosphericGrid[Index].CloudCoverFraction = FMath::Min(AtmosphericGrid[Index].CloudCoverFraction + 0.8f * Falloff, 1.0f);
-                        AtmosphericGrid[Index].CloudWaterContent = FMath::Min(AtmosphericGrid[Index].CloudWaterContent + 1.5f * Falloff, 3.0f);
-                        AtmosphericGrid[Index].Humidity = FMath::Min(AtmosphericGrid[Index].Humidity + 0.3f * Falloff, 1.0f);
-                        AtmosphericGrid[Index].PrecipitationRate = FMath::Max(AtmosphericGrid[Index].PrecipitationRate, RainIntensity * Falloff);
-                    }
-                }
-            }
-        }
-    }
-    
-    UE_LOG(LogTemp, Warning, TEXT("[BRUSH] Applied precipitation brush: %.1f mm/hr for %.0fs at (%.0f, %.0f)"), 
-           RainIntensity, Duration, WorldPosition.X, WorldPosition.Y);
-}
-
-void UAtmosphericSystem::ApplyCloudBrush(FVector WorldPosition, float Radius, float CloudDensity, float Strength)
-{
-    FVector GridPos = WorldToGridCoordinates(WorldPosition);
-    int32 CenterX = FMath::RoundToInt(GridPos.X);
-    int32 CenterY = FMath::RoundToInt(GridPos.Y);
-    int32 RadiusInCells = FMath::CeilToInt(Radius / CellSize);
-    
-    for (int32 Z = 3; Z < 9; Z++) // Cloud formation layers
-    {
-        for (int32 Y = CenterY - RadiusInCells; Y <= CenterY + RadiusInCells; Y++)
-        {
-            for (int32 X = CenterX - RadiusInCells; X <= CenterX + RadiusInCells; X++)
-            {
-                if (X >= 0 && X < GridWidth && Y >= 0 && Y < GridHeight)
-                {
-                    float Distance = FMath::Sqrt((float)FMath::Square(X - CenterX) + FMath::Square(Y - CenterY));
-                    if (Distance <= RadiusInCells)
-                    {
-                        float Falloff = 1.0f - (Distance / RadiusInCells);
-                        
-                        int32 Index = GetGridIndex(X, Y, Z);
-                        AtmosphericGrid[Index].CloudCoverFraction += CloudDensity * Falloff * Strength;
-                        AtmosphericGrid[Index].CloudCoverFraction = FMath::Clamp(AtmosphericGrid[Index].CloudCoverFraction, 0.0f, 1.0f);
-                        
-                        if (CloudDensity > 0.0f)
-                        {
-                            AtmosphericGrid[Index].CloudWaterContent += CloudDensity * 0.5f * Falloff * Strength;
-                            AtmosphericGrid[Index].CloudWaterContent = FMath::Clamp(AtmosphericGrid[Index].CloudWaterContent, 0.0f, 2.0f);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    UE_LOG(LogTemp, Warning, TEXT("[BRUSH] Applied cloud brush: %.2f density at (%.0f, %.0f)"), 
-           CloudDensity, WorldPosition.X, WorldPosition.Y);
-}
-
-void UAtmosphericSystem::ClearWeatherBrush(FVector WorldPosition, float Radius, float Strength)
-{
-    FVector GridPos = WorldToGridCoordinates(WorldPosition);
-    int32 CenterX = FMath::RoundToInt(GridPos.X);
-    int32 CenterY = FMath::RoundToInt(GridPos.Y);
-    int32 RadiusInCells = FMath::CeilToInt(Radius / CellSize);
-    
-    for (int32 Z = 0; Z < GridLayers; Z++)
-    {
-        for (int32 Y = CenterY - RadiusInCells; Y <= CenterY + RadiusInCells; Y++)
-        {
-            for (int32 X = CenterX - RadiusInCells; X <= CenterX + RadiusInCells; X++)
-            {
-                if (X >= 0 && X < GridWidth && Y >= 0 && Y < GridHeight)
-                {
-                    float Distance = FMath::Sqrt((float)FMath::Square(X - CenterX) + FMath::Square(Y - CenterY));
-                    if (Distance <= RadiusInCells)
-                    {
-                        float Falloff = 1.0f - (Distance / RadiusInCells);
-                        float ClearStrength = Falloff * Strength;
-                        
-                        int32 Index = GetGridIndex(X, Y, Z);
-                        AtmosphericGrid[Index].CloudCoverFraction *= (1.0f - ClearStrength);
-                        AtmosphericGrid[Index].CloudWaterContent *= (1.0f - ClearStrength);
-                        AtmosphericGrid[Index].PrecipitationRate *= (1.0f - ClearStrength * 0.5f);
-                        
-                        // Restore normal humidity
-                        float TargetHumidity = 0.5f + (Z * LayerHeight) / 10000.0f * 0.3f; // Altitude-based
-                        AtmosphericGrid[Index].Humidity = FMath::FInterpTo(AtmosphericGrid[Index].Humidity, TargetHumidity, 1.0f, ClearStrength);
-                    }
-                }
-            }
-        }
-    }
-    
-    UE_LOG(LogTemp, Warning, TEXT("[BRUSH] Applied clear weather brush at (%.0f, %.0f)"), 
-           WorldPosition.X, WorldPosition.Y);
-}
-
-// ===== UTILITY FUNCTIONS =====
-
-int32 UAtmosphericSystem::GetGridIndex(int32 X, int32 Y, int32 Z) const
-{
-    if (X < 0 || X >= GridWidth || Y < 0 || Y >= GridHeight || Z < 0 || Z >= GridLayers)
-    {
-        return 0; // Return valid index as fallback
-    }
-    return Z * GridWidth * GridHeight + Y * GridWidth + X;
-}
-
-FAtmosphericCell& UAtmosphericSystem::GetCell(int32 X, int32 Y, int32 Z)
-{
-    return AtmosphericGrid[GetGridIndex(X, Y, Z)];
-}
-
-const FAtmosphericCell& UAtmosphericSystem::GetCell(int32 X, int32 Y, int32 Z) const
-{
-    return AtmosphericGrid[GetGridIndex(X, Y, Z)];
-}
-
-FVector UAtmosphericSystem::WorldToGridCoordinates(FVector WorldPosition) const
-{
-    return FVector(
-        WorldPosition.X / CellSize,
-        WorldPosition.Y / CellSize,
-        WorldPosition.Z / LayerHeight
-    );
-}
-
-FVector UAtmosphericSystem::GridToWorldCoordinates(int32 X, int32 Y, int32 Z) const
-{
-    return FVector(
-        X * CellSize,
-        Y * CellSize,
-        Z * LayerHeight
-    );
-}
-
-// ===== NUMERICAL METHODS - STUBS =====
-
-float UAtmosphericSystem::CalculateGradientX(const TArray<float>& Field, int32 X, int32 Y, int32 Z) const
-{
-    // TODO: Calculate spatial derivative in X direction
-    return 0.0f;
-}
-
-float UAtmosphericSystem::CalculateGradientY(const TArray<float>& Field, int32 X, int32 Y, int32 Z) const
-{
-    // TODO: Calculate spatial derivative in Y direction
-    return 0.0f;
-}
-
-float UAtmosphericSystem::CalculateGradientZ(const TArray<float>& Field, int32 X, int32 Y, int32 Z) const
-{
-    // TODO: Calculate spatial derivative in Z direction
-    return 0.0f;
-}
-
-float UAtmosphericSystem::CalculateLaplacian(const TArray<float>& Field, int32 X, int32 Y, int32 Z) const
-{
-    // TODO: Calculate Laplacian operator
-    return 0.0f;
-}
-
-float UAtmosphericSystem::InterpolateField(const TArray<float>& Field, FVector WorldPosition) const
-{
-    // TODO: Trilinear interpolation
-    return 0.0f;
-}
-
-FVector UAtmosphericSystem::InterpolateVectorField(const TArray<FVector>& Field, FVector WorldPosition) const
-{
-    // TODO: Vector field interpolation
-    return FVector::ZeroVector;
-}
 
 // ===== CLOUD RENDERING SYSTEM IMPLEMENTATION =====
 
@@ -1482,25 +518,6 @@ void UAtmosphericSystem::UpdateCloudMeshes()
     }
 }
 
-float UAtmosphericSystem::GetCloudCoverageAt(int32 X, int32 Y) const
-{
-    // Sample multiple atmospheric layers and average cloud coverage
-    float TotalCloudCover = 0.0f;
-    int32 CloudLayers = 0;
-    
-    for (int32 Z = 4; Z < 8; Z++) // Typical cloud altitude layers (2-4km)
-    {
-        int32 Index = GetGridIndex(X, Y, Z);
-        if (Index >= 0 && Index < AtmosphericGrid.Num())
-        {
-            const FAtmosphericCell& Cell = AtmosphericGrid[Index];
-            TotalCloudCover += Cell.CloudCoverFraction;
-            CloudLayers++;
-        }
-    }
-    
-    return CloudLayers > 0 ? TotalCloudCover / CloudLayers : 0.0f;
-}
 
 FVector UAtmosphericSystem::GetCloudWorldPosition(int32 AtmosphericX, int32 AtmosphericY) const
 {
@@ -1619,121 +636,6 @@ void UAtmosphericSystem::HideUnusedCloudMeshes(int32 UsedMeshCount)
     }
 }
 
-// ===== ATMOSPHERIC EDITING FUNCTIONS =====
-
-void UAtmosphericSystem::ApplyWindBrush(FVector Position, float Radius, FVector WindForce, float Intensity)
-{
-    if (AtmosphericGrid.Num() == 0)
-    {
-        UE_LOG(LogTemp, Warning, TEXT("AtmosphericSystem: Cannot apply wind brush - grid not initialized"));
-        return;
-    }
-    
-    // Apply wind brush effect to atmospheric grid
-    FVector GridPos = WorldToGridCoordinates(Position);
-    int32 CenterX = FMath::RoundToInt(GridPos.X);
-    int32 CenterY = FMath::RoundToInt(GridPos.Y);
-    int32 CenterZ = FMath::RoundToInt(GridPos.Z);
-    
-    float GridRadius = Radius / CellSize;
-    int32 IntRadius = FMath::CeilToInt(GridRadius);
-    
-    for (int32 Z = FMath::Max(0, CenterZ - IntRadius); Z <= FMath::Min(GridLayers - 1, CenterZ + IntRadius); Z++)
-    {
-        for (int32 Y = FMath::Max(0, CenterY - IntRadius); Y <= FMath::Min(GridHeight - 1, CenterY + IntRadius); Y++)
-        {
-            for (int32 X = FMath::Max(0, CenterX - IntRadius); X <= FMath::Min(GridWidth - 1, CenterX + IntRadius); X++)
-            {
-                float Distance = FVector::Dist(FVector(X, Y, Z), FVector(CenterX, CenterY, CenterZ));
-                
-                if (Distance <= GridRadius)
-                {
-                    // Calculate falloff based on distance
-                    float Falloff = 1.0f - (Distance / GridRadius);
-                    Falloff = FMath::Pow(Falloff, 2.0f); // Smooth falloff
-                    
-                    int32 Index = GetGridIndex(X, Y, Z);
-                    if (Index >= 0 && Index < AtmosphericGrid.Num())
-                    {
-                        FAtmosphericCell& Cell = AtmosphericGrid[Index];
-                        
-                        // Apply wind force with falloff and intensity
-                        FVector ScaledForce = WindForce * Falloff * Intensity;
-                        Cell.Velocity += ScaledForce;
-                        
-                        // Clamp to reasonable wind speeds
-                        float MaxWindSpeed = 100.0f; // m/s (hurricane force)
-                        if (Cell.Velocity.Size() > MaxWindSpeed)
-                        {
-                            Cell.Velocity = Cell.Velocity.GetSafeNormal() * MaxWindSpeed;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    UE_LOG(LogTemp, Log, TEXT("Applied wind brush at %.1f,%.1f,%.1f with force %.1f,%.1f,%.1f"),
-           Position.X, Position.Y, Position.Z, WindForce.X, WindForce.Y, WindForce.Z);
-}
-
-void UAtmosphericSystem::ApplyPressureBrush(FVector Position, float Radius, float PressureDelta, float Intensity)
-{
-    if (AtmosphericGrid.Num() == 0)
-    {
-        UE_LOG(LogTemp, Warning, TEXT("AtmosphericSystem: Cannot apply pressure brush - grid not initialized"));
-        return;
-    }
-    
-    // Apply pressure brush effect to atmospheric grid
-    FVector GridPos = WorldToGridCoordinates(Position);
-    int32 CenterX = FMath::RoundToInt(GridPos.X);
-    int32 CenterY = FMath::RoundToInt(GridPos.Y);
-    int32 CenterZ = FMath::RoundToInt(GridPos.Z);
-    
-    float GridRadius = Radius / CellSize;
-    int32 IntRadius = FMath::CeilToInt(GridRadius);
-    
-    for (int32 Z = FMath::Max(0, CenterZ - IntRadius); Z <= FMath::Min(GridLayers - 1, CenterZ + IntRadius); Z++)
-    {
-        for (int32 Y = FMath::Max(0, CenterY - IntRadius); Y <= FMath::Min(GridHeight - 1, CenterY + IntRadius); Y++)
-        {
-            for (int32 X = FMath::Max(0, CenterX - IntRadius); X <= FMath::Min(GridWidth - 1, CenterX + IntRadius); X++)
-            {
-                float Distance = FVector::Dist(FVector(X, Y, Z), FVector(CenterX, CenterY, CenterZ));
-                
-                if (Distance <= GridRadius)
-                {
-                    // Calculate falloff based on distance
-                    float Falloff = 1.0f - (Distance / GridRadius);
-                    Falloff = FMath::Pow(Falloff, 2.0f); // Smooth falloff
-                    
-                    int32 Index = GetGridIndex(X, Y, Z);
-                    if (Index >= 0 && Index < AtmosphericGrid.Num())
-                    {
-                        FAtmosphericCell& Cell = AtmosphericGrid[Index];
-                        
-                        // Apply pressure change with falloff and intensity
-                        float ScaledPressureDelta = PressureDelta * Falloff * Intensity;
-                        Cell.Pressure += ScaledPressureDelta;
-                        
-                        // Clamp pressure to reasonable atmospheric range
-                        Cell.Pressure = FMath::Clamp(Cell.Pressure, 50000.0f, 120000.0f); // 500-1200 hPa
-                        
-                        // Update density based on new pressure (ideal gas law)
-                        if (Cell.Temperature > 0.0f)
-                        {
-                            Cell.Density = Cell.Pressure / (AtmosphericConstants::GAS_CONSTANT * Cell.Temperature);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    UE_LOG(LogTemp, Log, TEXT("Applied pressure brush at %.1f,%.1f,%.1f with delta %.1f Pa"),
-           Position.X, Position.Y, Position.Z, PressureDelta);
-}
 
 void UAtmosphericSystem::ResetAtmosphere()
 {
@@ -1779,40 +681,27 @@ void UAtmosphericSystem::ConfigureFromMaster(const FWorldScalingConfig& Config)
     // Store configuration
     CurrentWorldConfig = Config;
     
-    // Calculate atmospheric grid dimensions based on terrain
-    int32 NewGridWidth = FMath::Max(32, Config.AtmosphericConfig.GridWidth);
-    int32 NewGridHeight = FMath::Max(32, Config.AtmosphericConfig.GridHeight);
-    int32 NewGridLayers = FMath::Max(8, Config.AtmosphericConfig.GridLayers);
+    // Update grid dimensions (2D only now!)
+    int32 NewGridWidth = Config.AtmosphericConfig.GridWidth;
+    int32 NewGridHeight = Config.AtmosphericConfig.GridHeight;
+    // NO GridLayers!
     
-    // Check if we need to resize atmospheric grid
-    bool bNeedsResize = (GridWidth != NewGridWidth || GridHeight != NewGridHeight || GridLayers != NewGridLayers);
+    UE_LOG(LogTemp, Warning, TEXT("[MASTER INTEGRATION] Resizing atmospheric grid: %dx%d -> %dx%d"),
+           GridWidth, GridHeight, NewGridWidth, NewGridHeight);
     
-    if (bNeedsResize)
-    {
-        UE_LOG(LogTemp, Warning, TEXT("[MASTER INTEGRATION] Resizing atmospheric grid: %dx%dx%d -> %dx%dx%d"),
-               GridWidth, GridHeight, GridLayers, NewGridWidth, NewGridHeight, NewGridLayers);
-        
-        // Update grid dimensions
-        GridWidth = NewGridWidth;
-        GridHeight = NewGridHeight;
-        GridLayers = NewGridLayers;
-        
-        // Update cell size to match terrain coverage
-        float TerrainWorldWidth = Config.TerrainWidth * Config.TerrainScale;
-        float TerrainWorldHeight = Config.TerrainHeight * Config.TerrainScale;
-        CellSize = FMath::Max(TerrainWorldWidth / GridWidth, TerrainWorldHeight / GridHeight);
-        
-        // Reinitialize atmospheric grid with new dimensions
-        InitializeAtmosphericGrid();
-        
-        UE_LOG(LogTemp, Log, TEXT("[MASTER INTEGRATION] Atmospheric grid resized - CellSize: %.1fm"), CellSize);
-    }
+    // Update grid dimensions
+    GridWidth = NewGridWidth;
+    GridHeight = NewGridHeight;
+    CellSize = Config.AtmosphericConfig.CellSize;
+    
+    // Reinitialize atmospheric grid with new dimensions
+    InitializeAtmosphericGrid();
     
     // Mark as scaled by master
     bIsScaledByMaster = true;
     
-    UE_LOG(LogTemp, Warning, TEXT("[MASTER INTEGRATION] Atmospheric system configuration complete - Grid: %dx%dx%d, CellSize: %.1fm"),
-           GridWidth, GridHeight, GridLayers, CellSize);
+    UE_LOG(LogTemp, Warning, TEXT("[MASTER INTEGRATION] Atmospheric system configuration complete - Grid: %dx%d, CellSize: %.1fm"),
+           GridWidth, GridHeight, CellSize);
 }
 
 void UAtmosphericSystem::SynchronizeCoordinates(const FWorldCoordinateSystem& Coords)
@@ -1848,74 +737,660 @@ void UAtmosphericSystem::RegisterWithMasterController(AMasterWorldController* Ma
     UE_LOG(LogTemp, Warning, TEXT("[MASTER INTEGRATION] Atmospheric system registered with master controller"));
 }
 
-FString UAtmosphericSystem::GetScalingDebugInfo() const
-{
-    if (!IsSystemScaled())
-    {
-        return TEXT("Atmospheric system: NOT SCALED (using local coordinates)");
-    }
-    
-    return FString::Printf(TEXT("Atmospheric system: SCALED by master - Grid: %dx%dx%d, CellSize: %.1fm, Layers: %d"),
-                          GridWidth, GridHeight, GridLayers, CellSize, GridLayers);
-}
 
-// ===== MASTER COORDINATE TRANSFORMATION HELPERS =====
-
-FVector UAtmosphericSystem::WorldToAtmosphericGrid(FVector WorldPos) const
+FVector2D UAtmosphericSystem::WorldToGridCoordinates(FVector WorldPosition) const
 {
-    if (!IsSystemScaled())
-    {
-        // Fall back to local atmospheric coordinates
-        return WorldToGridCoordinates(WorldPos);
-    }
-    
-    // Use master controller coordinate system
-    FVector LocalPos = WorldPos - CurrentCoordinateSystem.WorldOrigin;
-    return FVector(
-        LocalPos.X / CellSize,
-        LocalPos.Y / CellSize,
-        LocalPos.Z / LayerHeight
+    return FVector2D(
+        WorldPosition.X / CellSize,
+        WorldPosition.Y / CellSize
     );
 }
 
-FVector UAtmosphericSystem::AtmosphericGridToWorld(int32 X, int32 Y, int32 Z) const
+float UAtmosphericSystem::GetPressureAt(FVector WorldPosition) const
 {
-    if (!IsSystemScaled())
-    {
-        // Fall back to local atmospheric coordinates
-        return GridToWorldCoordinates(X, Y, Z);
-    }
-    
-    // Use master controller coordinate system
-    FVector WorldPos = CurrentCoordinateSystem.WorldOrigin;
-    WorldPos.X += X * CellSize;
-    WorldPos.Y += Y * CellSize;
-    WorldPos.Z += Z * LayerHeight;
-    return WorldPos;
+    // Simplified - just return standard pressure
+    return 101325.0f;
 }
 
-bool UAtmosphericSystem::IsMasterCoordinateValid(int32 X, int32 Y, int32 Z) const
+float UAtmosphericSystem::GetCloudCoverAt(FVector WorldPosition) const
 {
-    if (!IsSystemScaled())
+    FVector2D GridPos = WorldToGridCoordinates(WorldPosition);
+    int32 X = FMath::FloorToInt(GridPos.X);
+    int32 Y = FMath::FloorToInt(GridPos.Y);
+    
+    if (X >= 0 && X < GridWidth && Y >= 0 && Y < GridHeight)
     {
-        return X >= 0 && X < GridWidth && Y >= 0 && Y < GridHeight && Z >= 0 && Z < GridLayers;
+        return AtmosphericGrid[GetGridIndex(X, Y)].CloudCover;
     }
     
-    return X >= 0 && X < CurrentWorldConfig.AtmosphericConfig.GridWidth &&
-           Y >= 0 && Y < CurrentWorldConfig.AtmosphericConfig.GridHeight &&
-           Z >= 0 && Z < CurrentWorldConfig.AtmosphericConfig.GridLayers;
+    return 0.0f;
 }
 
-// CRITICAL FIX: Add coordinate transform function
-FVector2D UAtmosphericSystem::WorldToTerrainCoordinates(FVector WorldPosition) const
+float UAtmosphericSystem::GetPrecipitationAt(FVector WorldPosition) const
 {
+    FVector2D GridPos = WorldToGridCoordinates(WorldPosition);
+    int32 X = FMath::FloorToInt(GridPos.X);
+    int32 Y = FMath::FloorToInt(GridPos.Y);
+    
+    if (X >= 0 && X < GridWidth && Y >= 0 && Y < GridHeight)
+    {
+        return AtmosphericGrid[GetGridIndex(X, Y)].PrecipitationRate;
+    }
+    
+    return 0.0f;
+}
+
+FVector UAtmosphericSystem::GetWindAt(FVector WorldPosition) const
+{
+    FVector2D GridPos = WorldToGridCoordinates(WorldPosition);
+    int32 X = FMath::FloorToInt(GridPos.X);
+    int32 Y = FMath::FloorToInt(GridPos.Y);
+    
+    if (X >= 0 && X < GridWidth && Y >= 0 && Y < GridHeight)
+    {
+        FVector2D Wind2D = AtmosphericGrid[GetGridIndex(X, Y)].WindVector;
+        return FVector(Wind2D.X, Wind2D.Y, 0.0f);
+    }
+    
+    return FVector(WindPattern.X, WindPattern.Y, 0.0f);
+}
+
+FString UAtmosphericSystem::GetScalingDebugInfo() const
+{
+    FString DebugInfo;
+    DebugInfo += FString::Printf(TEXT("=== ATMOSPHERIC SYSTEM SCALING DEBUG ===\n"));
+    DebugInfo += FString::Printf(TEXT("Grid: %dx%d\n"), GridWidth, GridHeight);
+    DebugInfo += FString::Printf(TEXT("Cell Size: %.1fm\n"), CellSize);
+    DebugInfo += FString::Printf(TEXT("Is Scaled by Master: %s\n"), bIsScaledByMaster ? TEXT("YES") : TEXT("NO"));
+    return DebugInfo;
+}
+
+float UAtmosphericSystem::GetCloudCoverageAt(int32 X, int32 Y) const
+{
+    if (X >= 0 && X < GridWidth && Y >= 0 && Y < GridHeight)
+    {
+        return AtmosphericGrid[GetGridIndex(X, Y)].CloudCover;
+    }
+    return 0.0f;
+}
+
+FVector UAtmosphericSystem::GridToWorldCoordinates(int32 X, int32 Y) const
+{
+    // ✅ Use SAME coordinate authority as everyone else
     if (!MasterController)
     {
-        UE_LOG(LogTemp, Error, TEXT("[ATMOSPHERIC] Cannot transform coordinates - no MasterController"));
-        return FVector2D::ZeroVector;
+        UE_LOG(LogTemp, Error, TEXT("No coordinate authority"));
+        return FVector::ZeroVector;
     }
     
-    return MasterController->WorldToTerrainCoordinates(WorldPosition);
+    // Convert atmospheric grid to terrain grid coordinates
+    FVector2D WorldDims = MasterController->GetWorldDimensions();
+    float TerrainX = (float(X) / GridWidth) * WorldDims.X;
+    float TerrainY = (float(Y) / GridHeight) * WorldDims.Y;
+    
+    // Use MasterController's authoritative coordinate transformation
+    return MasterController->TerrainToWorldPosition(FVector2D(TerrainX, TerrainY));
 }
 
+void UAtmosphericSystem::AdvectMoisture(float DeltaTime)
+{
+    // CRITICAL: Use temporary array to avoid feedback
+    TArray<float> NewMoisture;
+    NewMoisture.SetNum(AtmosphericGrid.Num());
+    
+    for (int32 Y = 0; Y < GridHeight; Y++)
+    {
+        for (int32 X = 0; X < GridWidth; X++)
+        {
+            int32 Index = Y * GridWidth + X;
+            FVector2D Wind = AtmosphericGrid[Index].WindVector;
+            
+            // Semi-Lagrangian advection (stable for game timesteps)
+            FVector2D SourcePos = FVector2D(X, Y) - Wind * DeltaTime / CellSize;
+            
+            // Bilinear interpolation from source
+            int32 X0 = FMath::FloorToInt(SourcePos.X);
+            int32 Y0 = FMath::FloorToInt(SourcePos.Y);
+            int32 X1 = X0 + 1;
+            int32 Y1 = Y0 + 1;
+            
+            // Clamp to grid bounds
+            X0 = FMath::Clamp(X0, 0, GridWidth - 1);
+            X1 = FMath::Clamp(X1, 0, GridWidth - 1);
+            Y0 = FMath::Clamp(Y0, 0, GridHeight - 1);
+            Y1 = FMath::Clamp(Y1, 0, GridHeight - 1);
+            
+            // Interpolation weights
+            float FracX = SourcePos.X - X0;
+            float FracY = SourcePos.Y - Y0;
+            
+            // Sample moisture at four corners
+            float M00 = AtmosphericGrid[Y0 * GridWidth + X0].MoistureMass;
+            float M10 = AtmosphericGrid[Y0 * GridWidth + X1].MoistureMass;
+            float M01 = AtmosphericGrid[Y1 * GridWidth + X0].MoistureMass;
+            float M11 = AtmosphericGrid[Y1 * GridWidth + X1].MoistureMass;
+            
+            // Bilinear interpolation
+            float M0 = FMath::Lerp(M00, M10, FracX);
+            float M1 = FMath::Lerp(M01, M11, FracX);
+            NewMoisture[Index] = FMath::Lerp(M0, M1, FracY);
+        }
+    }
+    
+    // Apply advected moisture
+    for (int32 i = 0; i < AtmosphericGrid.Num(); i++)
+        {
+            // ✅ Validate new moisture value
+            if (FMath::IsFinite(NewMoisture[i]) && NewMoisture[i] >= 0.0f)
+            {
+                AtmosphericGrid[i].MoistureMass = NewMoisture[i];
+            }
+            else
+            {
+                UE_LOG(LogTemp, Warning, TEXT("Invalid moisture value at cell %d: %.6f - resetting"), i, NewMoisture[i]);
+                AtmosphericGrid[i].MoistureMass = 0.1f; // Reset to safe value
+            }
+            
+            // ✅ Update relative humidity with safe division
+            float SaturationCapacity = CalculateSaturationMoisture(AtmosphericGrid[i].Temperature);
+            if (SaturationCapacity > 0.001f) // Prevent division by zero
+            {
+                AtmosphericGrid[i].Humidity = AtmosphericGrid[i].MoistureMass / SaturationCapacity;
+            }
+            else
+            {
+                AtmosphericGrid[i].Humidity = 0.5f; // Safe default
+                UE_LOG(LogTemp, Warning, TEXT("Zero saturation capacity at cell %d"), i);
+            }
+            
+            // ✅ Clamp humidity to valid range
+            AtmosphericGrid[i].Humidity = FMath::Clamp(AtmosphericGrid[i].Humidity, 0.0f, 1.0f);
+        }
+}
+
+// Helper function for saturation calculations with safety checks
+float UAtmosphericSystem::CalculateSaturationMoisture(float TempKelvin)
+{
+    // ✅ Safety check for valid temperature range
+    if (!FMath::IsFinite(TempKelvin) || TempKelvin < 200.0f || TempKelvin > 350.0f)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("Invalid temperature in saturation calculation: %.2f K"), TempKelvin);
+        return 0.17f; // Return reasonable default (15°C saturation)
+    }
+    
+    // Simplified Magnus formula
+    float TempC = TempKelvin - 273.15f;
+    
+    // ✅ Safety check for division by zero
+    float Denominator = TempC + 237.3f;
+    if (FMath::Abs(Denominator) < 0.001f)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("Near-zero denominator in Magnus formula"));
+        return 0.17f; // Safe fallback
+    }
+    
+    float SaturationPressure = 6.11f * FMath::Exp(17.27f * TempC / Denominator);
+    
+    // ✅ Safety check for result
+    float Result = SaturationPressure * 0.05f; //increased from .01 for headroom
+    if (!FMath::IsFinite(Result) || Result <= 0.0f)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("Invalid saturation result: %.6f"), Result);
+        return 0.17f; // Safe fallback
+    }
+    
+    return Result;
+}
+
+void UAtmosphericSystem::UpdateCloudCoverFromMoisture()
+{
+    for (int32 i = 0; i < AtmosphericGrid.Num(); i++)
+    {
+        FSimplifiedAtmosphericCell& Cell = AtmosphericGrid[i];
+        
+        // ✅ Validate temperature first
+        if (!FMath::IsFinite(Cell.Temperature) || Cell.Temperature < 200.0f || Cell.Temperature > 350.0f)
+        {
+            UE_LOG(LogTemp, Warning, TEXT("Invalid temperature in cell %d: %.2f - resetting"), i, Cell.Temperature);
+            Cell.Temperature = 288.15f; // Reset to 15°C
+        }
+        
+        // ✅ Validate moisture mass
+        if (!FMath::IsFinite(Cell.MoistureMass) || Cell.MoistureMass < 0.0f)
+        {
+            UE_LOG(LogTemp, Warning, TEXT("Invalid moisture in cell %d: %.6f - resetting"), i, Cell.MoistureMass);
+            Cell.MoistureMass = 0.1f; // Reset to safe value
+        }
+        
+        // Simplified cloud formation based on humidity
+        float SaturationCapacity = CalculateSaturationMoisture(Cell.Temperature);
+        
+        // ✅ Safe humidity calculation with division protection
+        if (SaturationCapacity > 0.001f)
+        {
+            Cell.Humidity = FMath::Clamp(Cell.MoistureMass / SaturationCapacity, 0.0f, 1.0f);
+        }
+        else
+        {
+            Cell.Humidity = 0.5f; // Safe default
+        }
+        
+        // ✅ Validate humidity result
+        if (!FMath::IsFinite(Cell.Humidity))
+        {
+            Cell.Humidity = 0.5f;
+            UE_LOG(LogTemp, Warning, TEXT("NaN humidity in cell %d - reset to 0.5"), i);
+        }
+        
+        // Cloud cover update with frame time protection
+        float DeltaTime = GetWorld() ? GetWorld()->GetDeltaSeconds() : 0.016f;
+        DeltaTime = FMath::Clamp(DeltaTime, 0.001f, 0.1f); // Prevent extreme values
+        
+        if (Cell.Humidity > 0.8f)
+        {
+            Cell.CloudCover = FMath::Min(Cell.CloudCover + 0.1f * DeltaTime, 1.0f);
+        }
+        else
+        {
+            Cell.CloudCover = FMath::Max(Cell.CloudCover - 0.05f * DeltaTime, 0.0f);
+        }
+        
+        // ✅ Final validation
+        Cell.CloudCover = FMath::Clamp(Cell.CloudCover, 0.0f, 1.0f);
+    }
+}
+
+void UAtmosphericSystem::ApplyOrographicEffects(float DeltaTime)
+{
+    // Orographic effects MODIFY precipitation based on terrain
+    // They don't CREATE precipitation - that happens in ProcessCondensationAndPrecipitation
+    
+    if (!TerrainSystem) return;
+    
+    for (int32 Y = 0; Y < GridHeight; Y++)
+    {
+        for (int32 X = 0; X < GridWidth; X++)
+        {
+            FSimplifiedAtmosphericCell& Cell = AtmosphericGrid[GetGridIndex(X, Y)];
+            
+            FVector WorldPos = GridToWorldCoordinates(X, Y);
+            float TerrainHeight = TerrainSystem->GetHeightAtPosition(WorldPos);
+            
+            // Only apply orographic effects if there's already some weather activity
+            if (Cell.MoistureMass > 5.0f || Cell.PrecipitationRate > 0.1f)
+            {
+                FVector2D TerrainGradient = GetTerrainGradient(X, Y);
+                
+                // WINDWARD SLOPE EFFECT: Wind blowing upslope increases precipitation
+                float UpslopeEffect = FVector2D::DotProduct(Cell.WindVector.GetSafeNormal(), TerrainGradient);
+                
+                if (UpslopeEffect > 0.0f && TerrainHeight > 200.0f) // Significant elevation
+                {
+                    // Increase moisture on windward slopes (feeds future precipitation)
+                    Cell.MoistureMass += UpslopeEffect * DeltaTime * 3.0f;
+                    
+                    // Enhance existing precipitation
+                    if (Cell.PrecipitationRate > 0.1f)
+                    {
+                        float OrographicMultiplier = 1.0f + (UpslopeEffect * 0.5f);
+                        Cell.PrecipitationRate *= OrographicMultiplier;
+                    }
+                }
+                
+                // LEEWARD SLOPE EFFECT: Reduce precipitation on downwind side
+                if (UpslopeEffect < -0.1f)
+                {
+                    Cell.PrecipitationRate *= 0.7f; // Rain shadow effect
+                }
+                
+                // ALTITUDE EFFECT: Higher altitude = more precipitation potential
+                if (TerrainHeight > 500.0f)
+                {
+                    float AltitudeBonus = (TerrainHeight - 500.0f) / 1000.0f; // 0.0 to 1.0+
+                    Cell.MoistureMass += AltitudeBonus * DeltaTime * 1.0f;
+                }
+            }
+        }
+    }
+}
+
+// EFFICIENT terrain gradient calculation
+FVector2D UAtmosphericSystem::GetTerrainGradient(int32 GridX, int32 GridY)
+{
+    FVector WorldPos = GridToWorldCoordinates(GridX, GridY);
+    
+    // Sample terrain at neighboring points
+    float H0 = TerrainSystem->GetHeightAtPosition(WorldPos);
+    float Hx = TerrainSystem->GetHeightAtPosition(WorldPos + FVector(CellSize, 0, 0));
+    float Hy = TerrainSystem->GetHeightAtPosition(WorldPos + FVector(0, CellSize, 0));
+    
+    // Return gradient
+    return FVector2D((Hx - H0) / CellSize, (Hy - H0) / CellSize);
+}
+
+void UAtmosphericSystem::ClearConsumedPrecipitation()
+{
+    for (int32 i = 0; i < AtmosphericGrid.Num(); i++)
+    {
+        AtmosphericGrid[i].PrecipitationRate = 0.0f;
+    }
+}
+
+/*
+void UAtmosphericSystem::ProcessEvaporation(float DeltaTime)
+{
+    if (!WaterSystem) return;
+    
+    // PERFORMANCE: Can be updated less frequently than main simulation
+    for (int32 Y = 0; Y < GridHeight; Y++)
+    {
+        for (int32 X = 0; X < GridWidth; X++)
+        {
+            int32 Index = Y * GridWidth + X;
+            FSimplifiedAtmosphericCell& Cell = AtmosphericGrid[Index];
+            FVector WorldPos = GridToWorldCoordinates(X, Y);
+            
+            // Check for water at this location
+            float WaterDepth = WaterSystem->GetWaterDepthAtPosition(WorldPos);
+            
+            if (WaterDepth > 0.01f) // Has water
+            {
+                // Penman equation simplified
+                float TempC = Cell.Temperature - 273.15f;
+                
+                // TUNING: These coefficients control evaporation rate
+                float BaseEvapRate = 0.001f; // m/s at 20°C, calm wind
+                float TempFactor = FMath::Max(0.0f, 1.0f + (TempC - 20.0f) * 0.05f);
+                float WindFactor = 1.0f + Cell.WindVector.Size() * 0.1f;
+                float HumidityFactor = FMath::Max(0.0f, 1.0f - Cell.Humidity);
+                
+                float EvaporationRate = BaseEvapRate * TempFactor * WindFactor * HumidityFactor;
+                float EvaporatedDepth = EvaporationRate * DeltaTime;
+                
+                // Convert to moisture mass using Water Volume Authority
+                float EvaporatedMass = AMasterWorldController::DepthToMoistureMass(EvaporatedDepth);
+                
+                // Add to atmosphere
+                Cell.MoistureMass += EvaporatedMass;
+                
+                // Water removal handled by water system's evaporation processing
+                // The water system will handle the actual depth reduction
+                
+                // LOGGING for water balance debugging
+                static float TotalEvaporated = 0.0f;
+                static float LastLogTime = 0.0f;
+                float CurrentTime = TerrainSystem->GetWorld()->GetTimeSeconds();
+
+                if (CurrentTime - LastLogTime >= 5.0f) {
+                    TotalEvaporated = 0.0f;  // ✅ RESET ACCUMULATOR
+                    LastLogTime = CurrentTime;
+                }
+                TotalEvaporated += EvaporatedMass * CellSize * CellSize;
+                if (FMath::Fmod(TerrainSystem->GetWorld()->GetTimeSeconds(), 5.0f) < DeltaTime)
+                {
+                    UE_LOG(LogTemp, Warning, TEXT("Evaporation at (%d,%d): %.3f m³/s"), X, Y, TotalEvaporated);
+                }
+            }
+        }
+    }
+}
+
+void UAtmosphericSystem::ProcessEvapotranspiration(float DeltaTime)
+{
+    // Get geology controller from master controller's public member
+    if (!TerrainSystem || !TerrainSystem->CachedMasterController) return;
+    
+    AMasterWorldController* Master = TerrainSystem->CachedMasterController;
+    if (!Master->GeologyController) return;
+    
+    for (int32 Y = 0; Y < GridHeight; Y++)
+    {
+        for (int32 X = 0; X < GridWidth; X++)
+        {
+            int32 Index = Y * GridWidth + X;
+            FSimplifiedAtmosphericCell& Cell = AtmosphericGrid[Index];
+            FVector WorldPos = GridToWorldCoordinates(X, Y);
+            
+            // Get soil moisture from geology's water table system
+            float WaterTableDepth = Master->GeologyController->GetWaterTableDepthAtLocation(WorldPos);
+            float TerrainHeight = TerrainSystem->GetHeightAtPosition(WorldPos);
+            
+            // Calculate soil moisture based on water table proximity
+            float SoilMoisture = 0.0f;
+            if (WaterTableDepth < 10.0f) // Water table within 10m of surface
+            {
+                SoilMoisture = 1.0f - (WaterTableDepth / 10.0f);
+            }
+            
+            if (SoilMoisture > 0.1f) // Moist soil
+            {
+                // Transpiration rate (simplified)
+                float TranspRate = 0.00001f * SoilMoisture * (1.0f - Cell.Humidity);
+                
+                // Vegetation factor (check if ecosystem controller available)
+                if (Master->EcosystemController)
+                {
+                    float VegDensity = Master->EcosystemController->GetVegetationDensityAtLocation(WorldPos);
+                    TranspRate *= (1.0f + VegDensity * 2.0f); // Plants increase transpiration
+                }
+                
+                float TranspiredMass = TranspRate * CellSize * CellSize * DeltaTime;
+                
+                // Update atmosphere
+                Cell.MoistureMass += TranspiredMass;
+            }
+        }
+    }
+}
+*/
+ 
+void UAtmosphericSystem::ProcessPrecipitation(float DeltaTime)
+{
+    if (!WaterSystem) return;
+    
+    // Simple: rain becomes surface water
+    for (int32 i = 0; i < AtmosphericGrid.Num(); i++)
+    {
+        const FSimplifiedAtmosphericCell& Cell = AtmosphericGrid[i];
+        
+        if (Cell.PrecipitationRate > 0.01f) // Raining?
+        {
+            // Where does it fall?
+            int32 X = i % GridWidth;
+            int32 Y = i / GridWidth;
+            FVector WorldPos = GridToWorldCoordinates(X, Y);
+            
+            // How much? (mm/hr → simulation units)
+            float WaterPerSecond = Cell.PrecipitationRate * 2.78e-7f / AMasterWorldController::WATER_DEPTH_SCALE;
+            
+            // Add to surface
+            WaterSystem->AddWater(WorldPos, WaterPerSecond * DeltaTime);
+            UE_LOG(LogTemp, Error, TEXT("ProcessPrecipitation Added Water"));
+        }
+    }
+}
+
+
+void UAtmosphericSystem::UpdateSimplifiedWaterTable(float DeltaTime)
+{
+    // Simplified water table update - geology controller handles complex flow
+    // This just ensures atmospheric system knows about groundwater for evapotranspiration
+}
+
+// Add these constants
+const int32 UAtmosphericSystem::GeologyGridWidth = 16;  // Lower resolution than atmosphere
+const int32 UAtmosphericSystem::GeologyGridHeight = 16;
+const float UAtmosphericSystem::SpringFlowRate = 0.01f; // m³/s per meter of head
+
+void UAtmosphericSystem::DebugAtmosphericState()
+{
+    UE_LOG(LogTemp, Warning, TEXT("=== ATMOSPHERIC SYSTEM DEBUG ==="));
+    UE_LOG(LogTemp, Warning, TEXT("Grid: %dx%d, Cell Size: %.0f"), GridWidth, GridHeight, CellSize);
+    UE_LOG(LogTemp, Warning, TEXT("Total Cells: %d"), AtmosphericGrid.Num());
+    
+    // Calculate statistics
+    float TotalMoisture = 0.0f;
+    float TotalCloudCover = 0.0f;
+    float MaxMoisture = 0.0f;
+    float MaxCloudCover = 0.0f;
+    int32 CloudyCells = 0;
+    int32 PrecipitatingCells = 0;
+    
+    for (const FSimplifiedAtmosphericCell& Cell : AtmosphericGrid)
+    {
+        TotalMoisture += Cell.MoistureMass;
+        TotalCloudCover += Cell.CloudCover;
+        MaxMoisture = FMath::Max(MaxMoisture, Cell.MoistureMass);
+        MaxCloudCover = FMath::Max(MaxCloudCover, Cell.CloudCover);
+        
+        if (Cell.CloudCover > 0.1f) CloudyCells++;
+        if (Cell.PrecipitationRate > 0.1f) PrecipitatingCells++;
+    }
+    
+    float AvgMoisture = TotalMoisture / AtmosphericGrid.Num();
+    float AvgCloudCover = TotalCloudCover / AtmosphericGrid.Num();
+    
+    UE_LOG(LogTemp, Warning, TEXT("Moisture - Avg: %.2f kg/m², Max: %.2f kg/m²"), AvgMoisture, MaxMoisture);
+    UE_LOG(LogTemp, Warning, TEXT("Cloud Cover - Avg: %.2f%%, Max: %.2f%%"), AvgCloudCover * 100, MaxCloudCover * 100);
+    UE_LOG(LogTemp, Warning, TEXT("Cloudy Cells: %d (%.1f%%)"), CloudyCells, (float)CloudyCells / AtmosphericGrid.Num() * 100);
+    UE_LOG(LogTemp, Warning, TEXT("Precipitating Cells: %d"), PrecipitatingCells);
+    UE_LOG(LogTemp, Warning, TEXT("Cloud Rendering Enabled: %s"), bEnableCloudRendering ? TEXT("YES") : TEXT("NO"));
+}
+
+void UAtmosphericSystem::DebugCloudSystem()
+{
+    UE_LOG(LogTemp, Warning, TEXT("=== CLOUD RENDERING DEBUG ==="));
+    UE_LOG(LogTemp, Warning, TEXT("Cloud Meshes: %d / %d"), CloudMeshes.Num(), MaxCloudMeshes);
+    UE_LOG(LogTemp, Warning, TEXT("Cloud Material: %s"), CloudMaterial ? TEXT("SET") : TEXT("MISSING"));
+    UE_LOG(LogTemp, Warning, TEXT("Cloud Static Mesh: %s"), CloudStaticMesh ? TEXT("SET") : TEXT("MISSING"));
+    UE_LOG(LogTemp, Warning, TEXT("Attach Parent: %s"), AttachParent ? TEXT("SET") : TEXT("MISSING"));
+    
+    int32 VisibleClouds = 0;
+    for (UStaticMeshComponent* CloudMesh : CloudMeshes)
+    {
+        if (CloudMesh && CloudMesh->IsVisible())
+        {
+            VisibleClouds++;
+        }
+    }
+    
+    UE_LOG(LogTemp, Warning, TEXT("Visible Cloud Meshes: %d"), VisibleClouds);
+    
+    // Check why clouds might not be showing
+    if (!CloudStaticMesh)
+    {
+        UE_LOG(LogTemp, Error, TEXT("CLOUD ERROR: No static mesh assigned! Set CloudStaticMesh in Blueprint"));
+    }
+    if (!CloudMaterial)
+    {
+        UE_LOG(LogTemp, Error, TEXT("CLOUD ERROR: No material assigned! Set CloudMaterial in Blueprint"));
+    }
+    if (!AttachParent)
+    {
+        UE_LOG(LogTemp, Error, TEXT("CLOUD ERROR: No attach parent! Clouds have nowhere to spawn"));
+    }
+}
+
+void UAtmosphericSystem::ForceGenerateClouds(float Coverage)
+{
+    UE_LOG(LogTemp, Warning, TEXT("Force generating clouds with %.0f%% coverage"), Coverage * 100);
+    
+    // Set cloud cover for all cells
+    for (FSimplifiedAtmosphericCell& Cell : AtmosphericGrid)
+    {
+        Cell.CloudCover = Coverage;
+        Cell.Humidity = 0.9f;
+        Cell.MoistureMass = 20.0f; // High moisture
+    }
+    
+    // Force cloud mesh update
+    if (bEnableCloudRendering)
+    {
+        UpdateCloudMeshes();
+    }
+    else
+    {
+        UE_LOG(LogTemp, Warning, TEXT("Cloud rendering is disabled! Enable bEnableCloudRendering"));
+    }
+}
+
+void UAtmosphericSystem::DebugMoistureDistribution()
+{
+    if (!GetWorld()) return;
+    
+    // Visualize moisture distribution
+    for (int32 Y = 0; Y < GridHeight; Y += 4) // Sample every 4 cells
+    {
+        for (int32 X = 0; X < GridWidth; X += 4)
+        {
+            int32 Index = GetGridIndex(X, Y);
+            const FSimplifiedAtmosphericCell& Cell = AtmosphericGrid[Index];
+            FVector WorldPos = GridToWorldCoordinates(X, Y);
+            
+            // Draw moisture as blue spheres
+            float SphereRadius = FMath::Lerp(10.0f, 100.0f, Cell.MoistureMass / 30.0f);
+            FColor MoistureColor = FColor::MakeRedToGreenColorFromScalar(1.0f - Cell.Humidity);
+            DrawDebugSphere(GetWorld(), WorldPos + FVector(0, 0, 500), SphereRadius, 12, MoistureColor, false, 5.0f);
+            
+            // Draw cloud cover as white boxes
+            if (Cell.CloudCover > 0.1f)
+            {
+                float BoxSize = Cell.CloudCover * 200.0f;
+                DrawDebugBox(GetWorld(), WorldPos + FVector(0, 0, CloudAltitude),
+                    FVector(BoxSize), FColor::White, false, 5.0f);
+            }
+            
+            // Show precipitation as lines
+            if (Cell.PrecipitationRate > 0.1f)
+            {
+                DrawDebugLine(GetWorld(),
+                    WorldPos + FVector(0, 0, CloudAltitude),
+                    WorldPos,
+                    FColor::Cyan, false, 5.0f, 0, 5.0f);
+            }
+        }
+    }
+}
+
+void UAtmosphericSystem::EnableAtmosphericDebugVisualization(bool bEnable)
+{
+    // This could be expanded to show continuous visualization
+    if (bEnable)
+    {
+        DebugMoistureDistribution();
+        DebugAtmosphericState();
+        DebugCloudSystem();
+    }
+}
+
+void UAtmosphericSystem::TriggerImmediatePrecipitation(FVector2D Location, float Radius, float IntensityMMPerHour)
+{
+    UE_LOG(LogTemp, Warning, TEXT("🌧️ DIRECT PRECIPITATION TEST: %.1f mm/hr at %s"),
+           IntensityMMPerHour, *Location.ToString());
+           
+    for (int32 Y = 0; Y < GridHeight; Y++)
+    {
+        for (int32 X = 0; X < GridWidth; X++)
+        {
+            FVector2D CellPos(X * CellSize, Y * CellSize);
+            float Distance = FVector2D::Distance(CellPos, Location);
+            
+            if (Distance < Radius)
+            {
+                FSimplifiedAtmosphericCell& Cell = AtmosphericGrid[GetGridIndex(X, Y)];
+                
+                float Influence = 1.0f - (Distance / Radius);
+                
+                // DIRECTLY SET PRECIPITATION (bypass normal condensation process)
+                Cell.PrecipitationRate = IntensityMMPerHour * Influence;
+                Cell.CloudCover = FMath::Clamp(Cell.PrecipitationRate / 20.0f, 0.0f, 1.0f);
+                
+                // Also add corresponding moisture for realism
+                Cell.MoistureMass += IntensityMMPerHour * Influence * 0.5f;
+            }
+        }
+    }
+    
+    UE_LOG(LogTemp, Warning, TEXT("✅ Direct precipitation set - should see water immediately"));
+}
 

@@ -1,149 +1,68 @@
-/**
- * ============================================
- * TERRAI GEOLOGY CONTROLLER - IMPLEMENTATION (REFACTORED)
- * ============================================
- * Sand dune functionality moved to SandDuneController
- * Enhanced with stratigraphy, minerals, and advanced geology
- */
+// GeologyController.cpp - Simplified implementation for water cycle
+
 #include "GeologyController.h"
 #include "DynamicTerrain.h"
 #include "WaterSystem.h"
-#include "SandDuneController.h"
+#include "AtmosphericSystem.h"
+#include "MasterController.h"
 #include "Engine/Engine.h"
 #include "DrawDebugHelpers.h"
-#include "Kismet/KismetMathLibrary.h"
 #include "Kismet/GameplayStatics.h"
-
-namespace
-{
-    // Define custom colors that FColor doesn't have
-    const FColor ColorGold = FColor(255, 215, 0);      // Gold
-    const FColor ColorOrange = FColor(255, 165, 0);    // Orange
-}
+#include "Engine/World.h"
 
 AGeologyController::AGeologyController()
 {
     PrimaryActorTick.bCanEverTick = true;
-    
+    PrimaryActorTick.TickInterval = 1.0f; // Update every second
     RootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("GeologyRoot"));
-    
-    // Initialize with a basic stratigraphic column
-    FGeologicalColumn DefaultColumn;
-    
-    // Surface layer - soil/regolith
-    FRockLayer SurfaceLayer;
-    SurfaceLayer.RockType = ERockType::Sand;
-    SurfaceLayer.Thickness = 2.0f;
-    SurfaceLayer.Depth = 0.0f;
-    SurfaceLayer.Hardness = 0.2f;
-    SurfaceLayer.Porosity = 0.45f;
-    SurfaceLayer.Permeability = 0.9f;
-    SurfaceLayer.ErosionResistance = 0.1f;
-    SurfaceLayer.Age = 0.001f; // Very recent
-    SurfaceLayer.LayerColor = FLinearColor(0.8f, 0.7f, 0.5f, 1.0f);
-    DefaultColumn.Layers.Add(SurfaceLayer);
-    
-    // Sedimentary sequence
-    FRockLayer SedimentaryLayer1;
-    SedimentaryLayer1.RockType = ERockType::Sandstone;
-    SedimentaryLayer1.Thickness = 15.0f;
-    SedimentaryLayer1.Depth = 2.0f;
-    SedimentaryLayer1.Hardness = 0.6f;
-    SedimentaryLayer1.Porosity = 0.2f;
-    SedimentaryLayer1.Permeability = 0.4f;
-    SedimentaryLayer1.ErosionResistance = 0.5f;
-    SedimentaryLayer1.Age = 50.0f; // 50 million years
-    SedimentaryLayer1.LayerColor = FLinearColor(0.7f, 0.6f, 0.4f, 1.0f);
-    SedimentaryLayer1.bContainsFossils = true;
-    DefaultColumn.Layers.Add(SedimentaryLayer1);
-    
-    FRockLayer SedimentaryLayer2;
-    SedimentaryLayer2.RockType = ERockType::Limestone;
-    SedimentaryLayer2.Thickness = 25.0f;
-    SedimentaryLayer2.Depth = 17.0f;
-    SedimentaryLayer2.Hardness = 0.7f;
-    SedimentaryLayer2.Porosity = 0.15f;
-    SedimentaryLayer2.Permeability = 0.3f;
-    SedimentaryLayer2.ErosionResistance = 0.6f;
-    SedimentaryLayer2.Age = 200.0f;
-    SedimentaryLayer2.LayerColor = FLinearColor(0.9f, 0.9f, 0.8f, 1.0f);
-    SedimentaryLayer2.bContainsFossils = true;
-    DefaultColumn.Layers.Add(SedimentaryLayer2);
-    
-    FRockLayer SedimentaryLayer3;
-    SedimentaryLayer3.RockType = ERockType::Shale;
-    SedimentaryLayer3.Thickness = 30.0f;
-    SedimentaryLayer3.Depth = 42.0f;
-    SedimentaryLayer3.Hardness = 0.5f;
-    SedimentaryLayer3.Porosity = 0.1f;
-    SedimentaryLayer3.Permeability = 0.05f;
-    SedimentaryLayer3.ErosionResistance = 0.4f;
-    SedimentaryLayer3.Age = 300.0f;
-    SedimentaryLayer3.LayerColor = FLinearColor(0.4f, 0.4f, 0.35f, 1.0f);
-    SedimentaryLayer3.bHasMineralDeposits = true;
-    DefaultColumn.Layers.Add(SedimentaryLayer3);
-    
-    // Basement rock
-    FRockLayer BedrockLayer;
-    BedrockLayer.RockType = ERockType::Granite;
-    BedrockLayer.Thickness = 1000.0f; // Essentially infinite
-    BedrockLayer.Depth = 72.0f;
-    BedrockLayer.Hardness = 0.9f;
-    BedrockLayer.Porosity = 0.02f;
-    BedrockLayer.Permeability = 0.01f;
-    BedrockLayer.ErosionResistance = 0.95f;
-    BedrockLayer.Age = 1000.0f; // 1 billion years
-    BedrockLayer.LayerColor = FLinearColor(0.5f, 0.5f, 0.5f, 1.0f);
-    BedrockLayer.bHasMineralDeposits = true;
-    DefaultColumn.Layers.Add(BedrockLayer);
-    
-    DefaultColumn.TotalDepth = BedrockDepth;
-    DefaultColumn.Location = FVector::ZeroVector;
-    
-    GeologicalColumns.Add(DefaultColumn);
-    
-    // Set default parameters
-    AverageWaterTableDepth = 50.0f;
-    GroundwaterFlowRate = 0.1f;
-    WaterTableRechargeRate = 0.05f;
-    CurrentTemperature = 20.0f;
 }
 
 void AGeologyController::BeginPlay()
 {
     Super::BeginPlay();
     
-    InitializeGeologicalColumns();
+    UE_LOG(LogTemp, Warning, TEXT("GeologyController: Beginning play"));
+    
+    // Find existing systems
+    if (!WaterSystem)
+    {
+        // WaterSystem is typically a component of DynamicTerrain
+        if (TargetTerrain)
+        {
+            WaterSystem = TargetTerrain->WaterSystem;
+            if (WaterSystem)
+            {
+                UE_LOG(LogTemp, Warning, TEXT("GeologyController: Found water system on terrain"));
+            }
+        }
+    }
+    
+    // Initialize the geology grid
+    InitializeGeologyGrid();
+    
+    // Initialize master controller reference
+    if (!MasterController)
+    {
+        TArray<AActor*> MasterControllers;
+        UGameplayStatics::GetAllActorsOfClass(GetWorld(), AMasterWorldController::StaticClass(), MasterControllers);
+        if (MasterControllers.Num() > 0)
+        {
+            MasterController = Cast<AMasterWorldController>(MasterControllers[0]);
+            if (MasterController)
+            {
+                RegisterWithMasterController(MasterController);
+            }
+        }
+    }
 }
 
 void AGeologyController::Tick(float DeltaTime)
 {
     Super::Tick(DeltaTime);
     
-    if (bSystemInitialized && bEnableGeologicalProcesses)
+    if (bSystemInitialized && bEnableWaterTable)
     {
-        GeologicalTimer += DeltaTime;
-        
-        // Update geological processes at slower intervals
-        if (GeologicalTimer >= 1.0f) // Every second
-        {
-            UpdateGeologicalProcesses(DeltaTime * GeologicalTimeScale);
-            GeologicalTimer = 0.0f;
-        }
-        
-        // Water table updates more frequently
-        if (bEnableWaterTable)
-        {
-            UpdateWaterTable(DeltaTime);
-        }
-        
-        // PERFORMANCE FIX: Process accumulated sediment periodically
-        SedimentAccumulationTimer += DeltaTime;
-        if (SedimentAccumulationTimer >= SedimentFormationInterval)
-        {
-            ProcessAccumulatedSediment();
-            SedimentAccumulationTimer = 0.0f;
-        }
+        UpdateGeologySystem(DeltaTime);
     }
 }
 
@@ -151,819 +70,424 @@ void AGeologyController::Tick(float DeltaTime)
 
 void AGeologyController::Initialize(ADynamicTerrain* Terrain, UWaterSystem* Water)
 {
-    if (!Terrain || !Water)
+    if (!Terrain)
     {
-        UE_LOG(LogTemp, Error, TEXT("GeologyController: Invalid initialization parameters"));
+        UE_LOG(LogTemp, Error, TEXT("GeologyController: Invalid terrain reference"));
         return;
     }
     
     TargetTerrain = Terrain;
     WaterSystem = Water;
+    
+    InitializeGeologyGrid();
+    
     bSystemInitialized = true;
     
-    // Generate initial geological columns across the terrain
-    InitializeGeologicalColumns();
-    
-    // Initialize water table grid
-    WaterTableGrid.Empty();
-    int32 GridSize = 20; // Simplified grid
-    float GridSpacing = (TargetTerrain->TerrainWidth * TargetTerrain->TerrainScale) / GridSize;
-    
-    for (int32 x = 0; x < GridSize; x++)
-    {
-        for (int32 y = 0; y < GridSize; y++)
-        {
-            FWaterTableData WaterPoint;
-            WaterPoint.Location = TargetTerrain->GetActorLocation();
-            WaterPoint.Location.X += (x - GridSize/2) * GridSpacing;
-            WaterPoint.Location.Y += (y - GridSize/2) * GridSpacing;
-            
-            float SurfaceHeight = TargetTerrain->GetHeightAtPosition(WaterPoint.Location);
-            WaterPoint.WaterLevel = SurfaceHeight - AverageWaterTableDepth;
-            WaterPoint.FlowVelocity = GroundwaterFlowRate;
-            WaterPoint.FlowDirection = FVector(1, 0, 0); // Default eastward flow
-            
-            WaterTableGrid.Add(WaterPoint);
-        }
-    }
-    
-    // Generate initial mineral deposits if enabled
-    if (bGenerateMineralDeposits)
-    {
-        for (int32 i = 0; i < 10; i++) // Generate 10 random deposits
-        {
-            FVector RandomLocation = TargetTerrain->GetActorLocation() +
-                FVector(FMath::RandRange(-1000.0f, 1000.0f), FMath::RandRange(-1000.0f, 1000.0f), 0);
-            ERockType HostRock = GetRockTypeAtLocation(RandomLocation, FMath::RandRange(20.0f, 100.0f));
-            GenerateMineralDeposit(RandomLocation, HostRock);
-        }
-    }
-    
-    UE_LOG(LogTemp, Warning, TEXT("GeologyController: Successfully initialized with %d geological columns and %d water table points"),
-           GeologicalColumns.Num(), WaterTableGrid.Num());
+    UE_LOG(LogTemp, Warning, TEXT("GeologyController: Initialized with %d geology cells (%dx%d)"),
+           GeologyGrid.Num(), GeologyGridWidth, GeologyGridHeight);
 }
 
-// ===== STRATIGRAPHY =====
-
-void AGeologyController::GenerateStratigraphicColumn(FVector Location)
+void AGeologyController::InitializeGeologyGrid()
 {
-    FGeologicalColumn NewColumn;
-    NewColumn.Location = Location;
-    
-    // Generate layers based on geological history
-    // This is a simplified model - real stratigraphy would consider regional geology
-    
-    float CurrentDepth = 0.0f;
-    
-    // Recent deposits
-    if (FMath::RandRange(0.0f, 1.0f) < 0.3f)
+    // Determine grid dimensions
+    if (TargetTerrain)
     {
-        FRockLayer AlluviumLayer;
-        AlluviumLayer.RockType = ERockType::Gravel;
-        AlluviumLayer.Thickness = FMath::RandRange(1.0f, 5.0f);
-        AlluviumLayer.Depth = CurrentDepth;
-        AlluviumLayer.Hardness = 0.3f;
-        AlluviumLayer.Porosity = 0.35f;
-        AlluviumLayer.Permeability = 0.8f;
-        AlluviumLayer.ErosionResistance = 0.3f;
-        AlluviumLayer.Age = 0.01f;
-        AlluviumLayer.LayerColor = FLinearColor(0.6f, 0.5f, 0.4f, 1.0f);
-        NewColumn.Layers.Add(AlluviumLayer);
-        CurrentDepth += AlluviumLayer.Thickness;
-    }
-    
-    // Sedimentary sequence
-    int32 NumSedimentaryLayers = FMath::RandRange(3, 6);
-    for (int32 i = 0; i < NumSedimentaryLayers; i++)
-    {
-        FRockLayer SedLayer;
-        
-        // Alternate between different sedimentary rocks
-        float RockChoice = FMath::RandRange(0.0f, 1.0f);
-        if (RockChoice < 0.33f)
-        {
-            SedLayer.RockType = ERockType::Sandstone;
-            SedLayer.Hardness = 0.6f;
-            SedLayer.Porosity = 0.2f;
-            SedLayer.Permeability = 0.4f;
-            SedLayer.LayerColor = FLinearColor(0.7f, 0.6f, 0.4f, 1.0f);
-        }
-        else if (RockChoice < 0.66f)
-        {
-            SedLayer.RockType = ERockType::Limestone;
-            SedLayer.Hardness = 0.7f;
-            SedLayer.Porosity = 0.15f;
-            SedLayer.Permeability = 0.3f;
-            SedLayer.LayerColor = FLinearColor(0.9f, 0.9f, 0.8f, 1.0f);
-            SedLayer.bContainsFossils = FMath::RandRange(0.0f, 1.0f) < 0.4f;
-        }
-        else
-        {
-            SedLayer.RockType = ERockType::Shale;
-            SedLayer.Hardness = 0.5f;
-            SedLayer.Porosity = 0.1f;
-            SedLayer.Permeability = 0.05f;
-            SedLayer.LayerColor = FLinearColor(0.4f, 0.4f, 0.35f, 1.0f);
-        }
-        
-        SedLayer.Thickness = FMath::RandRange(10.0f, 40.0f);
-        SedLayer.Depth = CurrentDepth;
-        SedLayer.ErosionResistance = SedLayer.Hardness * 0.8f;
-        SedLayer.Age = 50.0f + (i * 50.0f); // Older with depth
-        SedLayer.bHasMineralDeposits = FMath::RandRange(0.0f, 1.0f) < MineralFormationProbability;
-        
-        NewColumn.Layers.Add(SedLayer);
-        CurrentDepth += SedLayer.Thickness;
-    }
-    
-    // Basement rock
-    FRockLayer BasementLayer;
-    float BasementChoice = FMath::RandRange(0.0f, 1.0f);
-    if (BasementChoice < 0.6f)
-    {
-        BasementLayer.RockType = ERockType::Granite;
-        BasementLayer.Hardness = 0.9f;
-        BasementLayer.LayerColor = FLinearColor(0.5f, 0.5f, 0.5f, 1.0f);
-    }
-    else if (BasementChoice < 0.8f)
-    {
-        BasementLayer.RockType = ERockType::Basalt;
-        BasementLayer.Hardness = 0.85f;
-        BasementLayer.LayerColor = FLinearColor(0.2f, 0.2f, 0.2f, 1.0f);
+        GeologyGridWidth = TargetTerrain->TerrainWidth / 4;
+        GeologyGridHeight = TargetTerrain->TerrainHeight / 4;
     }
     else
     {
-        BasementLayer.RockType = ERockType::Quartzite;
-        BasementLayer.Hardness = 0.95f;
-        BasementLayer.LayerColor = FLinearColor(0.95f, 0.95f, 0.95f, 1.0f);
+        GeologyGridWidth = GridWidth;
+        GeologyGridHeight = GridHeight;
     }
     
-    BasementLayer.Thickness = 1000.0f;
-    BasementLayer.Depth = CurrentDepth;
-    BasementLayer.Porosity = 0.02f;
-    BasementLayer.Permeability = 0.01f;
-    BasementLayer.ErosionResistance = 0.95f;
-    BasementLayer.Age = 1000.0f;
-    BasementLayer.bHasMineralDeposits = true;
-    NewColumn.Layers.Add(BasementLayer);
+    UE_LOG(LogTemp, Log, TEXT("GeologyController: Initializing simplified geology grid %dx%d"), 
+           GeologyGridWidth, GeologyGridHeight);
     
-    NewColumn.TotalDepth = CurrentDepth + BasementLayer.Thickness;
+    // Clear and resize arrays
+    GeologyGrid.Empty();
+    GeologyGrid.SetNum(GeologyGridWidth * GeologyGridHeight);
     
-    // Chance of fault line
-    NewColumn.bHasFaultLine = FMath::RandRange(0.0f, 1.0f) < 0.1f;
-    if (NewColumn.bHasFaultLine)
+    TempWaterTableDepths.SetNum(GeologyGrid.Num());
+    TempSoilMoisture.SetNum(GeologyGrid.Num());
+    
+    // Initialize each cell
+    for (int32 Y = 0; Y < GeologyGridHeight; Y++)
     {
-        NewColumn.FaultDisplacement = FMath::RandRange(-20.0f, 20.0f);
-    }
-    
-    GeologicalColumns.Add(NewColumn);
-    
-}
-
-FGeologicalColumn* AGeologyController::GetColumnAtLocation(FVector Location)
-{
-    // Find nearest geological column
-    float MinDistance = FLT_MAX;
-    int32 NearestIndex = 0;
-    
-    for (int32 i = 0; i < GeologicalColumns.Num(); i++)
-    {
-        float Distance = FVector::Dist(Location, GeologicalColumns[i].Location);
-        if (Distance < MinDistance)
+        for (int32 X = 0; X < GeologyGridWidth; X++)
         {
-            MinDistance = Distance;
-            NearestIndex = i;
+            int32 Index = GetGridIndex(X, Y);
+            FSimplifiedGeology& Cell = GeologyGrid[Index];
+            
+            // Set default values
+            Cell.SurfaceRock = ERockType::Sandstone;
+            Cell.Hardness = 0.5f;
+            Cell.WaterTableDepth = AverageWaterTableDepth;
+            Cell.SoilMoisture = 0.2f;
+            Cell.Permeability = 0.5f;
         }
     }
-    
-    if (GeologicalColumns.IsValidIndex(NearestIndex))
-    {
-        return &GeologicalColumns[NearestIndex];
-    }
-    
-    // Return nullptr if none found
-    return nullptr;
 }
 
-const FGeologicalColumn* AGeologyController::GetColumnAtLocation(FVector Location) const
+// ===== WATER CYCLE INTEGRATION =====
+
+void AGeologyController::SetWaterTableDepth(FVector Location, float Depth)
 {
-    // Find nearest geological column
-    float MinDistance = FLT_MAX;
-    int32 NearestIndex = 0;
+    FVector2D Coords = WorldToGridCoordinates(Location);
+    int32 X = FMath::FloorToInt(Coords.X);
+    int32 Y = FMath::FloorToInt(Coords.Y);
     
-    for (int32 i = 0; i < GeologicalColumns.Num(); i++)
+    if (IsValidGridCoordinate(X, Y))
     {
-        float Distance = FVector::Dist(Location, GeologicalColumns[i].Location);
-        if (Distance < MinDistance)
-        {
-            MinDistance = Distance;
-            NearestIndex = i;
-        }
+        int32 Index = GetGridIndex(X, Y);
+        GeologyGrid[Index].WaterTableDepth = FMath::Max(0.0f, Depth);
     }
-    
-    if (GeologicalColumns.IsValidIndex(NearestIndex))
-    {
-        return &GeologicalColumns[NearestIndex];
-    }
-    
-    return nullptr;
 }
 
-FGeologicalColumn AGeologyController::GetColumnAtLocationCopy(FVector Location) const
+void AGeologyController::ReduceSoilMoisture(FVector Location, float Amount)
 {
-    const FGeologicalColumn* Column = GetColumnAtLocation(Location);
-    if (Column)
-    {
-        return *Column;
-    }
+    FVector2D Coords = WorldToGridCoordinates(Location);
+    int32 X = FMath::FloorToInt(Coords.X);
+    int32 Y = FMath::FloorToInt(Coords.Y);
     
-    // Return default column if none found
-    return FGeologicalColumn();
+    if (IsValidGridCoordinate(X, Y))
+    {
+        int32 Index = GetGridIndex(X, Y);
+        GeologyGrid[Index].SoilMoisture = FMath::Clamp(
+            GeologyGrid[Index].SoilMoisture - Amount, 0.0f, 1.0f);
+    }
 }
 
-void AGeologyController::AddGeologicalLayer(FVector Location, const FRockLayer& NewLayer)
+float AGeologyController::GetSoilMoistureAt(FVector Location) const
 {
-    FGeologicalColumn* Column = GetColumnAtLocation(Location);
-    if (!Column)
+    FVector2D Coords = WorldToGridCoordinates(Location);
+    int32 X = FMath::FloorToInt(Coords.X);
+    int32 Y = FMath::FloorToInt(Coords.Y);
+    
+    if (IsValidGridCoordinate(X, Y))
     {
-        // Create new column if none exists
-        FGeologicalColumn NewColumn;
-        NewColumn.Location = Location;
-        GeologicalColumns.Add(NewColumn);
-        Column = &GeologicalColumns.Last();
+        int32 Index = GetGridIndex(X, Y);
+        return GeologyGrid[Index].SoilMoisture;
     }
     
-    // Insert layer at appropriate depth
-    int32 InsertIndex = 0;
-    for (int32 i = 0; i < Column->Layers.Num(); i++)
+    return 0.0f;
+}
+
+float AGeologyController::GetWaterTableDepthAtLocation(FVector Location) const
+{
+    FVector2D Coords = WorldToGridCoordinates(Location);
+    int32 X = FMath::FloorToInt(Coords.X);
+    int32 Y = FMath::FloorToInt(Coords.Y);
+    
+    if (IsValidGridCoordinate(X, Y))
     {
-        if (NewLayer.Depth < Column->Layers[i].Depth)
-        {
-            InsertIndex = i;
-            break;
-        }
+        int32 Index = GetGridIndex(X, Y);
+        return GeologyGrid[Index].WaterTableDepth;
     }
     
-    Column->Layers.Insert(NewLayer, InsertIndex);
-    
-    // Adjust depths of lower layers
-    for (int32 i = InsertIndex + 1; i < Column->Layers.Num(); i++)
+    return AverageWaterTableDepth;
+}
+
+float AGeologyController::GetInfiltrationRate(ERockType Rock) const
+{
+    // Infiltration rates in m/s
+    switch (Rock)
     {
-        Column->Layers[i].Depth += NewLayer.Thickness;
+        case ERockType::Clay:      return 0.0000014f;  // 5 mm/hr
+        case ERockType::Silt:      return 0.0000072f;  // 26 mm/hr
+        case ERockType::Sand:      return 0.00005f;    // 180 mm/hr
+        case ERockType::Gravel:    return 0.00008f;    // 288 mm/hr
+        case ERockType::Granite:   return 0.0000003f;  // 1 mm/hr
+        case ERockType::Limestone: return 0.00004f;    // 144 mm/hr (fractured)
+        case ERockType::Sandstone: return 0.00002f;    // 72 mm/hr
+        case ERockType::Shale:     return 0.000002f;   // 7 mm/hr
+        default:                   return 0.00001f;    // 36 mm/hr
     }
 }
 
-// ===== CORE FUNCTIONS =====
+// ===== CORE UPDATE FUNCTIONS =====
 
-void AGeologyController::UpdateGeologicalProcesses(float DeltaTime)
+void AGeologyController::UpdateGeologySystem(float DeltaTime)
 {
     if (!TargetTerrain || !WaterSystem) return;
     
-    // Process different geological phenomena
-    ProcessSedimentation(DeltaTime);
-    ProcessWeathering(DeltaTime);
-    ProcessErosion(DeltaTime);
-    ProcessGroundwaterFlow(DeltaTime);
-    UpdateAquiferPressure(DeltaTime);
+    // Update in correct order for water conservation
+    ProcessSurfaceWaterInfiltration(DeltaTime);
+    UpdateSimplifiedWaterTable(DeltaTime);
+    ProcessGroundwaterDischarge(DeltaTime);
 }
 
-void AGeologyController::UpdateWaterTable(float DeltaTime)
+void AGeologyController::ProcessSurfaceWaterInfiltration(float DeltaTime)
 {
-    if (!WaterSystem) return;
+    // PHASE 3: Realistic infiltration from existing surface water
+    if (!WaterSystem || !TargetTerrain) return;
     
-    for (FWaterTableData& WaterPoint : WaterTableGrid)
+    UE_LOG(LogTemp, Log, TEXT("GeologyController: Processing surface water infiltration"));
+    
+    for (int32 Y = 0; Y < GeologyGridHeight; Y++)
     {
-        FVector SurfaceLocation = WaterPoint.Location;
-        SurfaceLocation.Z = TargetTerrain->GetHeightAtPosition(WaterPoint.Location);
-        
-        float SurfaceWaterDepth = WaterSystem->GetWaterDepthAtPosition(SurfaceLocation);
-        
-        // Recharge from surface water
-        if (SurfaceWaterDepth > 0.1f)
+        for (int32 X = 0; X < GeologyGridWidth; X++)
         {
-            float Recharge = WaterTableRechargeRate * DeltaTime * SurfaceWaterDepth;
-            WaterPoint.WaterLevel += Recharge * 0.1f;
-        }
-        
-        // Natural drainage and flow
-        WaterPoint.WaterLevel -= 0.01f * DeltaTime;
-        
-        // Calculate flow based on hydraulic gradient
-        FVector FlowGradient = FVector::ZeroVector;
-        for (const FWaterTableData& OtherPoint : WaterTableGrid)
-        {
-            if (&OtherPoint != &WaterPoint)
-            {
-                FVector ToOther = OtherPoint.Location - WaterPoint.Location;
-                float Distance = ToOther.Size();
-                if (Distance < 500.0f && Distance > 0.1f) // Consider nearby points
-                {
-                    float HeadDifference = OtherPoint.WaterLevel - WaterPoint.WaterLevel;
-                    FlowGradient += (ToOther / Distance) * HeadDifference;
-                }
-            }
-        }
-        
-        WaterPoint.FlowDirection = FlowGradient.GetSafeNormal();
-        WaterPoint.FlowVelocity = FlowGradient.Size() * GroundwaterFlowRate;
-        
-        // Check for artesian conditions
-        float PressureHead = WaterPoint.WaterLevel + ArtesianPressureThreshold;
-        WaterPoint.bIsArtesian = PressureHead > SurfaceLocation.Z;
-        
-        // Create springs where water table intersects surface
-        if (WaterPoint.WaterLevel > SurfaceLocation.Z - SpringFormationThreshold)
-        {
-            CreateSpring(SurfaceLocation);
-        }
-    }
-}
-
-void AGeologyController::FormSedimentLayer(FVector Location, float Thickness, ERockType RockType)
-{
-    FRockLayer NewLayer = CreateDefaultRockLayer(RockType);
-    NewLayer.Thickness = Thickness;
-    NewLayer.Depth = 0.0f; // New sediment forms at surface
-    NewLayer.Age = 0.0f; // Brand new
-    
-    AddGeologicalLayer(Location, NewLayer);
-    
-    UE_LOG(LogTemp, Log, TEXT("GeologyController: Formed %s sediment layer (%.1fm thick) at %s"),
-           *UEnum::GetDisplayValueAsText(RockType).ToString(), Thickness, *Location.ToString());
-}
-
-void AGeologyController::ApplyMetamorphism(FVector Location, float Pressure, float Temperature)
-{
-    FGeologicalColumn* Column = GetColumnAtLocation(Location);
-    if (!Column) return;
-    
-    for (FRockLayer& Layer : Column->Layers)
-    {
-        // Check if conditions are sufficient for metamorphism
-        float MetamorphicThreshold = 200.0f; // Simplified
-        if (Temperature > MetamorphicThreshold || Pressure > MetamorphicThreshold)
-        {
-            ERockType NewType = GetMetamorphicEquivalent(Layer.RockType);
-            if (NewType != Layer.RockType)
-            {
-                UE_LOG(LogTemp, Log, TEXT("GeologyController: Metamorphism transformed %s to %s at %s"),
-                       *UEnum::GetDisplayValueAsText(Layer.RockType).ToString(),
-                       *UEnum::GetDisplayValueAsText(NewType).ToString(),
-                       *Location.ToString());
-                
-                Layer.RockType = NewType;
-                Layer.Hardness = FMath::Min(Layer.Hardness * 1.5f, 0.95f);
-                Layer.Porosity *= 0.5f;
-                Layer.Permeability *= 0.3f;
-                Layer.ErosionResistance = Layer.Hardness;
-            }
-        }
-    }
-}
-
-void AGeologyController::CreateFaultLine(FVector Start, FVector End, float Displacement)
-{
-    // Find all geological columns along the fault line
-    FVector FaultDirection = (End - Start).GetSafeNormal();
-    float FaultLength = FVector::Dist(Start, End);
-    
-    for (FGeologicalColumn& Column : GeologicalColumns)
-    {
-        // Check if column is near fault line
-        FVector ToColumn = Column.Location - Start;
-        float AlongFault = FVector::DotProduct(ToColumn, FaultDirection);
-        
-        if (AlongFault >= 0 && AlongFault <= FaultLength)
-        {
-            FVector NearestPointOnFault = Start + FaultDirection * AlongFault;
-            float DistanceToFault = FVector::Dist(Column.Location, NearestPointOnFault);
+            int32 Index = GetGridIndex(X, Y);
+            FSimplifiedGeology& Geology = GeologyGrid[Index];
             
-            if (DistanceToFault < 100.0f) // Within fault influence zone
+            // Convert geology grid to world position using master controller
+            FVector2D GridPos(X, Y);
+            FVector WorldPos;
+            if (MasterController)
             {
-                Column.bHasFaultLine = true;
-                Column.FaultDisplacement = Displacement * (1.0f - DistanceToFault / 100.0f);
+                FVector2D Pos2D = MasterController->ConvertGeologyToWaterGrid(FVector2D(X, Y));
+                WorldPos = FVector(Pos2D.X, Pos2D.Y, 0.0f);
+            }
+            else
+            {
+                WorldPos = TargetTerrain->TerrainToWorldPosition(GridPos.X, GridPos.Y);
+            }
+            
+            // Check for existing surface water at this location
+            float SurfaceWaterDepth = WaterSystem->GetWaterDepthAtPosition(WorldPos);
+            
+            if (SurfaceWaterDepth > 0.01f) // Has surface water to infiltrate
+            {
+                // Calculate maximum infiltration rate based on rock type
+                float MaxInfiltrationRate = GetInfiltrationRate(Geology.SurfaceRock);
                 
-                // Offset layers based on fault displacement
-                for (FRockLayer& Layer : Column.Layers)
+                // Reduce infiltration if soil is already saturated
+                float SoilSaturation = Geology.SoilMoisture;
+                float EffectiveInfiltrationRate = MaxInfiltrationRate * (1.0f - SoilSaturation);
+                
+                // Calculate how much water can infiltrate this frame
+                float MaxInfiltrationDepth = EffectiveInfiltrationRate * DeltaTime;
+                float ActualInfiltrationDepth = FMath::Min(SurfaceWaterDepth, MaxInfiltrationDepth);
+                
+                if (ActualInfiltrationDepth > 0.001f) // Meaningful infiltration
                 {
-                    Layer.Depth += Column.FaultDisplacement;
+                    // Remove water from surface
+                    WaterSystem->RemoveWater(WorldPos, ActualInfiltrationDepth);
+                    
+                    // Update soil moisture using water volume authority
+                    float SoilCapacity = GetSoilCapacity(Geology.SurfaceRock);
+                    float InfiltratedVolume = MasterController ? 
+                        MasterController->GetWaterCellVolume(ActualInfiltrationDepth) :
+                        ActualInfiltrationDepth;
+                    
+                    float SoilMoistureIncrease = InfiltratedVolume / SoilCapacity;
+                    Geology.SoilMoisture = FMath::Min(1.0f, Geology.SoilMoisture + SoilMoistureIncrease);
+                    
+                    // Update water table (excess water goes to groundwater)
+                    if (Geology.SoilMoisture >= 1.0f)
+                    {
+                        float ExcessWater = (Geology.SoilMoisture - 1.0f) * SoilCapacity;
+                        // Use geology cell water volume conversion with proper porosity
+                        float GroundwaterIncrease = MasterController ?
+                            MasterController->GetGeologyCellWaterVolume(ExcessWater, Geology.Permeability) :
+                            ExcessWater * Geology.Permeability;
+                        Geology.WaterTableDepth = FMath::Max(0.0f, Geology.WaterTableDepth - GroundwaterIncrease);
+                        Geology.SoilMoisture = 1.0f; // Cap at full saturation
+                    }
+                    
+                    UE_LOG(LogTemp, VeryVerbose, TEXT("Infiltrated %f depth at (%d,%d), soil moisture now %f"),
+                           ActualInfiltrationDepth, X, Y, Geology.SoilMoisture);
                 }
             }
         }
     }
-    
-    UE_LOG(LogTemp, Warning, TEXT("GeologyController: Created fault line from %s to %s with %.1fm displacement"),
-           *Start.ToString(), *End.ToString(), Displacement);
 }
-
-// ===== GEOLOGICAL QUERIES =====
-
-ERockType AGeologyController::GetRockTypeAtLocation(FVector WorldLocation, float Depth) const
+FVector2D AGeologyController::GeologyGridToWorldCoordinates(int32 X, int32 Y) const
 {
-    const FGeologicalColumn* Column = GetColumnAtLocation(WorldLocation);
-    
-    if (Column)
+    // Use master controller for grid conversions
+    if (MasterController)
     {
-        // Find the layer at the specified depth
-        for (const FRockLayer& Layer : Column->Layers)
-        {
-            if (Depth >= Layer.Depth && Depth < Layer.Depth + Layer.Thickness)
-            {
-                return Layer.RockType;
-            }
-        }
+        return MasterController->ConvertGeologyToWaterGrid(FVector2D(X, Y));
     }
     
-    // If we're deeper than all layers, return bedrock
-    return ERockType::Bedrock;
-}
-
-float AGeologyController::GetRockHardnessAtLocation(FVector WorldLocation, float Depth) const
-{
-    const FGeologicalColumn* Column = GetColumnAtLocation(WorldLocation);
+    // Fallback to manual calculation if no master controller
+    float CellSizeX = (TargetTerrain->TerrainWidth * TargetTerrain->TerrainScale) / GeologyGridWidth;
+    float CellSizeY = (TargetTerrain->TerrainHeight * TargetTerrain->TerrainScale) / GeologyGridHeight;
     
-    if (Column)
-    {
-        for (const FRockLayer& Layer : Column->Layers)
-        {
-            if (Depth >= Layer.Depth && Depth < Layer.Depth + Layer.Thickness)
-            {
-                return Layer.Hardness;
-            }
-        }
-    }
+    FVector TerrainOrigin = TargetTerrain->GetActorLocation();
     
-    return 0.9f; // Default bedrock hardness
-}
-
-float AGeologyController::GetWaterTableDepthAtLocation(FVector WorldLocation) const
-{
-    // Find nearest water table point
-    float MinDistance = FLT_MAX;
-    float WaterLevel = 0.0f;
-    
-    for (const FWaterTableData& WaterPoint : WaterTableGrid)
-    {
-        float Distance = FVector::Dist2D(WorldLocation, WaterPoint.Location);
-        if (Distance < MinDistance)
-        {
-            MinDistance = Distance;
-            WaterLevel = WaterPoint.WaterLevel;
-        }
-    }
-    
-    float SurfaceHeight = TargetTerrain ? TargetTerrain->GetHeightAtPosition(WorldLocation) : WorldLocation.Z;
-    return SurfaceHeight - WaterLevel;
-}
-
-float AGeologyController::GetGroundwaterFlowAtLocation(FVector WorldLocation) const
-{
-    // Find nearest water table point
-    float MinDistance = FLT_MAX;
-    float FlowVelocity = 0.0f;
-    
-    for (const FWaterTableData& WaterPoint : WaterTableGrid)
-    {
-        float Distance = FVector::Dist2D(WorldLocation, WaterPoint.Location);
-        if (Distance < MinDistance)
-        {
-            MinDistance = Distance;
-            FlowVelocity = WaterPoint.FlowVelocity;
-        }
-    }
-    
-    // Modify flow based on rock permeability at water table depth
-    float WaterTableDepth = GetWaterTableDepthAtLocation(WorldLocation);
-    ERockType RockType = GetRockTypeAtLocation(WorldLocation, WaterTableDepth);
-    
-    float PermeabilityFactor = 1.0f;
-    switch (RockType)
-    {
-    case ERockType::Sand: PermeabilityFactor = 2.0f; break;
-    case ERockType::Gravel: PermeabilityFactor = 3.0f; break;
-    case ERockType::Clay: PermeabilityFactor = 0.1f; break;
-    case ERockType::Granite: PermeabilityFactor = 0.05f; break;
-    case ERockType::Limestone: PermeabilityFactor = 1.5f; break;
-    case ERockType::Sandstone: PermeabilityFactor = 1.2f; break;
-    case ERockType::Shale: PermeabilityFactor = 0.2f; break;
-    default: break;
-    }
-    
-    return FlowVelocity * PermeabilityFactor;
-}
-
-bool AGeologyController::IsLocationAboveWaterTable(FVector WorldLocation) const
-{
-    float WaterTableDepth = GetWaterTableDepthAtLocation(WorldLocation);
-    float DepthBelowSurface = 0.0f; // Assuming we're checking at surface
-    
-    return DepthBelowSurface < WaterTableDepth;
-}
-
-TArray<FMineralDeposit> AGeologyController::GetNearbyMineralDeposits(FVector Location, float Radius) const
-{
-    TArray<FMineralDeposit> NearbyDeposits;
-    
-    for (const FMineralDeposit& Deposit : MineralDeposits)
-    {
-        if (FVector::Dist(Location, Deposit.Location) <= Radius)
-        {
-            NearbyDeposits.Add(Deposit);
-        }
-    }
-    
-    return NearbyDeposits;
-}
-
-// ===== SYSTEM COORDINATION =====
-
-void AGeologyController::OnWaterFlowChanged(FVector Location, float FlowRate)
-{
-    // High flow rates increase erosion
-    if (FlowRate > 1.0f)
-    {
-        float SurfaceDepth = 0.0f;
-        ERockType SurfaceRockType = GetRockTypeAtLocation(Location, SurfaceDepth);
-        float Hardness = GetRockHardnessAtLocation(Location, SurfaceDepth);
-        float ErosionAmount = FlowRate * 0.1f * (1.0f - Hardness);
-        
-        // Trigger erosion event
-        OnErosionOccurred(Location, ErosionAmount, SurfaceRockType);
-        
-        UE_LOG(LogTemp, VeryVerbose, TEXT("GeologyController: Water erosion at %s, amount %.3f"),
-               *Location.ToString(), ErosionAmount);
-    }
-}
-
-void AGeologyController::OnErosionOccurred(FVector Location, float ErosionAmount, ERockType ErodedType)
-{
-    // Don't create sediment for tiny erosion amounts
-    if (ErosionAmount < 0.01f) return;
-    
-    // Create sediment based on eroded rock type
-    ERockType SedimentType = ERockType::Sand; // Default
-    
-    switch (ErodedType)
-    {
-    case ERockType::Granite:
-        SedimentType = ERockType::Sand; // Granite weathers to sand
-        break;
-    case ERockType::Limestone:
-        SedimentType = ERockType::Silt; // Limestone dissolves to fine particles
-        break;
-    case ERockType::Shale:
-        SedimentType = ERockType::Clay; // Shale breaks down to clay
-        break;
-    case ERockType::Basalt:
-        SedimentType = ERockType::Clay; // Basalt weathers to clay minerals
-        break;
-    default:
-        SedimentType = ERockType::Sand;
-        break;
-    }
-    
-    // Find downstream location for deposition
-    FVector FlowDirection = FVector(1, 0, -0.1f).GetSafeNormal(); // Simplified
-    FVector DepositionLocation = Location + FlowDirection * 100.0f;
-    
-    // PERFORMANCE FIX: Accumulate sediment instead of creating layers immediately
-    FIntVector GridKey = FIntVector(
-        FMath::RoundToInt(DepositionLocation.X / 100.0f),
-        FMath::RoundToInt(DepositionLocation.Y / 100.0f),
-        0
+    return FVector2D(
+        TerrainOrigin.X + (X * CellSizeX),
+        TerrainOrigin.Y + (Y * CellSizeY)
     );
-    
-    float& AccumulatedAmount = AccumulatedSediment.FindOrAdd(GridKey);
-    AccumulatedAmount += ErosionAmount * 0.1f;
-    
-    // Log accumulation instead of formation
-    UE_LOG(LogTemp, VeryVerbose, TEXT("GeologyController: Accumulated %.3fm of %s sediment at grid %s"),
-           ErosionAmount * 0.1f, *UEnum::GetDisplayValueAsText(SedimentType).ToString(), *GridKey.ToString());
 }
-
-void AGeologyController::OnTemperatureChanged(float NewTemperature)
+void AGeologyController::UpdateSimplifiedWaterTable(float DeltaTime)
 {
-    CurrentTemperature = NewTemperature;
-    
-    // Temperature affects weathering rates
-    if (bEnableChemicalWeathering)
+    // Copy current depths
+    for (int32 i = 0; i < GeologyGrid.Num(); i++)
     {
-        // Chemical weathering increases with temperature
-        ChemicalWeatheringRate = 0.5f * (1.0f + (CurrentTemperature - 20.0f) / 40.0f);
-        ChemicalWeatheringRate = FMath::Clamp(ChemicalWeatheringRate, 0.1f, 2.0f);
+        TempWaterTableDepths[i] = GeologyGrid[i].WaterTableDepth;
     }
     
-    if (bEnableMechanicalWeathering)
+    // Simple lateral flow between cells
+    for (int32 Y = 1; Y < GeologyGridHeight - 1; Y++)
     {
-        // Frost wedging is most effective near freezing
-        float FrostEffectiveness = 1.0f - FMath::Abs(CurrentTemperature) / 20.0f;
-        FrostWedgingEffect = FMath::Max(0.0f, FrostEffectiveness) * 1.5f;
-    }
-}
-
-void AGeologyController::SetSandDuneController(ASandDuneController* Controller)
-{
-    SandDuneController = Controller;
-    
-    if (SandDuneController)
-    {
-        // Initialize sand dune controller with our terrain reference
-        SandDuneController->Initialize(TargetTerrain, this);
-        
-        UE_LOG(LogTemp, Warning, TEXT("GeologyController: Sand dune controller connected"));
-    }
-}
-
-// ===== VISUALIZATION =====
-
-void AGeologyController::ShowWaterTable(bool bEnable)
-{
-    if (!bEnable || !GetWorld()) return;
-    
-    UE_LOG(LogTemp, Warning, TEXT("GeologyController: Showing water table"));
-    
-    for (const FWaterTableData& WaterPoint : WaterTableGrid)
-    {
-        if (TargetTerrain)
+        for (int32 X = 1; X < GeologyGridWidth - 1; X++)
         {
-            FVector SurfacePoint = WaterPoint.Location;
-            SurfacePoint.Z = TargetTerrain->GetHeightAtPosition(WaterPoint.Location);
+            int32 Index = GetGridIndex(X, Y);
+            float CurrentDepth = GeologyGrid[Index].WaterTableDepth;
             
-            FVector WaterLevelPoint = WaterPoint.Location;
-            WaterLevelPoint.Z = WaterPoint.WaterLevel;
+            // Get neighbor depths
+            float NeighborSum = 0.0f;
+            int32 NeighborCount = 0;
             
-            // Draw line from surface to water table
-            FColor LineColor = WaterPoint.bIsArtesian ? FColor::Cyan : FColor::Blue;
-            DrawDebugLine(GetWorld(), SurfacePoint, WaterLevelPoint, LineColor, false, 5.0f, 0, 2.0f);
+            // 4-neighbor averaging
+            int32 Neighbors[4] = {
+                GetGridIndex(X - 1, Y),
+                GetGridIndex(X + 1, Y),
+                GetGridIndex(X, Y - 1),
+                GetGridIndex(X, Y + 1)
+            };
             
-            // Draw water level indicator
-            DrawDebugSphere(GetWorld(), WaterLevelPoint, 25.0f, 8, LineColor, false, 5.0f);
-            
-            // Show flow direction
-            if (WaterPoint.FlowVelocity > 0.01f)
+            for (int32 NeighborIndex : Neighbors)
             {
-                FVector FlowEnd = WaterLevelPoint + WaterPoint.FlowDirection * 100.0f * WaterPoint.FlowVelocity;
-                DrawDebugDirectionalArrow(GetWorld(), WaterLevelPoint, FlowEnd,
-                                          20.0f, FColor::Yellow, false, 5.0f, 0, 2.0f);
+                if (NeighborIndex >= 0 && NeighborIndex < GeologyGrid.Num())
+                {
+                    NeighborSum += GeologyGrid[NeighborIndex].WaterTableDepth;
+                    NeighborCount++;
+                }
             }
             
-            // Mark artesian points
-            if (WaterPoint.bIsArtesian)
+            if (NeighborCount > 0)
             {
-                DrawDebugString(GetWorld(), SurfacePoint + FVector(0, 0, 50),
-                                TEXT("ARTESIAN"), nullptr, FColor::Cyan, 5.0f);
+                float NeighborAvg = NeighborSum / NeighborCount;
+                float FlowRate = GroundwaterFlowRate * GeologyGrid[Index].Permeability;
+                TempWaterTableDepths[Index] = FMath::Lerp(CurrentDepth, NeighborAvg,
+                    FlowRate * DeltaTime);
             }
         }
     }
+    
+    // Apply new depths
+    for (int32 i = 0; i < GeologyGrid.Num(); i++)
+    {
+        GeologyGrid[i].WaterTableDepth = TempWaterTableDepths[i];
+    }
 }
 
-void AGeologyController::ShowRockLayers(bool bEnable)
+void AGeologyController::ProcessGroundwaterDischarge(float DeltaTime)
 {
-    if (!bEnable || !GetWorld()) return;
+    if (!TargetTerrain || !WaterSystem) return;
     
-    UE_LOG(LogTemp, Warning, TEXT("GeologyController: Showing rock layers"));
-    
-    // Show geological columns as vertical cross-sections
-    for (const FGeologicalColumn& Column : GeologicalColumns)
+    // Check for springs where water table meets surface
+    for (int32 Y = 0; Y < GeologyGridHeight; Y += 4) // Sparse check for performance
     {
-        FVector ColumnBase = Column.Location;
-        ColumnBase.Z = TargetTerrain ? TargetTerrain->GetHeightAtPosition(Column.Location) : Column.Location.Z;
-        
-        float CurrentZ = ColumnBase.Z;
-        
-        for (const FRockLayer& Layer : Column.Layers)
+        for (int32 X = 0; X < GeologyGridWidth; X += 4)
         {
-            FVector LayerTop = ColumnBase;
-            LayerTop.Z = CurrentZ;
+            int32 Index = GetGridIndex(X, Y);
+            const FSimplifiedGeology& Geology = GeologyGrid[Index];
             
-            FVector LayerBottom = ColumnBase;
-            LayerBottom.Z = CurrentZ - Layer.Thickness;
-            
-            // Draw layer boundaries
-            FColor LayerColor = Layer.LayerColor.ToFColor(true);
-            DrawDebugLine(GetWorld(), LayerTop, LayerBottom, LayerColor, false, 5.0f, 0, 5.0f);
-            
-            // Draw layer info
-            FVector LabelPos = (LayerTop + LayerBottom) * 0.5f + FVector(50, 0, 0);
-            FString LayerInfo = FString::Printf(TEXT("%s (%.1fm)"),
-                *UEnum::GetDisplayValueAsText(Layer.RockType).ToString(), Layer.Thickness);
-            DrawDebugString(GetWorld(), LabelPos, LayerInfo, nullptr, LayerColor, 5.0f);
-            
-            // Mark special features
-            if (Layer.bContainsFossils)
+            FVector2D GridPos(X, Y);
+            FVector WorldPos;
+            if (MasterController)
             {
-                DrawDebugSphere(GetWorld(), LabelPos - FVector(30, 0, 0), 10.0f, 6, FColor::White, false, 5.0f);
+                FVector2D Pos2D = MasterController->ConvertGeologyToWaterGrid(GridPos);
+                WorldPos = FVector(Pos2D.X, Pos2D.Y, 0.0f);
             }
-            
-            if (Layer.bHasMineralDeposits)
+            else
             {
-                DrawDebugBox(GetWorld(), LabelPos - FVector(30, 30, 0), FVector(5), ColorGold, false, 5.0f);
+                WorldPos = TargetTerrain->TerrainToWorldPosition(GridPos.X, GridPos.Y);
             }
+            float SurfaceHeight = TargetTerrain->GetHeightAtPosition(WorldPos);
+            float WaterTableHeight = SurfaceHeight - Geology.WaterTableDepth;
             
-            CurrentZ = LayerBottom.Z;
-            
-            // Stop at bedrock depth
-            if (CurrentZ < ColumnBase.Z - BedrockDepth)
-                break;
-        }
-        
-        // Show fault lines
-        if (Column.bHasFaultLine)
-        {
-            FVector FaultTop = ColumnBase + FVector(0, 0, 100);
-            FVector FaultBottom = ColumnBase - FVector(0, 0, Column.TotalDepth);
-            DrawDebugLine(GetWorld(), FaultTop, FaultBottom, FColor::Red, false, 5.0f, 0, 3.0f);
-            
-            FString FaultInfo = FString::Printf(TEXT("FAULT: %.1fm"), Column.FaultDisplacement);
-            DrawDebugString(GetWorld(), FaultTop + FVector(0, 0, 20), FaultInfo, nullptr, FColor::Red, 5.0f);
+            // Spring forms when water table above surface
+            if (Geology.WaterTableDepth < 0.01f) // Water table at/above surface
+            {
+                float SpringFlow = SpringFlowRate * DeltaTime;
+                
+                // Add water to surface
+                // Scale up spring flow to match new depth scale
+                // 0.01 m³/s in real units = 1 depth unit/s in simulation
+                float ScaledSpringFlow = SpringFlow / AMasterWorldController::WATER_DEPTH_SCALE;
+                WaterSystem->AddWater(WorldPos, ScaledSpringFlow);
+                
+                // Lower water table slightly
+                GeologyGrid[Index].WaterTableDepth = 0.1f;
+                
+                UE_LOG(LogTemp, Warning, TEXT("Spring flowing at (%d,%d): %.3f m³/s"),
+                    X, Y, SpringFlow / DeltaTime);
+            }
         }
     }
 }
 
-void AGeologyController::ShowMineralDeposits(bool bEnable)
+// ===== QUERIES =====
+
+ERockType AGeologyController::GetRockTypeAtLocation(FVector Location, float Depth) const
 {
-    if (!bEnable || !GetWorld()) return;
+    FVector2D Coords = WorldToGridCoordinates(Location);
+    int32 X = FMath::FloorToInt(Coords.X);
+    int32 Y = FMath::FloorToInt(Coords.Y);
     
-    UE_LOG(LogTemp, Warning, TEXT("GeologyController: Showing mineral deposits"));
-    
-    for (const FMineralDeposit& Deposit : MineralDeposits)
+    if (IsValidGridCoordinate(X, Y))
     {
-        FVector DepositLocation = Deposit.Location;
-        if (TargetTerrain)
-        {
-            DepositLocation.Z = TargetTerrain->GetHeightAtPosition(Deposit.Location) - Deposit.Depth;
-        }
-        
-        // Color based on mineral type
-        FColor MineralColor = ColorGold; // Default
-        if (Deposit.MineralType == "Iron") MineralColor = FColor::Red;
-        else if (Deposit.MineralType == "Copper") MineralColor = ColorOrange;
-        else if (Deposit.MineralType == "Silver") MineralColor = FColor::Silver;
-        else if (Deposit.MineralType == "Coal") MineralColor = FColor::Black;
-        
-        // Draw deposit as a box
-        float DepositSize = FMath::Pow(Deposit.Volume, 0.33f) * 2.0f;
-        DrawDebugBox(GetWorld(), DepositLocation, FVector(DepositSize), MineralColor, false, 5.0f);
-        
-        // Show deposit info
-        FString DepositInfo = FString::Printf(TEXT("%s\nVol: %.0fm³\nConc: %.0f%%"),
-            *Deposit.MineralType, Deposit.Volume, Deposit.Concentration * 100.0f);
-        DrawDebugString(GetWorld(), DepositLocation + FVector(0, 0, DepositSize + 20),
-                        DepositInfo, nullptr, MineralColor, 5.0f);
+        int32 Index = GetGridIndex(X, Y);
+        return GeologyGrid[Index].SurfaceRock;
     }
+    
+    return ERockType::Sandstone;
 }
 
-void AGeologyController::ShowGeologicalColumns(bool bEnable)
+bool AGeologyController::IsLocationAboveWaterTable(FVector Location) const
 {
-    if (!bEnable || !GetWorld()) return;
-    
-    UE_LOG(LogTemp, Warning, TEXT("GeologyController: Showing geological column locations"));
-    
-    for (const FGeologicalColumn& Column : GeologicalColumns)
-    {
-        FVector ColumnLocation = Column.Location;
-        if (TargetTerrain)
-        {
-            ColumnLocation.Z = TargetTerrain->GetHeightAtPosition(Column.Location);
-        }
-        
-        // Draw column marker
-        DrawDebugCylinder(GetWorld(), ColumnLocation, ColumnLocation + FVector(0, 0, 100),
-                          20.0f, 8, FColor::Green, false, 5.0f);
-        
-        // Show total depth
-        FString ColumnInfo = FString::Printf(TEXT("Depth: %.1fm\nLayers: %d"),
-            Column.TotalDepth, Column.Layers.Num());
-        DrawDebugString(GetWorld(), ColumnLocation + FVector(0, 0, 120),
-                        ColumnInfo, nullptr, FColor::Green, 5.0f);
-    }
+    float WaterTableDepth = GetWaterTableDepthAtLocation(Location);
+    return WaterTableDepth > 0.0f;
 }
 
-void AGeologyController::PrintGeologicalStats() const
+// ===== INTERNAL HELPERS =====
+
+FVector2D AGeologyController::WorldToGridCoordinates(const FVector& WorldPosition) const
 {
-    UE_LOG(LogTemp, Warning, TEXT("=== GEOLOGICAL STATISTICS ==="));
-    UE_LOG(LogTemp, Warning, TEXT("Geological Columns: %d"), GeologicalColumns.Num());
-    UE_LOG(LogTemp, Warning, TEXT("Water Table Points: %d"), WaterTableGrid.Num());
-    UE_LOG(LogTemp, Warning, TEXT("Mineral Deposits: %d"), MineralDeposits.Num());
-    UE_LOG(LogTemp, Warning, TEXT("Average Water Table Depth: %.1fm"), AverageWaterTableDepth);
-    UE_LOG(LogTemp, Warning, TEXT("Current Temperature: %.1f°C"), CurrentTemperature);
-    UE_LOG(LogTemp, Warning, TEXT("Bedrock Depth: %.1fm"), BedrockDepth);
-    
-    // Count rock types
-    TMap<ERockType, int32> RockTypeCounts;
-    for (const FGeologicalColumn& Column : GeologicalColumns)
+    // ✅ Use SAME coordinate authority as everyone else
+    if (!MasterController)
     {
-        for (const FRockLayer& Layer : Column.Layers)
-        {
-            RockTypeCounts.FindOrAdd(Layer.RockType)++;
-        }
+        UE_LOG(LogTemp, Error, TEXT("No coordinate authority"));
+        return FVector2D::ZeroVector;
     }
     
-    UE_LOG(LogTemp, Warning, TEXT("Rock Type Distribution:"));
-    for (const auto& Pair : RockTypeCounts)
+    // Get authoritative terrain coordinates
+    FVector2D TerrainCoords = MasterController->WorldToTerrainCoordinates(WorldPosition);
+    
+    // Convert to geology grid coordinates
+    FVector2D WorldDims = MasterController->GetWorldDimensions();
+    float GeologyX = (TerrainCoords.X / WorldDims.X) * GeologyGridWidth;
+    float GeologyY = (TerrainCoords.Y / WorldDims.Y) * GeologyGridHeight;
+    
+    return FVector2D(GeologyX, GeologyY);
+}
+
+bool AGeologyController::IsValidGridCoordinate(int32 X, int32 Y) const
+{
+    return X >= 0 && X < GridWidth && Y >= 0 && Y < GridHeight;
+}
+
+int32 AGeologyController::GetGridIndex(int32 X, int32 Y) const
+{
+    X = FMath::Clamp(X, 0, GridWidth - 1);
+    Y = FMath::Clamp(Y, 0, GridHeight - 1);
+    return Y * GridWidth + X;
+}
+
+float AGeologyController::GetSoilCapacity(ERockType Rock) const
+{
+    // Return soil moisture capacity based on rock type
+    switch (Rock)
     {
-        UE_LOG(LogTemp, Warning, TEXT("  %s: %d layers"),
-               *UEnum::GetDisplayValueAsText(Pair.Key).ToString(), Pair.Value);
+        case ERockType::Clay:
+            return 0.4f;  // High capacity
+        case ERockType::Silt:
+            return 0.35f;
+        case ERockType::Sand:
+            return 0.15f; // Low capacity
+        case ERockType::Gravel:
+            return 0.1f;  // Very low
+        case ERockType::Granite:
+        case ERockType::Basalt:
+            return 0.05f; // Minimal
+        default:
+            return 0.2f;  // Default medium capacity
     }
 }
 
@@ -971,77 +495,29 @@ void AGeologyController::PrintGeologicalStats() const
 
 void AGeologyController::ConfigureFromMaster(const FWorldScalingConfig& Config)
 {
-    UE_LOG(LogTemp, Warning, TEXT("[GEOLOGY SCALING] Configuring from master controller"));
+    UE_LOG(LogTemp, Warning, TEXT("[GEOLOGY SCALING] Configuring from master"));
     
-    CurrentWorldConfig = Config;
-    
-    // Scale geological features based on world size
-    float WorldScale = Config.TerrainScale;
-    
-    // Adjust water table grid
-    WaterTableGrid.Empty();
-    
-    int32 GridSize = FMath::Max(10, Config.GeologyConfig.ErosionGridWidth / 4);
-    float GridSpacing = Config.GeologyConfig.ErosionCellSize * 4.0f;
-    
-    FVector GridOrigin = CurrentCoordinateSystem.WorldOrigin;
-    
-    for (int32 x = 0; x < GridSize; x++)
+    // Update grid dimensions if terrain reference exists
+    if (TargetTerrain)
     {
-        for (int32 y = 0; y < GridSize; y++)
-        {
-            FWaterTableData WaterPoint;
-            WaterPoint.Location = GridOrigin + FVector(
-                (x - GridSize/2) * GridSpacing,
-                (y - GridSize/2) * GridSpacing,
-                0.0f
-            );
-            
-            if (TargetTerrain)
-            {
-                float SurfaceHeight = TargetTerrain->GetHeightAtPosition(WaterPoint.Location);
-                WaterPoint.WaterLevel = SurfaceHeight - AverageWaterTableDepth;
-            }
-            else
-            {
-                WaterPoint.WaterLevel = CurrentCoordinateSystem.WorldOrigin.Z - AverageWaterTableDepth;
-            }
-            
-            WaterTableGrid.Add(WaterPoint);
-        }
-    }
-    
-    // Generate geological columns across the scaled world
-    int32 NumColumns = FMath::Max(4, GridSize / 2);
-    GeologicalColumns.Empty();
-    
-    for (int32 i = 0; i < NumColumns; i++)
-    {
-        for (int32 j = 0; j < NumColumns; j++)
-        {
-            FVector ColumnLocation = GridOrigin + FVector(
-                (i - NumColumns/2) * GridSpacing * 2,
-                (j - NumColumns/2) * GridSpacing * 2,
-                0.0f
-            );
-            
-            GenerateStratigraphicColumn(ColumnLocation);
-        }
+        GeologyGridWidth = Config.TerrainWidth;
+        GeologyGridHeight = Config.TerrainHeight;
+        CellSize = Config.GeologyConfig.ErosionCellSize; // Use erosion cell size
+        
+        // Reinitialize grid with new dimensions
+        InitializeGeologyGrid();
     }
     
     bIsScaledByMaster = true;
     
-    UE_LOG(LogTemp, Warning, TEXT("[GEOLOGY SCALING] Configuration complete - Water table: %d points, Columns: %d"),
-           WaterTableGrid.Num(), GeologicalColumns.Num());
+    UE_LOG(LogTemp, Warning, TEXT("[GEOLOGY SCALING] Configuration complete - Grid: %dx%d"),
+           GeologyGridWidth, GeologyGridHeight);
 }
 
 void AGeologyController::SynchronizeCoordinates(const FWorldCoordinateSystem& Coords)
 {
-    UE_LOG(LogTemp, VeryVerbose, TEXT("[GEOLOGY SCALING] Synchronizing coordinates"));
-    
     CurrentCoordinateSystem = Coords;
-    
-    UE_LOG(LogTemp, VeryVerbose, TEXT("[GEOLOGY SCALING] Coordinate synchronization complete"));
+    GridOrigin = Coords.WorldOrigin;
 }
 
 bool AGeologyController::IsSystemScaled() const
@@ -1075,411 +551,112 @@ FString AGeologyController::GetScalingDebugInfo() const
     FString DebugInfo = TEXT("Geology System Scaling:\n");
     DebugInfo += FString::Printf(TEXT("  - Registered: %s\n"), IsRegisteredWithMaster() ? TEXT("YES") : TEXT("NO"));
     DebugInfo += FString::Printf(TEXT("  - Scaled: %s\n"), IsSystemScaled() ? TEXT("YES") : TEXT("NO"));
-    DebugInfo += FString::Printf(TEXT("  - Water Table Grid: %d points\n"), WaterTableGrid.Num());
-    DebugInfo += FString::Printf(TEXT("  - Geological Columns: %d\n"), GeologicalColumns.Num());
-    DebugInfo += FString::Printf(TEXT("  - Mineral Deposits: %d\n"), MineralDeposits.Num());
+    DebugInfo += FString::Printf(TEXT("  - Grid Size: %dx%d\n"), GeologyGridWidth, GeologyGridHeight);
+    DebugInfo += FString::Printf(TEXT("  - Total Cells: %d\n"), GeologyGrid.Num());
     return DebugInfo;
 }
 
-// ===== INTERNAL FUNCTIONS =====
+// ===== VISUALIZATION =====
 
-void AGeologyController::InitializeGeologicalColumns()
+void AGeologyController::ShowWaterTable(bool bEnable)
 {
-    UE_LOG(LogTemp, Log, TEXT("GeologyController: Initializing geological columns"));
+    if (!bEnable || !GetWorld() || !TargetTerrain) return;
     
-    // Columns are generated during ConfigureFromMaster or Initialize
-}
-
-void AGeologyController::ProcessSedimentation(float DeltaTime)
-{
-    if (!WaterSystem) return;
-    
-    // Sedimentation occurs where water velocity is low
-    float SedimentAmount = SedimentationRate * DeltaTime;
-    
-    if (SedimentAmount > 0.001f)
+    // Sample visualization every 10 cells
+    for (int32 Y = 0; Y < GeologyGridHeight; Y += 10)
     {
-        // Check water velocities across terrain
-        // In areas with low flow, deposit sediment
-        // This is simplified - real implementation would check flow field
-        
-        UE_LOG(LogTemp, VeryVerbose, TEXT("GeologyController: Processing sedimentation (%.3f m)"),
-               SedimentAmount);
-    }
-}
-
-void AGeologyController::ProcessWeathering(float DeltaTime)
-{
-    if (bEnableChemicalWeathering)
-    {
-        float ChemicalAmount = ChemicalWeatheringRate * DeltaTime;
-        
-        // Chemical weathering is enhanced by:
-        // - Higher temperatures
-        // - Lower pH (acid rain)
-        // - Presence of water
-        
-        float AcidityFactor = 1.0f + (7.0f - AcidRainPH) * 0.2f;
-        ChemicalAmount *= AcidityFactor;
-        
-        UE_LOG(LogTemp, VeryVerbose, TEXT("GeologyController: Chemical weathering active (rate: %.3f)"),
-               ChemicalAmount);
-    }
-    
-    if (bEnableMechanicalWeathering)
-    {
-        float MechanicalAmount = MechanicalWeatheringRate * DeltaTime;
-        
-        // Mechanical weathering enhanced by:
-        // - Freeze-thaw cycles
-        // - Wind abrasion
-        // - Root growth (not implemented yet)
-        
-        if (CurrentTemperature < 5.0f && CurrentTemperature > -5.0f)
+        for (int32 X = 0; X < GeologyGridWidth; X += 10)
         {
-            MechanicalAmount *= FrostWedgingEffect;
-        }
-        
-        UE_LOG(LogTemp, VeryVerbose, TEXT("GeologyController: Mechanical weathering active (rate: %.3f)"),
-               MechanicalAmount);
-    }
-}
-
-void AGeologyController::ProcessErosion(float DeltaTime)
-{
-    // Erosion is handled by external systems (water, wind)
-    // This function processes the geological consequences
-    
-    // Update rock layers based on cumulative erosion
-    // This would modify the terrain heightmap in a full implementation
-}
-
-void AGeologyController::ProcessGroundwaterFlow(float DeltaTime)
-{
-    if (!bEnableWaterTable) return;
-    
-    // Darcy's law for groundwater flow
-    for (FWaterTableData& WaterPoint : WaterTableGrid)
-    {
-        // Flow is driven by hydraulic gradient
-        // Modified by rock permeability
-        
-        float LocalPermeability = 1.0f;
-        float WaterDepth = GetWaterTableDepthAtLocation(WaterPoint.Location);
-        ERockType LocalRock = GetRockTypeAtLocation(WaterPoint.Location, WaterDepth);
-        
-        // Get permeability from rock type
-        const FGeologicalColumn* Column = GetColumnAtLocation(WaterPoint.Location);
-        if (Column)
-        {
-            for (const FRockLayer& Layer : Column->Layers)
-            {
-                if (Layer.RockType == LocalRock)
-                {
-                    LocalPermeability = Layer.Permeability;
-                    break;
-                }
-            }
-        }
-        
-        WaterPoint.FlowVelocity *= LocalPermeability;
-    }
-}
-
-void AGeologyController::UpdateAquiferPressure(float DeltaTime)
-{
-    // Check for confined aquifers and artesian conditions
-    for (FWaterTableData& WaterPoint : WaterTableGrid)
-    {
-        float WaterDepth = GetWaterTableDepthAtLocation(WaterPoint.Location);
-        
-        // Check if there's an impermeable layer above the water table
-        bool bIsConfined = false;
-        const FGeologicalColumn* Column = GetColumnAtLocation(WaterPoint.Location);
-        
-        if (Column)
-        {
-            for (const FRockLayer& Layer : Column->Layers)
-            {
-                if (Layer.Depth < WaterDepth && Layer.Permeability < 0.1f)
-                {
-                    bIsConfined = true;
-                    break;
-                }
-            }
-        }
-        
-        if (bIsConfined)
-        {
-            // Calculate pressure head
-            float RechargeArea = WaterPoint.Location.Z + 100.0f; // Simplified
-            float PressureHead = RechargeArea - WaterPoint.WaterLevel;
+            int32 Index = GetGridIndex(X, Y);
+            const FSimplifiedGeology& Cell = GeologyGrid[Index];
             
-            if (PressureHead > ArtesianPressureThreshold)
-            {
-                WaterPoint.bIsArtesian = true;
-            }
-        }
-    }
-}
-
-void AGeologyController::CreateSpring(FVector Location)
-{
-    // Springs form where water table intersects surface
-    // This would create a water source in the water system
-    
-    if (WaterSystem)
-    {
-        // Add a small water source at this location
-        // WaterSystem would handle the actual water spawning
-        
-        UE_LOG(LogTemp, Log, TEXT("GeologyController: Spring formed at %s"), *Location.ToString());
-    }
-}
-
-void AGeologyController::GenerateMineralDeposit(FVector Location, ERockType HostRock)
-{
-    FMineralDeposit NewDeposit;
-    NewDeposit.Location = Location;
-    
-    // Mineral type depends on host rock and geological processes
-    switch (HostRock)
-    {
-    case ERockType::Granite:
-        NewDeposit.MineralType = FMath::RandBool() ? "Tin" : "Tungsten";
-        NewDeposit.Concentration = FMath::RandRange(0.3f, 0.7f);
-        break;
-        
-    case ERockType::Basalt:
-        NewDeposit.MineralType = FMath::RandBool() ? "Copper" : "Nickel";
-        NewDeposit.Concentration = FMath::RandRange(0.4f, 0.8f);
-        break;
-        
-    case ERockType::Limestone:
-        NewDeposit.MineralType = FMath::RandBool() ? "Lead" : "Zinc";
-        NewDeposit.Concentration = FMath::RandRange(0.2f, 0.6f);
-        break;
-        
-    case ERockType::Sandstone:
-        NewDeposit.MineralType = "Uranium"; // Roll-front deposits
-        NewDeposit.Concentration = FMath::RandRange(0.1f, 0.3f);
-        break;
-        
-    case ERockType::Shale:
-        NewDeposit.MineralType = FMath::RandBool() ? "Oil" : "Natural Gas";
-        NewDeposit.Concentration = FMath::RandRange(0.5f, 0.9f);
-        break;
-        
-    default:
-        NewDeposit.MineralType = "Iron";
-        NewDeposit.Concentration = FMath::RandRange(0.3f, 0.6f);
-        break;
-    }
-    
-    NewDeposit.Volume = FMath::RandRange(500.0f, 5000.0f);
-    NewDeposit.Depth = FMath::RandRange(20.0f, 200.0f);
-    
-    MineralDeposits.Add(NewDeposit);
-    
-    UE_LOG(LogTemp, Log, TEXT("GeologyController: Generated %s deposit at %s (%.0f%% concentration)"),
-           *NewDeposit.MineralType, *Location.ToString(), NewDeposit.Concentration * 100.0f);
-}
-
-FRockLayer AGeologyController::CreateDefaultRockLayer(ERockType Type) const
-{
-    FRockLayer Layer;
-    Layer.RockType = Type;
-    
-    // Set properties based on rock type
-    switch (Type)
-    {
-    case ERockType::Granite:
-        Layer.Hardness = 0.9f;
-        Layer.Porosity = 0.02f;
-        Layer.Permeability = 0.01f;
-        Layer.ErosionResistance = 0.95f;
-        Layer.LayerColor = FLinearColor(0.5f, 0.5f, 0.5f, 1.0f);
-        break;
-        
-    case ERockType::Sandstone:
-        Layer.Hardness = 0.6f;
-        Layer.Porosity = 0.2f;
-        Layer.Permeability = 0.4f;
-        Layer.ErosionResistance = 0.5f;
-        Layer.LayerColor = FLinearColor(0.7f, 0.6f, 0.4f, 1.0f);
-        break;
-        
-    case ERockType::Limestone:
-        Layer.Hardness = 0.7f;
-        Layer.Porosity = 0.15f;
-        Layer.Permeability = 0.3f;
-        Layer.ErosionResistance = 0.4f; // Susceptible to chemical weathering
-        Layer.LayerColor = FLinearColor(0.9f, 0.9f, 0.8f, 1.0f);
-        break;
-        
-    case ERockType::Shale:
-        Layer.Hardness = 0.5f;
-        Layer.Porosity = 0.1f;
-        Layer.Permeability = 0.05f;
-        Layer.ErosionResistance = 0.3f;
-        Layer.LayerColor = FLinearColor(0.4f, 0.4f, 0.35f, 1.0f);
-        break;
-        
-    case ERockType::Basalt:
-        Layer.Hardness = 0.85f;
-        Layer.Porosity = 0.1f;
-        Layer.Permeability = 0.15f;
-        Layer.ErosionResistance = 0.8f;
-        Layer.LayerColor = FLinearColor(0.2f, 0.2f, 0.2f, 1.0f);
-        break;
-        
-    case ERockType::Marble:
-        Layer.Hardness = 0.75f;
-        Layer.Porosity = 0.05f;
-        Layer.Permeability = 0.02f;
-        Layer.ErosionResistance = 0.6f;
-        Layer.LayerColor = FLinearColor(0.95f, 0.95f, 0.95f, 1.0f);
-        break;
-        
-    case ERockType::Quartzite:
-        Layer.Hardness = 0.95f;
-        Layer.Porosity = 0.02f;
-        Layer.Permeability = 0.01f;
-        Layer.ErosionResistance = 0.98f;
-        Layer.LayerColor = FLinearColor(0.9f, 0.9f, 0.9f, 1.0f);
-        break;
-        
-    case ERockType::Clay:
-        Layer.Hardness = 0.3f;
-        Layer.Porosity = 0.4f;
-        Layer.Permeability = 0.01f; // High porosity but low permeability
-        Layer.ErosionResistance = 0.2f;
-        Layer.LayerColor = FLinearColor(0.6f, 0.4f, 0.3f, 1.0f);
-        break;
-        
-    case ERockType::Sand:
-        Layer.Hardness = 0.2f;
-        Layer.Porosity = 0.4f;
-        Layer.Permeability = 0.9f;
-        Layer.ErosionResistance = 0.1f;
-        Layer.LayerColor = FLinearColor(0.8f, 0.7f, 0.5f, 1.0f);
-        break;
-        
-    case ERockType::Silt:
-        Layer.Hardness = 0.25f;
-        Layer.Porosity = 0.35f;
-        Layer.Permeability = 0.3f;
-        Layer.ErosionResistance = 0.15f;
-        Layer.LayerColor = FLinearColor(0.7f, 0.6f, 0.5f, 1.0f);
-        break;
-        
-    case ERockType::Gravel:
-        Layer.Hardness = 0.4f;
-        Layer.Porosity = 0.3f;
-        Layer.Permeability = 0.95f;
-        Layer.ErosionResistance = 0.3f;
-        Layer.LayerColor = FLinearColor(0.6f, 0.6f, 0.6f, 1.0f);
-        break;
-        
-    default:
-        Layer.Hardness = 0.9f;
-        Layer.Porosity = 0.05f;
-        Layer.Permeability = 0.05f;
-        Layer.ErosionResistance = 0.9f;
-        Layer.LayerColor = FLinearColor(0.5f, 0.5f, 0.5f, 1.0f);
-        break;
-    }
-    
-    Layer.Thickness = 10.0f; // Default
-    Layer.Age = 100.0f; // Default 100 million years
-    
-    return Layer;
-}
-
-float AGeologyController::CalculateErosionResistance(const FRockLayer& Layer) const
-{
-    float Resistance = Layer.ErosionResistance;
-    
-    // Modify based on environmental factors
-    if (bEnableChemicalWeathering && Layer.RockType == ERockType::Limestone)
-    {
-        // Limestone is vulnerable to acid rain
-        Resistance *= (AcidRainPH / 7.0f);
-    }
-    
-    if (bEnableMechanicalWeathering)
-    {
-        // Fractured rock erodes faster
-        Resistance *= (1.0f - Layer.Porosity * 0.5f);
-    }
-    
-    return FMath::Clamp(Resistance, 0.1f, 1.0f);
-}
-
-ERockType AGeologyController::GetMetamorphicEquivalent(ERockType Original) const
-{
-    // Metamorphic rock transformations
-    switch (Original)
-    {
-    case ERockType::Limestone:
-        return ERockType::Marble;
-        
-    case ERockType::Sandstone:
-        return ERockType::Quartzite;
-        
-    case ERockType::Shale:
-        return ERockType::Granite; // Simplified - would be slate/schist/gneiss
-        
-    case ERockType::Clay:
-        return ERockType::Shale; // Low-grade metamorphism
-        
-    default:
-        return Original; // No change
-    }
-}
-
-void AGeologyController::ProcessAccumulatedSediment()
-{
-    // Only process if we have accumulated sediment
-    if (AccumulatedSediment.Num() == 0) return;
-    
-    int32 LayersFormed = 0;
-    TArray<FIntVector> KeysToRemove;
-    
-    for (auto& Pair : AccumulatedSediment)
-    {
-        if (Pair.Value >= MinimumSedimentThickness)
-        {
-            // Convert grid key back to world location
-            FVector WorldLocation = FVector(
-                Pair.Key.X * 100.0f,
-                Pair.Key.Y * 100.0f,
-                0.0f
-            );
+            FVector2D GridPos(X, Y);
+            FVector WorldPos = TargetTerrain->TerrainToWorldPosition(GridPos.X, GridPos.Y);
+            float SurfaceHeight = TargetTerrain->GetHeightAtPosition(WorldPos);
             
-            // Adjust Z to terrain height
-            if (TargetTerrain)
+            // Draw water table depth
+            FVector WaterTablePos = WorldPos;
+            WaterTablePos.Z = SurfaceHeight - Cell.WaterTableDepth;
+            
+            FColor DepthColor = FColor::Blue;
+            if (Cell.WaterTableDepth < 1.0f) // Near surface
             {
-                WorldLocation.Z = TargetTerrain->GetHeightAtPosition(WorldLocation);
+                DepthColor = FColor::Cyan;
+            }
+            else if (Cell.WaterTableDepth > 20.0f) // Deep
+            {
+                DepthColor = FColor::Purple;
             }
             
-            // Form the sediment layer
-            FormSedimentLayer(WorldLocation, Pair.Value, ERockType::Sand);
-            LayersFormed++;
+            // Draw line from surface to water table
+            DrawDebugLine(GetWorld(), WorldPos, WaterTablePos, DepthColor, false, 5.0f, 0, 2.0f);
             
-            // Mark for removal
-            KeysToRemove.Add(Pair.Key);
+            // Show soil moisture as sphere size
+            float SphereRadius = 10.0f + (Cell.SoilMoisture * 40.0f);
+            DrawDebugSphere(GetWorld(), WorldPos + FVector(0, 0, 20), SphereRadius,
+                8, FColor::Green, false, 5.0f);
         }
     }
+}
+
+void AGeologyController::DrawSimplifiedDebugInfo() const
+{
+    if (!GetWorld() || !TargetTerrain) return;
     
-    // Remove formed sediment
-    for (const FIntVector& Key : KeysToRemove)
+    // Calculate averages
+    float AvgWaterDepth = 0.0f;
+    float AvgSoilMoisture = 0.0f;
+    int32 SpringCount = 0;
+    
+    for (const FSimplifiedGeology& Cell : GeologyGrid)
     {
-        AccumulatedSediment.Remove(Key);
+        AvgWaterDepth += Cell.WaterTableDepth;
+        AvgSoilMoisture += Cell.SoilMoisture;
+        if (Cell.WaterTableDepth < 0.1f) SpringCount++;
     }
     
-    if (LayersFormed > 0)
+    AvgWaterDepth /= GeologyGrid.Num();
+    AvgSoilMoisture /= GeologyGrid.Num();
+    
+    FString DebugText = FString::Printf(
+        TEXT("Geology Stats:\nAvg Water Table: %.1fm\nAvg Soil Moisture: %.1f%%\nActive Springs: %d"),
+        AvgWaterDepth, AvgSoilMoisture * 100.0f, SpringCount);
+    
+    GEngine->AddOnScreenDebugMessage(10, 5.0f, FColor::Yellow, DebugText);
+}
+
+
+void AGeologyController::ApplyInfiltration(FVector Location, float WaterAmount)
+{
+    if (!MasterController) return;
+    
+    FVector2D Coords = WorldToGridCoordinates(Location);
+    int32 X = FMath::FloorToInt(Coords.X);
+    int32 Y = FMath::FloorToInt(Coords.Y);
+    
+    if (IsValidGridCoordinate(X, Y))
     {
-        UE_LOG(LogTemp, Warning, TEXT("GeologyController: Formed %d sediment layers from accumulated material"), LayersFormed);
+        int32 Index = GetGridIndex(X, Y);
+        FSimplifiedGeology& Geology = GeologyGrid[Index];
+        
+        // Update soil moisture
+        float SoilCapacity = GetSoilCapacity(Geology.SurfaceRock);
+        float SoilSpace = (1.0f - Geology.SoilMoisture) * SoilCapacity;
+        float ToSoil = FMath::Min(WaterAmount, SoilSpace);
+        
+        Geology.SoilMoisture += ToSoil / SoilCapacity;
+        
+        // Excess goes to water table
+        float ToWaterTable = WaterAmount - ToSoil;
+        if (ToWaterTable > 0.0f && MasterController)
+        {
+            // Convert excess water to groundwater volume using water authority
+            float GroundwaterVolume = MasterController->GetGeologyCellWaterVolume(
+                ToWaterTable, Geology.Permeability);
+            // Convert volume to depth change using cell area
+            float CellArea = MasterController->GetTerrainScale() * MasterController->GetTerrainScale();
+            float DepthChange = GroundwaterVolume / (CellArea * Geology.Permeability);
+            Geology.WaterTableDepth = FMath::Max(0.0f, Geology.WaterTableDepth - DepthChange);
+        }
     }
 }

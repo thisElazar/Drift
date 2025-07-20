@@ -13,34 +13,24 @@
 
 ASandDuneController::ASandDuneController()
 {
-    PrimaryActorTick.bCanEverTick = true;
+    // DISABLE individual ticking
+    PrimaryActorTick.bCanEverTick = false;
     RootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("SandDuneRoot"));
 }
 
 void ASandDuneController::BeginPlay()
 {
     Super::BeginPlay();
+    
+    // ENSURE ticking is disabled
+    SetActorTickEnabled(false);
 }
 
 void ASandDuneController::Tick(float DeltaTime)
 {
     Super::Tick(DeltaTime);
-    
-    if (bSystemInitialized && bEnableSandDunes)
-    {
-        DuneUpdateTimer += DeltaTime;
-        
-        // Update at different frequencies for performance
-        if (DuneUpdateTimer >= 1.0f) // Every second
-        {
-            UpdateWindData();
-            UpdateSandDunes(DeltaTime);
-            DuneUpdateTimer = 0.0f;
-        }
-        
-        // High-frequency sand transport calculation
-        CalculateSandTransport(DeltaTime);
-    }
+    // REMOVE all sand dune simulation from Tick
+    // System will be called by GeologyController through MasterController
 }
 
 // ===== INITIALIZATION =====

@@ -476,28 +476,32 @@ void ATerrainController::Tick(float DeltaTime)
                 BrushPreview->SetVisibility(bShouldShow);
                 
                 // Update material based on current editing mode
-                if (bIsEditingTerrain)
-                {
-                    // Change brush color/material for terrain editing
-                    // Material0 can be set here for different editing states
-                }
-                else if (bIsEditingWater)
-                {
-                    // Change brush color/material for water editing
+                if (bIsEditingTerrain) {
+                    if (TerrainEditMaterial) {
+                        BrushPreview->SetMaterial(0, TerrainEditMaterial);
+                    }
+                } else if (bIsEditingWater) {
+                    UMaterialInterface* MaterialToUse = bIsAddingWater ? WaterAddMaterial : WaterRemoveMaterial;
+                    if (MaterialToUse) {
+                        BrushPreview->SetMaterial(0, MaterialToUse);
+                    }
                 }
                 else
                 {
                     // Default cursor appearance when not editing
-                    // This ensures cursor stays visible when just moving around
-                    // FIXED: Set Material0 to a visible default material
-                    if (BrushPreview->GetStaticMesh())
+                    // Use TerrainEditMaterial as the default cursor material
+                    if (TerrainEditMaterial)
                     {
-                        // Create a simple colored material for cursor visibility
+                        BrushPreview->SetMaterial(0, TerrainEditMaterial);
+                    }
+                    else
+                    {
+                        // Fallback: Create a semi-transparent white material if no default is set
                         UMaterialInstanceDynamic* DynamicMat = BrushPreview->CreateDynamicMaterialInstance(0);
                         if (DynamicMat)
                         {
-                            // Set a semi-transparent white color for default cursor
-                            DynamicMat->SetVectorParameterValue(FName("BaseColor"), FLinearColor(1.0f, 1.0f, 1.0f, 0.5f));
+                            DynamicMat->SetVectorParameterValue(FName("BaseColor"),
+                                FLinearColor(1.0f, 1.0f, 1.0f, 0.5f));
                         }
                     }
                 }
@@ -870,22 +874,20 @@ void ATerrainController::UpdateWaterModification(float DeltaTime)
 
 void ATerrainController::IncreaseBrushSize(const FInputActionValue& Value)
 {
-    if (CurrentEditingMode == EEditingMode::Terrain)
-    {
+    
         float CurrentRadius = GetBrushRadius();
         float ChangeRate = 50.0f; // Hardcoded since we removed the property
         SetBrushRadius(CurrentRadius + ChangeRate);
-    }
+    
 }
 
 void ATerrainController::DecreaseBrushSize(const FInputActionValue& Value)
 {
-    if (CurrentEditingMode == EEditingMode::Terrain)
-    {
+    
         float CurrentRadius = GetBrushRadius();
         float ChangeRate = 50.0f; // Hardcoded since we removed the property
         SetBrushRadius(CurrentRadius - ChangeRate);
-    }
+    
 }
 
 void ATerrainController::IncreaseBrushStrength(const FInputActionValue& Value)
@@ -893,7 +895,7 @@ void ATerrainController::IncreaseBrushStrength(const FInputActionValue& Value)
     if (CurrentEditingMode == EEditingMode::Terrain)
     {
         float CurrentStrength = GetBrushStrength();
-        float ChangeRate = 20.0f; // Hardcoded since we removed the property
+        float ChangeRate = 50.0f; // Hardcoded since we removed the property
         SetBrushStrength(CurrentStrength + ChangeRate);
     }
     else if (CurrentEditingMode == EEditingMode::Water)
@@ -907,7 +909,7 @@ void ATerrainController::DecreaseBrushStrength(const FInputActionValue& Value)
     if (CurrentEditingMode == EEditingMode::Terrain)
     {
         float CurrentStrength = GetBrushStrength();
-        float ChangeRate = 20.0f; // Hardcoded since we removed the property
+        float ChangeRate = 50.0f; // Hardcoded since we removed the property
         SetBrushStrength(CurrentStrength - ChangeRate);
     }
     else if (CurrentEditingMode == EEditingMode::Water)
@@ -932,7 +934,7 @@ void ATerrainController::ApplyAtmosphericBrush(FVector Position)
     
     // Apply master controller scaling to atmospheric brush
     float ScaledBrushRadius = AtmosphericBrushRadius * GetMasterBrushScale();
-    
+/*
     switch (CurrentAtmosphericBrush)
     {
         case EAtmosphericBrushType::Wind:
@@ -955,6 +957,7 @@ void ATerrainController::ApplyAtmosphericBrush(FVector Position)
                                                 HumidityDelta, AtmosphericBrushIntensity);
             break;
     }
+ */
 }
 void ATerrainController::SetWaterBrushStrength(float NewStrength)
 {
@@ -1052,7 +1055,7 @@ void ATerrainController::SetVisualMode(ETerrainVisualMode NewMode)
 void ATerrainController::ToggleEditingMode()
 {
     int32 CurrentModeInt = static_cast<int32>(CurrentEditingMode);
-    CurrentModeInt = (CurrentModeInt + 1) % 3; // Cycle through 3 modes
+    CurrentModeInt = (CurrentModeInt + 1) % 2; // Cycle through 3 modes ADJUSTED FROM 3 TO 2
     CurrentEditingMode = static_cast<EEditingMode>(CurrentModeInt);
     
     switch (CurrentEditingMode)
@@ -1063,10 +1066,10 @@ void ATerrainController::ToggleEditingMode()
         case EEditingMode::Water:
             UE_LOG(LogTemp, Warning, TEXT("Switched to WATER editing mode"));
             break;
-        case EEditingMode::Atmosphere:
-            UE_LOG(LogTemp, Warning, TEXT("Switched to ATMOSPHERE editing mode - Brush: %s"), 
-                   *GetCurrentBrushDisplayName());
-            break;
+       // case EEditingMode::Atmosphere:
+       //     UE_LOG(LogTemp, Warning, TEXT("Switched to ATMOSPHERE editing mode - Brush: %s"),
+       //            *GetCurrentBrushDisplayName());
+       //     break;
     }
     
     // Stop any current editing

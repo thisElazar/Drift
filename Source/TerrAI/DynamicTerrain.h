@@ -276,9 +276,7 @@ public:
     
     UFUNCTION(BlueprintCallable, Category = "Atmospheric System")
     FVector GetWindAt(FVector WorldPosition) const;
-    
-    UFUNCTION(BlueprintCallable, Category = "Atmospheric System")
-    void CreateWeatherSystem(int32 WeatherType, FVector2D Center, float Strength);
+ 
     
     UFUNCTION(BlueprintCallable, Category = "Atmospheric System")
     UAtmosphericSystem* GetAtmosphericSystem() const { return AtmosphericSystem; }

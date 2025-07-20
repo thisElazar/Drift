@@ -203,26 +203,9 @@ public:
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Atmospheric Fog")
     float TemperatureFogMultiplier = 1.5f;
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cloud System")
-    bool bEnableCloudRendering = true;
+    
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cloud System", meta = (EditCondition = "bEnableCloudRendering"))
-    UStaticMesh* CloudStaticMesh = nullptr;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cloud System", meta = (EditCondition = "bEnableCloudRendering"))
-    UMaterialInterface* CloudMaterial = nullptr;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cloud System", meta = (EditCondition = "bEnableCloudRendering"))
-    float CloudAltitude = 2000.0f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cloud System", meta = (EditCondition = "bEnableCloudRendering"))
-    float CloudOpacity = 0.8f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cloud System", meta = (EditCondition = "bEnableCloudRendering"))
-    int32 MaxCloudMeshes = 64;
-
-    // ===== ATMOSPHERIC CONTROL SETTINGS - MOVED TO ATMOSPHERECONTROLLER =====
-    // All atmospheric functions moved to AtmosphereController for clean separation
+  
 
     // ===== CONTROLLER REFERENCES =====
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Controllers")
