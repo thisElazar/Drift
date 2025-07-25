@@ -794,6 +794,15 @@ public:
     UFUNCTION(Exec, Category = "Debug")
     void LogDetailedScalingInfo();
     
+    // Water transfer authority functions
+     UFUNCTION(BlueprintCallable, Category = "Water Authority")
+     void TransferSurfaceToGroundwater(FVector WorldLocation, float InfiltrationDepth);
+     
+     UFUNCTION(BlueprintCallable, Category = "Water Authority")
+     void TransferGroundwaterToSurface(FVector WorldLocation, float DischargeVolume);
+     
+     // Helper function
+     float GetWaterCellArea() const;
     
     // ===== FUNCTIONS =====
     UFUNCTION(BlueprintCallable, Category = "World Management")

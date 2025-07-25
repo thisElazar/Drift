@@ -59,8 +59,8 @@ ADynamicTerrain::ADynamicTerrain()
     TerrainHeight = WorldConfig.TerrainHeight;
     ChunkSize = WorldConfig.ChunkSize;
     TerrainScale = 100.0f;
-    MaxTerrainHeight = 2000.0f;
-    MinTerrainHeight = -2000.0f;
+    MaxTerrainHeight = 5000.0f;
+    MinTerrainHeight = -5000.0f;
     
     // Create water system AFTER terrain dimensions are set
     // WaterSystem = NewObject<UWaterSystem>(this, UWaterSystem::StaticClass(), TEXT("WaterSystem"));

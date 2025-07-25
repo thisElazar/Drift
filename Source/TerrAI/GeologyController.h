@@ -52,6 +52,24 @@ struct FSimplifiedGeology
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
     float Permeability = 0.5f;  // 0-1 infiltration rate
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+       float HydraulicHead = 0.0f;  // Absolute elevation of groundwater pressure
+       
+       UPROPERTY(EditAnywhere, BlueprintReadWrite)
+       float Transmissivity = 0.01f;  // m²/s - horizontal flow capacity
+       
+       UPROPERTY(EditAnywhere, BlueprintReadWrite)
+       float StorageCoefficient = 0.3f;  // Effective porosity for water storage
+       
+       UPROPERTY(EditAnywhere, BlueprintReadWrite)
+       float LastTerrainHeight = 0.0f;  // Track terrain changes
+       
+       // Helper functions
+       float GetWaterTableElevation(float TerrainHeight) const
+       {
+           return TerrainHeight - WaterTableDepth;
+       }
 
     FSimplifiedGeology()
     {
@@ -86,6 +104,32 @@ public:
     
     // Simplified erosion handler - no actual erosion in simplified system
     void OnErosionOccurred(FVector Location, float ErosionAmount, ERockType ErodedType) {}
+    
+    UFUNCTION(BlueprintCallable, Category = "Water Table")
+        void UpdateHydraulicHeadSystem(float DeltaTime);
+        
+        UFUNCTION(BlueprintCallable, Category = "Water Table")
+        void OnTerrainModified(FVector WorldLocation, float OldHeight, float NewHeight);
+        
+        UFUNCTION(BlueprintCallable, Category = "Water Table")
+        void ProcessHydraulicSurfaceInteraction(float DeltaTime);
+        
+        UFUNCTION(BlueprintCallable, Category = "Water Table")
+        void UpdateLateralGroundwaterFlow(float DeltaTime);
+        
+        UFUNCTION(BlueprintCallable, Category = "Water Table")
+        float GetHydraulicHeadAtLocation(FVector Location) const;
+        
+        // Water table fill rate based on rock permeability
+        UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Table")
+        float WaterTableFillMultiplier = 10.0f;
+        
+        // Artesian conditions
+        UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Table")
+        bool bEnableArtesianConditions = false;
+        
+        UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Table")
+        float ArtesianPressureMultiplier = 1.2f;
 
 protected:
     virtual void BeginPlay() override;

@@ -157,6 +157,10 @@ bool UWaterSystem::IsSystemReady() const
 
 void UWaterSystem::UpdateWaterSimulation(float DeltaTime)
 {
+    
+    // Accumulate scaled time for wave animations
+        AccumulatedScaledTime += DeltaTime;
+    
     if (!IsSystemReady() || !bEnableWaterSimulation)
     {
         //UE_LOG(LogTemp, Warning, TEXT("UPDATEWATERSIMULATIONFAIL"));
@@ -190,6 +194,16 @@ void UWaterSystem::UpdateWaterSimulation(float DeltaTime)
     */
     // Step 3: Calculate water flow forces
     CalculateWaterFlow(DeltaTime);
+    
+    if (bEnableSimulationSmoothing)
+        {
+            static int32 FramesSinceSmoothing = 0;
+               if (++FramesSinceSmoothing >= 6)  // Every 6 simulation frames
+               {
+                   ApplySpatialSmoothing();
+                   FramesSinceSmoothing = 0;
+               }
+        }
     
     // Step 4: Move water based on flow
     ApplyWaterFlow(DeltaTime);
@@ -449,7 +463,7 @@ void UWaterSystem::SynchronizeChunkWithSimulation(FWaterSurfaceChunk& SurfaceChu
     
     // Only log detailed chunk info occasionally
     static TMap<int32, float> LastLoggedTime;
-    float CurrentTime = OwnerTerrain && OwnerTerrain->GetWorld() ? OwnerTerrain->GetWorld()->GetTimeSeconds() : 0.0f;
+    float CurrentTime = GetScaledTime();
     float* LastTime = LastLoggedTime.Find(SurfaceChunk.ChunkIndex);
     if (!LastTime || (CurrentTime - *LastTime) > 30.0f) // Only log every 30 seconds per chunk
     {
@@ -854,7 +868,7 @@ void UWaterSystem::UpdateNiagaraParameters(UNiagaraComponent* NiagaraComp, const
     // Time-based animation
     if (OwnerTerrain && OwnerTerrain->GetWorld())
     {
-        float GameTime = OwnerTerrain->GetWorld()->GetTimeSeconds();
+        float GameTime = GetScaledTime();
         NiagaraComp->SetFloatParameter(FName("GameTime"), GameTime);
         NiagaraComp->SetFloatParameter(FName("WavePhase"), SurfaceChunk.WavePhase);
     }
@@ -1782,17 +1796,46 @@ float UWaterSystem::GetTerrainGradientMagnitude(FVector2D WorldPos) const
 
 FVector UWaterSystem::CalculateWaterNormal(FVector2D WorldPos, FVector2D FlowVector, float WaterDepth) const
 {
-    FVector BaseNormal = FVector(0, 0, 1);
+    const float SampleDistance = 10.0f;
     
-    if (WaterDepth > MinWaterDepth && FlowVector.Size() > 0.1f)
+    if (bUse8DirectionalFlow)
     {
-        float TiltAmount = FMath::Clamp(FlowVector.Size() / 20.0f, 0.0f, 0.1f);
-        BaseNormal.X += FlowVector.X * TiltAmount;
-        BaseNormal.Y += FlowVector.Y * TiltAmount;
-        BaseNormal = BaseNormal.GetSafeNormal();
+        // 8-directional gradient calculation
+        float Heights[8];
+        for (int i = 0; i < 8; i++)
+        {
+            float Angle = (i * PI * 0.25f);
+            FVector2D SamplePos = WorldPos + FVector2D(
+                FMath::Cos(Angle) * SampleDistance,
+                FMath::Sin(Angle) * SampleDistance
+            );
+            Heights[i] = GetInterpolatedWaterDepthSeamless(SamplePos);
+        }
+        
+        FVector2D Gradient;
+        Gradient.X = (Heights[0] - Heights[4]) + // E - W
+                    (Heights[1] - Heights[5]) * DiagonalFlowWeight + // NE - SW
+                    (Heights[7] - Heights[3]) * DiagonalFlowWeight;  // NW - SE
+        Gradient.Y = (Heights[2] - Heights[6]) + // N - S
+                    (Heights[1] - Heights[7]) * DiagonalFlowWeight + // NE - NW
+                    (Heights[3] - Heights[5]) * DiagonalFlowWeight;  // SE - SW
+        
+        FVector Normal(-Gradient.X, -Gradient.Y, SampleDistance * 2.0f);
+        Normal.Normalize();
+        return Normal;
     }
-    
-    return BaseNormal;
+    else
+    {
+        // Original 4-directional
+        float HeightN = GetInterpolatedWaterDepthSeamless(WorldPos + FVector2D(0, SampleDistance));
+        float HeightS = GetInterpolatedWaterDepthSeamless(WorldPos - FVector2D(0, SampleDistance));
+        float HeightE = GetInterpolatedWaterDepthSeamless(WorldPos + FVector2D(SampleDistance, 0));
+        float HeightW = GetInterpolatedWaterDepthSeamless(WorldPos - FVector2D(SampleDistance, 0));
+        
+        FVector Normal(-(HeightE - HeightW), -(HeightN - HeightS), SampleDistance * 2.0f);
+        Normal.Normalize();
+        return Normal;
+    }
 }
 
 float UWaterSystem::CalculateDistanceToWaterEdge(FVector2D WorldPos, const FWaterSurfaceChunk& SurfaceChunk) const
@@ -3374,39 +3417,33 @@ void UWaterSystem::ProcessWaterEvaporation(float DeltaTime)
             float EvaporationDepth = WaterEvaporationRate * DeltaTime;
             if (EvaporationDepth > 0.0f && EvaporationDepth <= SimulationData.WaterDepthMap[i])
             {
-                // Convert grid position and transfer
                 FVector2D WaterGridPos(X, Y);
                 FVector2D AtmosGridPos;
+                
                 float MoistureMass = CachedMasterController->TransferEvaporationToAtmosphere(
-                    EvaporationDepth, WaterGridPos, AtmosGridPos);
+                                                                                             EvaporationDepth,
+                                                                                             WaterGridPos,
+                                                                                             AtmosGridPos
+                                                                                             );
                 
-                // Add moisture to atmosphere
-                int32 AtmosX = FMath::FloorToInt(AtmosGridPos.X);
-                int32 AtmosY = FMath::FloorToInt(AtmosGridPos.Y);
-                if (AtmosX >= 0 && AtmosX < AtmosphericSystem->GridWidth && 
-                    AtmosY >= 0 && AtmosY < AtmosphericSystem->GridHeight)
-                {
-                    int32 AtmosIndex = AtmosY * AtmosphericSystem->GridWidth + AtmosX;
-                    AtmosphericSystem->AtmosphericGrid[AtmosIndex].MoistureMass += MoistureMass;
-                }
-                
-                // Remove from surface
+                // Master controller handles the atmospheric update
                 SimulationData.WaterDepthMap[i] -= EvaporationDepth;
             }
             
-            // INFILTRATION: Transfer to groundwater
+            // INFILTRATION
             float InfiltrationDepth = WaterAbsorptionRate * DeltaTime;
             if (InfiltrationDepth > 0.0f && InfiltrationDepth <= SimulationData.WaterDepthMap[i])
             {
                 FVector WorldPos = OwnerTerrain->TerrainToWorldPosition(X, Y);
-                GeologyController->ApplyInfiltration(WorldPos, InfiltrationDepth);
                 
-                // Remove from surface
+                // Route through master controller
+                CachedMasterController->TransferSurfaceToGroundwater(
+                                                                     WorldPos,
+                                                                     InfiltrationDepth
+                                                                     );
+                
                 SimulationData.WaterDepthMap[i] -= InfiltrationDepth;
             }
-            
-            // Ensure water depth doesn't go negative
-            SimulationData.WaterDepthMap[i] = FMath::Max(0.0f, SimulationData.WaterDepthMap[i]);
         }
     }
     
@@ -3451,7 +3488,7 @@ void UWaterSystem::CreateAdvancedWaterTexture()
 
 void UWaterSystem::UpdateAdvancedWaterTexture()
 {
-    if (!WaterDataTexture || !SimulationData.IsValid())
+    if (!WaterDataTexture || !SimulationData.IsValid() || !CachedMasterController || !OwnerTerrain)
     {
         return;
     }
@@ -3459,9 +3496,17 @@ void UWaterSystem::UpdateAdvancedWaterTexture()
     const int32 Width = SimulationData.TerrainWidth;
     const int32 Height = SimulationData.TerrainHeight;
     
+    // Calculate cell size: water cells are 1:1 with terrain vertices
+    // Cell size = (terrain world size) / (grid size)
+    float WorldSize = OwnerTerrain->TerrainWidth * OwnerTerrain->TerrainScale;
+    float CellSize = WorldSize / static_cast<float>(Width);
+    
     // Create RGBA texture data
     TArray<FLinearColor> TextureData;
     TextureData.SetNum(Width * Height);
+    
+    // Get current time for ripple calculations
+    float CurrentTime = GetScaledTime();
     
     for (int32 Y = 0; Y < Height; Y++)
     {
@@ -3470,6 +3515,7 @@ void UWaterSystem::UpdateAdvancedWaterTexture()
             int32 Index = Y * Width + X;
             if (Index < SimulationData.WaterDepthMap.Num())
             {
+                // Get base water data
                 float Depth = SimulationData.WaterDepthMap[Index];
                 float VelX = SimulationData.WaterVelocityX[Index];
                 float VelY = SimulationData.WaterVelocityY[Index];
@@ -3479,13 +3525,63 @@ void UWaterSystem::UpdateAdvancedWaterTexture()
                 float NormVelX = FlowSpeed > 0.01f ? VelX / FlowSpeed : 0.0f;
                 float NormVelY = FlowSpeed > 0.01f ? VelY / FlowSpeed : 0.0f;
                 
-                // Pack data into RGBA channels
+                // Convert grid coordinates to world position for ripple calculations
+                // Match the pattern used in GetInterpolatedWaterDepthSeamless
+                FVector LocalPos = FVector(X * CellSize, Y * CellSize, 0);
+                FVector WorldPos3D = OwnerTerrain->GetActorLocation() + LocalPos;
+                FVector2D WorldPos(WorldPos3D.X, WorldPos3D.Y);
+                
+                // Calculate ripple contribution at this position
+                float RippleHeight = 0.0f;
+                if (Depth > MinWaterDepth && ActiveRipples.Num() > 0)
+                {
+                    for (const FWaterRipple& Ripple : ActiveRipples)
+                    {
+                        float Age = CurrentTime - Ripple.StartTime;
+                        
+                        // Skip expired ripples
+                        if (Age > RippleLifetime)
+                            continue;
+                        
+                        // Distance from ripple origin
+                        float Distance = FVector2D::Distance(WorldPos, Ripple.Origin);
+                        float CurrentRadius = Ripple.WaveSpeed * Age;
+                        
+                        // Check if we're within the wave packet
+                        float WavePosition = CurrentRadius - Distance;
+                        if (FMath::Abs(WavePosition) < Ripple.Wavelength * 3.0f && Distance < Ripple.MaxRadius)
+                        {
+                            // Calculate wave contribution
+                            float Phase = (WavePosition / Ripple.Wavelength) * 2.0f * PI;
+                            float Envelope = FMath::Exp(-FMath::Square(WavePosition / (Ripple.Wavelength * 1.5f)));
+                            
+                            // Amplitude with distance and time damping
+                            float DistanceDamping = Ripple.InitialAmplitude / (1.0f + Distance * 0.002f);
+                            float TimeDamping = FMath::Pow(Ripple.Damping, Age);
+                            float Amplitude = DistanceDamping * TimeDamping * Envelope;
+                            
+                            // Add wave contribution
+                            RippleHeight += Amplitude * FMath::Sin(Phase) * RippleHeightScale;
+                        }
+                    }
+                }
+                
+                // Pack all data into texture
+                // R: Depth (including ripples)
+                // G: Flow Speed
+                // B: Flow Direction X (normalized)
+                // A: Flow Direction Y (normalized)
                 TextureData[Index] = FLinearColor(
-                    Depth * WaterDepthScale,                           // R: Depth
-                    FMath::Clamp(FlowSpeed / 50.0f, 0.0f, 1.0f),      // G: Speed normalized
-                    (NormVelX + 1.0f) * 0.5f,                         // B: Direction X [-1,1] → [0,1]
-                    (NormVelY + 1.0f) * 0.5f                          // A: Direction Y [-1,1] → [0,1]
+                    FMath::Max(0.0f, Depth + RippleHeight),  // Depth + ripples (clamped positive)
+                    FMath::Clamp(FlowSpeed / 50.0f, 0.0f, 1.0f),  // Normalized flow speed
+                    NormVelX * 0.5f + 0.5f,  // Remap from [-1,1] to [0,1]
+                    NormVelY * 0.5f + 0.5f   // Remap from [-1,1] to [0,1]
                 );
+            }
+            else
+            {
+                // Default values for out-of-bounds
+                TextureData[Index] = FLinearColor(0.0f, 0.0f, 0.5f, 0.5f);
             }
         }
     }
@@ -3501,6 +3597,14 @@ void UWaterSystem::UpdateAdvancedWaterTexture()
             Mip.BulkData.Unlock();
             WaterDataTexture->UpdateResource();
         }
+    }
+    
+    // Debug logging (throttled)
+    static float LastDebugLogTime = 0.0f;
+    if (CurrentTime - LastDebugLogTime > 2.0f && ActiveRipples.Num() > 0)
+    {
+        UE_LOG(LogTemp, VeryVerbose, TEXT("Updated water texture with %d active ripples"), ActiveRipples.Num());
+        LastDebugLogTime = CurrentTime;
     }
 }
 
@@ -3643,7 +3747,7 @@ void UWaterSystem::AddWaterInRadius(int32 CenterX, int32 CenterY, float Radius, 
     }
     
     // FIXED: Ensure minimum radius to prevent spikes
-    Radius = FMath::Max(Radius, 2.0f);
+    Radius = FMath::Max(Radius, 3.0f);  // Increased from 2.0f
     
     int32 IntRadius = FMath::CeilToInt(Radius);
     TSet<int32> AffectedChunks;
@@ -3657,59 +3761,64 @@ void UWaterSystem::AddWaterInRadius(int32 CenterX, int32 CenterY, float Radius, 
             float Distance = FMath::Sqrt((float)(OffsetX * OffsetX + OffsetY * OffsetY));
             if (Distance <= Radius)
             {
-                // Gaussian distribution instead of quadratic for smoother spread
-                float Falloff = FMath::Exp(-2.0f * (Distance * Distance) / (Radius * Radius));
+                // Gaussian distribution for smoother spread
+                float Sigma = Radius / 3.0f;
+                float Falloff = FMath::Exp(-0.5f * (Distance * Distance) / (Sigma * Sigma));
                 TotalWeight += Falloff;
             }
         }
     }
     
-    // Add water with proper distribution
-    for (int32 OffsetY = -IntRadius; OffsetY <= IntRadius; OffsetY++)
+    // Distribute water with dome shape for large amounts
+    if (TotalWeight > 0.0f)
     {
-        for (int32 OffsetX = -IntRadius; OffsetX <= IntRadius; OffsetX++)
+        for (int32 OffsetY = -IntRadius; OffsetY <= IntRadius; OffsetY++)
         {
-            int32 CurrentX = CenterX + OffsetX;
-            int32 CurrentY = CenterY + OffsetY;
-            
-            if (IsValidCoordinate(CurrentX, CurrentY))
+            for (int32 OffsetX = -IntRadius; OffsetX <= IntRadius; OffsetX++)
             {
+                int32 X = CenterX + OffsetX;
+                int32 Y = CenterY + OffsetY;
+                
+                if (!IsValidCoordinate(X, Y))
+                {
+                    continue;
+                }
+                
                 float Distance = FMath::Sqrt((float)(OffsetX * OffsetX + OffsetY * OffsetY));
                 if (Distance <= Radius)
                 {
-                    // FIXED: Use Gaussian distribution for natural water spread
-                    float Falloff = FMath::Exp(-2.0f * (Distance * Distance) / (Radius * Radius));
-                    float WaterAmount = (Amount * Falloff) / TotalWeight;
+                    // Gaussian falloff
+                    float Sigma = Radius / 3.0f;
+                    float Falloff = FMath::Exp(-0.5f * (Distance * Distance) / (Sigma * Sigma));
                     
-                    int32 Index = GetTerrainIndex(CurrentX, CurrentY);
-                    if (Index >= 0 && Index < SimulationData.WaterDepthMap.Num())
+                    // Create dome shape for large water additions
+                    float HeightFactor = 1.0f;
+                    if (Amount > 1.0f)  // For lake-sized additions
                     {
-                        SimulationData.WaterDepthMap[Index] += WaterAmount;
-                        
-                        // Track affected chunks for visual updates
-                        if (OwnerTerrain)
-                        {
-                            int32 ChunkIndex = OwnerTerrain->GetChunkIndexFromCoordinates(CurrentX, CurrentY);
-                            if (ChunkIndex >= 0)
-                            {
-                                AffectedChunks.Add(ChunkIndex);
-                            }
-                        }
-                        
-                        bWaterChangedThisFrame = true;
+                        HeightFactor = 1.0f - (Distance / Radius) * 0.4f; // Peak in center
+                    }
+                    
+                    float CellAmount = (Falloff / TotalWeight) * Amount * HeightFactor;
+                    
+                    int32 Index = Y * SimulationData.TerrainWidth + X;
+                    SimulationData.WaterDepthMap[Index] += CellAmount;
+                    SimulationData.WaterDepthMap[Index] = FMath::Max(SimulationData.WaterDepthMap[Index], 0.0f);
+                    
+                    if (SimulationData.WaterDepthMap[Index] > MinWaterDepth)
+                    {
+                        int32 ChunkIndex = OwnerTerrain->GetChunkIndexFromCoordinates(X, Y);
+                        AffectedChunks.Add(ChunkIndex);
+                        ChunksWithWater.Add(ChunkIndex);
                     }
                 }
             }
         }
     }
     
-    // Mark affected chunks for visual update
-    if (OwnerTerrain)
+    // Mark affected chunks for update
+    for (int32 ChunkIndex : AffectedChunks)
     {
-        for (int32 ChunkIndex : AffectedChunks)
-        {
-            OwnerTerrain->MarkChunkForUpdate(ChunkIndex);
-        }
+        OwnerTerrain->MarkChunkForUpdate(ChunkIndex);
     }
 }
 
@@ -4406,25 +4515,22 @@ void UWaterSystem::CreateWaterDepthTexture()
 
 void UWaterSystem::UpdateWaterDepthTexture()
 {
-    UE_LOG(LogTemp, VeryVerbose, TEXT("UPDATING WATER DEPTH TEXTURE"));
-    
     if (!WaterDepthTexture || !SimulationData.IsValid())
-    {
         return;
-    }
     
     const int32 Width = SimulationData.TerrainWidth;
     const int32 Height = SimulationData.TerrainHeight;
     
-    // Create texture data array
-    TArray<uint8> TextureData;
-    TextureData.SetNum(Width * Height);
+    // Create floating-point buffer for smooth processing
+    TArray<float> FloatBuffer;
+    FloatBuffer.SetNum(Width * Height);
     
     // Track water statistics for debugging
     int32 NonZeroPixels = 0;
     float MaxWaterDepth = 0.0f;
+    float MinNonZeroDepth = FLT_MAX;
     
-    // Convert water depth to texture values
+    // Step 1: Convert water depth to normalized float values with smooth thresholding
     for (int32 Y = 0; Y < Height; Y++)
     {
         for (int32 X = 0; X < Width; X++)
@@ -4434,95 +4540,431 @@ void UWaterSystem::UpdateWaterDepthTexture()
             {
                 float WaterDepth = SimulationData.WaterDepthMap[Index];
                 
-                // CRITICAL FIX: Apply the SAME threshold as mesh generation!
-                if (WaterDepth <= MinWaterDepth)
+                // ELEGANT SMOOTH THRESHOLD: Use smooth step instead of hard cutoff
+                float ProcessedDepth = 0.0f;
+                
+                // Define the transition zone
+                float TransitionStart = MinWaterDepth * 0.5f;  // Start fading in
+                float TransitionEnd = MinWaterDepth * 2.0f;    // Fully visible
+                
+                if (WaterDepth <= TransitionStart)
                 {
-                    // No water - set to zero (same as mesh logic)
-                    TextureData[Index] = 0;
+                    // No water
+                    ProcessedDepth = 0.0f;
+                }
+                else if (WaterDepth >= TransitionEnd)
+                {
+                    // Full water
+                    ProcessedDepth = WaterDepth;
                 }
                 else
                 {
+                    // Smooth transition zone - this prevents shoreline dancing
+                    float t = (WaterDepth - TransitionStart) / (TransitionEnd - TransitionStart);
+                    // Smooth step function: 3t² - 2t³
+                    float smoothT = t * t * (3.0f - 2.0f * t);
+                    ProcessedDepth = WaterDepth * smoothT;
+                }
+                
+                // Update statistics
+                if (ProcessedDepth > 0.0f)
+                {
                     NonZeroPixels++;
                     MaxWaterDepth = FMath::Max(MaxWaterDepth, WaterDepth);
-                    
-                    // Scale to texture range
-                    uint8 TextureValue = FMath::Clamp(FMath::RoundToInt(WaterDepth * 255.0f / 50.0f), 1, 255);
-                    
-                    TextureData[Index] = TextureValue;
+                    MinNonZeroDepth = FMath::Min(MinNonZeroDepth, WaterDepth);
                 }
+                
+                // Normalize to 0-1 range for processing
+                FloatBuffer[Index] = ProcessedDepth / WaterDepthScale;
             }
             else
             {
-                TextureData[Index] = 0;
+                FloatBuffer[Index] = 0.0f;
             }
         }
     }
     
-    // OPTIONAL: Apply edge smoothing to reduce jaggedness
-    // This does a simple 3x3 blur on edges only
-    TArray<uint8> SmoothedData = TextureData;
+    // Step 2: Apply 8-directional smoothing if enabled
+    if (bUse8DirectionalFlow && NonZeroPixels > 0)
+    {
+        // Number of smoothing iterations - more passes = smoother result
+        const int32 SmoothingPasses = 2;
+        
+        // Temporary buffer for ping-pong smoothing
+        TArray<float> TempBuffer;
+        TempBuffer.SetNum(Width * Height);
+        
+        for (int32 Pass = 0; Pass < SmoothingPasses; Pass++)
+        {
+            // Copy current state
+            TempBuffer = FloatBuffer;
+            
+            // Apply smoothing filter to all pixels
+            for (int32 Y = 0; Y < Height; Y++)
+            {
+                for (int32 X = 0; X < Width; X++)
+                {
+                    int32 Index = Y * Width + X;
+                    
+                    // 8-directional Gaussian-like kernel
+                    const float CenterWeight = 4.0f;
+                    const float CardinalWeight = 2.0f;
+                    const float DiagonalWeight = DiagonalFlowWeight;
+                    
+                    float WeightedSum = 0.0f;
+                    float TotalWeight = 0.0f;
+                    
+                    // Process all 9 positions (8 neighbors + center)
+                    for (int32 dy = -1; dy <= 1; dy++)
+                    {
+                        for (int32 dx = -1; dx <= 1; dx++)
+                        {
+                            int32 NX = X + dx;
+                            int32 NY = Y + dy;
+                            
+                            // Handle boundaries with clamping
+                            NX = FMath::Clamp(NX, 0, Width - 1);
+                            NY = FMath::Clamp(NY, 0, Height - 1);
+                            
+                            int32 NeighborIndex = NY * Width + NX;
+                            float NeighborValue = TempBuffer[NeighborIndex];
+                            
+                            // Determine weight based on position
+                            float Weight;
+                            if (dx == 0 && dy == 0)
+                            {
+                                Weight = CenterWeight;
+                            }
+                            else if (dx == 0 || dy == 0)
+                            {
+                                Weight = CardinalWeight;
+                            }
+                            else
+                            {
+                                Weight = DiagonalWeight;
+                            }
+                            
+                            WeightedSum += NeighborValue * Weight;
+                            TotalWeight += Weight;
+                        }
+                    }
+                    
+                    // Apply smoothed value
+                    FloatBuffer[Index] = WeightedSum / TotalWeight;
+                }
+            }
+        }
+        
+        // Optional: Apply edge-preserving filter to maintain sharp features where needed
+        if (bPreserveWaterEdges)
+        {
+            ApplyEdgePreservingFilter(FloatBuffer, Width, Height);
+        }
+    }
+    
+    // Step 3: Convert back to uint8 texture data with proper scaling
+    TArray<uint8> TextureData;
+    TextureData.SetNum(Width * Height);
+    
+    for (int32 i = 0; i < FloatBuffer.Num(); i++)
+    {
+        float Value = FloatBuffer[i];
+        
+        // Apply final adjustments
+        if (Value > 0.0f)
+        {
+            // Ensure minimum visible value for any water
+            Value = FMath::Max(Value, 1.0f / 255.0f);
+            
+            // Optional: Apply gamma correction for better visual distribution
+            if (bUseGammaCorrection)
+            {
+                Value = FMath::Pow(Value, WaterDepthGamma);
+            }
+        }
+        
+        // Convert to uint8 with proper rounding
+        TextureData[i] = (uint8)FMath::RoundToInt(FMath::Clamp(Value * 255.0f, 0.0f, 255.0f));
+    }
+    
+    // Step 4: Upload to GPU
+    FTexture2DMipMap& Mip = WaterDepthTexture->GetPlatformData()->Mips[0];
+    void* Data = Mip.BulkData.Lock(LOCK_READ_WRITE);
+    if (Data)
+    {
+        FMemory::Memcpy(Data, TextureData.GetData(), TextureData.Num() * sizeof(uint8));
+        Mip.BulkData.Unlock();
+        WaterDepthTexture->UpdateResource();
+    }
+    
+    // Step 5: Log statistics (throttled)
+    static float LastLogTime = 0.0f;
+    float CurrentTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+    if (CurrentTime - LastLogTime > 2.0f)
+    {
+        UE_LOG(LogTemp, VeryVerbose, TEXT("Water texture updated - Pixels with water: %d, Max depth: %.2f, Min non-zero: %.2f"),
+               NonZeroPixels, MaxWaterDepth, MinNonZeroDepth);
+        LastLogTime = CurrentTime;
+    }
+}
+
+// Helper function for edge-preserving filter (add to UWaterSystem)
+void UWaterSystem::ApplyEdgePreservingFilter(TArray<float>& Buffer, int32 Width, int32 Height)
+{
+    TArray<float> TempBuffer = Buffer;
+    
+    for (int32 Y = 1; Y < Height - 1; Y++)
+    {
+        for (int32 X = 1; X < Width - 1; X++)
+        {
+            int32 Index = Y * Width + X;
+            float CenterValue = TempBuffer[Index];
+            
+            // Skip if no water
+            if (CenterValue < 0.001f)
+                continue;
+            
+            // Calculate local gradient
+            float GradientX = FMath::Abs(TempBuffer[Index + 1] - TempBuffer[Index - 1]);
+            float GradientY = FMath::Abs(TempBuffer[Index + Width] - TempBuffer[Index - Width]);
+            float Gradient = FMath::Max(GradientX, GradientY);
+            
+            // Only smooth low-gradient areas
+            const float GradientThreshold = 0.1f;
+            if (Gradient < GradientThreshold)
+            {
+                // Apply smoothing
+                float Sum = 0.0f;
+                int32 Count = 0;
+                
+                for (int32 dy = -1; dy <= 1; dy++)
+                {
+                    for (int32 dx = -1; dx <= 1; dx++)
+                    {
+                        int32 NeighborIndex = (Y + dy) * Width + (X + dx);
+                        if (TempBuffer[NeighborIndex] > 0.001f)
+                        {
+                            Sum += TempBuffer[NeighborIndex];
+                            Count++;
+                        }
+                    }
+                }
+                
+                if (Count > 0)
+                {
+                    float SmoothedValue = Sum / Count;
+                    // Blend based on gradient
+                    float BlendFactor = 1.0f - (Gradient / GradientThreshold);
+                    Buffer[Index] = FMath::Lerp(CenterValue, SmoothedValue, BlendFactor * 0.5f);
+                }
+            }
+        }
+    }
+}
+
+// Call this every 5-10 frames to smooth water depth over time
+void UWaterSystem::ApplyTemporalSmoothing(float DeltaTime)
+{
+    if (!SimulationData.IsValid())
+        return;
+    
+    // Temporal smoothing factor - lower = more smoothing
+    const float SmoothingRate = 0.1f;
+    const float FrameBlend = FMath::Clamp(SmoothingRate * DeltaTime * 60.0f, 0.0f, 1.0f);
+    
+    // Only create history buffer once
+    if (WaterDepthHistory.Num() != SimulationData.WaterDepthMap.Num())
+    {
+        WaterDepthHistory = SimulationData.WaterDepthMap;
+        return;
+    }
+    
+    // Blend current frame with history
+    for (int32 i = 0; i < SimulationData.WaterDepthMap.Num(); i++)
+    {
+        float CurrentDepth = SimulationData.WaterDepthMap[i];
+        float HistoryDepth = WaterDepthHistory[i];
+        
+        // Apply temporal smoothing
+        float SmoothedDepth = FMath::Lerp(HistoryDepth, CurrentDepth, FrameBlend);
+        
+        // Update both current and history
+        SimulationData.WaterDepthMap[i] = SmoothedDepth;
+        WaterDepthHistory[i] = SmoothedDepth;
+    }
+}
+
+void UWaterSystem::SmoothWaterDepthMap()
+{
+    if (!SimulationData.IsValid() || !bEnableSimulationSmoothing)
+        return;
+        
+    const int32 Width = SimulationData.TerrainWidth;
+    const int32 Height = SimulationData.TerrainHeight;
+    
+    TArray<float> SmoothedDepths = SimulationData.WaterDepthMap;
+    
+    // Apply Gaussian-like smoothing
     for (int32 Y = 1; Y < Height - 1; Y++)
     {
         for (int32 X = 1; X < Width - 1; X++)
         {
             int32 Index = Y * Width + X;
             
-            // Only smooth if this is an edge pixel (has both water and non-water neighbors)
-            bool HasWater = TextureData[Index] > 0;
-            bool HasDryNeighbor = false;
-            bool HasWetNeighbor = false;
-            
-            // Check 3x3 neighborhood
-            for (int32 DY = -1; DY <= 1; DY++)
+            // Only smooth cells that have water or are near water
+            float CenterDepth = SimulationData.WaterDepthMap[Index];
+            if (CenterDepth <= 0.0f)
             {
-                for (int32 DX = -1; DX <= 1; DX++)
+                // Check if any neighbor has water
+                bool bHasWaterNearby = false;
+                for (int32 dy = -1; dy <= 1 && !bHasWaterNearby; dy++)
                 {
-                    if (DX == 0 && DY == 0) continue;
+                    for (int32 dx = -1; dx <= 1 && !bHasWaterNearby; dx++)
+                    {
+                        if (dx == 0 && dy == 0) continue;
+                        int32 NIndex = (Y + dy) * Width + (X + dx);
+                        if (SimulationData.WaterDepthMap[NIndex] > MinWaterDepth)
+                            bHasWaterNearby = true;
+                    }
+                }
+                
+                if (!bHasWaterNearby) continue;
+            }
+                
+            float Sum = 0.0f;
+            float Weight = 0.0f;
+            
+            // 3x3 Gaussian kernel approximation
+            const float Kernel[3][3] = {
+                {0.0625f, 0.125f, 0.0625f},
+                {0.125f,  0.25f,  0.125f},
+                {0.0625f, 0.125f, 0.0625f}
+            };
+            
+            for (int32 dy = -1; dy <= 1; dy++)
+            {
+                for (int32 dx = -1; dx <= 1; dx++)
+                {
+                    int32 NX = X + dx;
+                    int32 NY = Y + dy;
                     
-                    int32 NeighborIndex = (Y + DY) * Width + (X + DX);
-                    if (TextureData[NeighborIndex] > 0)
-                        HasWetNeighbor = true;
-                    else
-                        HasDryNeighbor = true;
+                    // Boundary check
+                    if (NX >= 0 && NX < Width && NY >= 0 && NY < Height)
+                    {
+                        int32 NIndex = NY * Width + NX;
+                        float KernelWeight = Kernel[dy + 1][dx + 1];
+                        Sum += SimulationData.WaterDepthMap[NIndex] * KernelWeight;
+                        Weight += KernelWeight;
+                    }
                 }
             }
             
-            // Apply smoothing only to edge pixels
-            if (HasWater && HasDryNeighbor)
+            if (Weight > 0.0f)
             {
-                // Average with neighbors for smoother edge
-                int32 Sum = 0;
-                int32 Count = 0;
-                for (int32 DY = -1; DY <= 1; DY++)
-                {
-                    for (int32 DX = -1; DX <= 1; DX++)
-                    {
-                        int32 NeighborIndex = (Y + DY) * Width + (X + DX);
-                        Sum += TextureData[NeighborIndex];
-                        Count++;
-                    }
-                }
-                SmoothedData[Index] = Sum / Count;
+                float SmoothedValue = Sum / Weight;
+                // Blend with original based on smoothing strength
+                SmoothedDepths[Index] = FMath::Lerp(CenterDepth, SmoothedValue, SimulationSmoothingStrength);
             }
         }
     }
     
-    // Upload to GPU
-    FTexture2DMipMap& Mip = WaterDepthTexture->GetPlatformData()->Mips[0];
-    void* Data = Mip.BulkData.Lock(LOCK_READ_WRITE);
-    if (Data)
-    {
-        FMemory::Memcpy(Data, SmoothedData.GetData(), SmoothedData.Num());
-        Mip.BulkData.Unlock();
-        
-        // Force GPU update
-        WaterDepthTexture->UpdateResource();
-        
-        UE_LOG(LogTemp, VeryVerbose, TEXT("Water texture updated: %d pixels with water (max depth: %.2f)"),
-               NonZeroPixels, MaxWaterDepth);
-    }
+    // Apply smoothed values back
+    SimulationData.WaterDepthMap = SmoothedDepths;
 }
 
+// Apply edge-aware spatial smoothing to reduce artifacts
+void UWaterSystem::ApplySpatialSmoothing()
+{
+    if (!SimulationData.IsValid() || !bEnableSimulationSmoothing)
+        return;
+        
+    const int32 Width = SimulationData.TerrainWidth;
+    const int32 Height = SimulationData.TerrainHeight;
+    
+    // Only smooth areas with water gradients
+    TArray<float> SmoothedDepths = SimulationData.WaterDepthMap;
+    
+    for (int32 Y = 1; Y < Height - 1; Y++)
+    {
+        for (int32 X = 1; X < Width - 1; X++)
+        {
+            int32 Index = Y * Width + X;
+            float CenterDepth = SimulationData.WaterDepthMap[Index];
+            
+            // Skip completely dry cells
+            if (CenterDepth <= 0.0f)
+                continue;
+            
+            // Check if this cell is near a water edge (high gradient)
+            bool bNearEdge = false;
+            float MaxDiff = 0.0f;
+            
+            for (int32 dy = -1; dy <= 1; dy++)
+            {
+                for (int32 dx = -1; dx <= 1; dx++)
+                {
+                    if (dx == 0 && dy == 0) continue;
+                    
+                    int32 NIndex = (Y + dy) * Width + (X + dx);
+                    float Diff = FMath::Abs(SimulationData.WaterDepthMap[NIndex] - CenterDepth);
+                    MaxDiff = FMath::Max(MaxDiff, Diff);
+                    
+                    // Detect edges
+                    if (Diff > MinWaterDepth * 2.0f)
+                    {
+                        bNearEdge = true;
+                    }
+                }
+            }
+            
+            // Apply smoothing only near edges to preserve bulk water behavior
+            if (bNearEdge && MaxDiff > 0.0f)
+            {
+                float Sum = 0.0f;
+                float TotalWeight = 0.0f;
+                
+                // Use distance-weighted averaging
+                for (int32 dy = -1; dy <= 1; dy++)
+                {
+                    for (int32 dx = -1; dx <= 1; dx++)
+                    {
+                        int32 NX = X + dx;
+                        int32 NY = Y + dy;
+                        
+                        if (NX >= 0 && NX < Width && NY >= 0 && NY < Height)
+                        {
+                            int32 NIndex = NY * Width + NX;
+                            float NeighborDepth = SimulationData.WaterDepthMap[NIndex];
+                            
+                            // Weight by inverse depth difference
+                            float DepthDiff = FMath::Abs(NeighborDepth - CenterDepth);
+                            float Weight = 1.0f / (1.0f + DepthDiff * 10.0f);
+                            
+                            Sum += NeighborDepth * Weight;
+                            TotalWeight += Weight;
+                        }
+                    }
+                }
+                
+                if (TotalWeight > 0.0f)
+                {
+                    // Blend smoothed value with original
+                    float SmoothValue = Sum / TotalWeight;
+                    float BlendFactor = FMath::Clamp(MaxDiff / (MinWaterDepth * 10.0f), 0.0f, SimulationSmoothingStrength);
+                    SmoothedDepths[Index] = FMath::Lerp(CenterDepth, SmoothValue, BlendFactor);
+                }
+            }
+        }
+    }
+    
+    SimulationData.WaterDepthMap = SmoothedDepths;
+}
+
+float UWaterSystem::GetScaledTime() const
+{
+    // Use accumulated scaled time instead of real world time
+    return AccumulatedScaledTime;
+}
 
 // ===== VOLUMETRIC WATER WITH OPTICAL DEPTH IMPLEMENTATION =====
 
@@ -4808,7 +5250,7 @@ void UWaterSystem::GenerateSmoothWaterSurface(FWaterSurfaceChunk& SurfaceChunk,
                 // ============================================
                 if (OwnerTerrain->GetWorld())
                 {
-                    float Time = OwnerTerrain->GetWorld()->GetTimeSeconds();
+                    float Time = GetScaledTime();
                     float WaveOffset = 0.0f;
                     
                     // STEP 1: Get authoritative flow data from simulation
@@ -5153,60 +5595,135 @@ void UWaterSystem::GenerateSmoothWaterSurface_HighQuality(FWaterSurfaceChunk& Su
 float UWaterSystem::GetInterpolatedWaterDepthSeamless(FVector2D WorldPosition) const
 {
     if (!CachedMasterController || !SimulationData.IsValid())
-    {
         return 0.0f;
-    }
     
-    // Convert to terrain coordinates
     FVector2D TerrainCoords = CachedMasterController->WorldToTerrainCoordinates(
         FVector(WorldPosition.X, WorldPosition.Y, 0));
     
-    // Use cubic interpolation for smoother transitions
-    int32 X0 = FMath::FloorToInt(TerrainCoords.X);
-    int32 Y0 = FMath::FloorToInt(TerrainCoords.Y);
+    float X = TerrainCoords.X;
+    float Y = TerrainCoords.Y;
+    int32 X0 = FMath::FloorToInt(X);
+    int32 Y0 = FMath::FloorToInt(Y);
     
-    // Sample 4x4 grid for cubic interpolation
-    float Samples[4][4];
-    for (int32 dy = -1; dy <= 2; dy++)
+    // Use bicubic interpolation for smoother results
+    if (bUse8DirectionalFlow && bUseBicubicInterpolation)
     {
-        for (int32 dx = -1; dx <= 2; dx++)
+        // Gather 4x4 grid of samples for bicubic interpolation
+        float Samples[4][4];
+        
+        for (int32 j = -1; j <= 2; j++)
         {
-            int32 X = X0 + dx;
-            int32 Y = Y0 + dy;
+            for (int32 i = -1; i <= 2; i++)
+            {
+                int32 SX = FMath::Clamp(X0 + i, 0, SimulationData.TerrainWidth - 1);
+                int32 SY = FMath::Clamp(Y0 + j, 0, SimulationData.TerrainHeight - 1);
+                int32 SIndex = SY * SimulationData.TerrainWidth + SX;
+                
+                float Depth = SimulationData.WaterDepthMap[SIndex];
+                
+                // Apply smooth threshold function instead of hard cutoff
+                if (Depth < MinWaterDepth && Depth > 0.0f)
+                {
+                    // Smooth falloff near threshold
+                    float T = Depth / MinWaterDepth;
+                    Depth = Depth * FMath::SmoothStep(0.0f, 1.0f, T);
+                }
+                
+                Samples[j + 1][i + 1] = Depth;
+            }
+        }
+        
+        // Bicubic interpolation
+        float FracX = X - X0;
+        float FracY = Y - Y0;
+        
+        // Catmull-Rom spline interpolation
+        auto CubicInterpolate = [](float p0, float p1, float p2, float p3, float t) -> float
+        {
+            float a0 = -0.5f * p0 + 1.5f * p1 - 1.5f * p2 + 0.5f * p3;
+            float a1 = p0 - 2.5f * p1 + 2.0f * p2 - 0.5f * p3;
+            float a2 = -0.5f * p0 + 0.5f * p2;
+            float a3 = p1;
             
-            // Clamp to valid range
-            X = FMath::Clamp(X, 0, SimulationData.TerrainWidth - 1);
-            Y = FMath::Clamp(Y, 0, SimulationData.TerrainHeight - 1);
-            
-            Samples[dy + 1][dx + 1] = GetWaterDepthSafe(X, Y);
+            return a0 * t * t * t + a1 * t * t + a2 * t + a3;
+        };
+        
+        // Interpolate along Y
+        float Y0Result = CubicInterpolate(Samples[0][0], Samples[0][1], Samples[0][2], Samples[0][3], FracX);
+        float Y1Result = CubicInterpolate(Samples[1][0], Samples[1][1], Samples[1][2], Samples[1][3], FracX);
+        float Y2Result = CubicInterpolate(Samples[2][0], Samples[2][1], Samples[2][2], Samples[2][3], FracX);
+        float Y3Result = CubicInterpolate(Samples[3][0], Samples[3][1], Samples[3][2], Samples[3][3], FracX);
+        
+        // Interpolate along X
+        float Result = CubicInterpolate(Y0Result, Y1Result, Y2Result, Y3Result, FracY);
+        
+        return FMath::Max(0.0f, Result);
+    }
+    else if (bUse8DirectionalFlow)
+    {
+        // Enhanced 8-directional sampling without bicubic
+        float WeightedSum = 0.0f;
+        float TotalWeight = 0.0f;
+        
+        // Sample in 8 directions plus center
+        for (int32 dy = -1; dy <= 1; dy++)
+        {
+            for (int32 dx = -1; dx <= 1; dx++)
+            {
+                int32 SX = FMath::Clamp(X0 + dx, 0, SimulationData.TerrainWidth - 1);
+                int32 SY = FMath::Clamp(Y0 + dy, 0, SimulationData.TerrainHeight - 1);
+                int32 SIndex = SY * SimulationData.TerrainWidth + SX;
+                
+                float Depth = SimulationData.WaterDepthMap[SIndex];
+                
+                // Calculate distance-based weight
+                float DistX = (float)(X0 + dx) - X;
+                float DistY = (float)(Y0 + dy) - Y;
+                float DistSq = DistX * DistX + DistY * DistY;
+                float Weight = FMath::Exp(-DistSq * 2.0f);
+                
+                // Apply diagonal weight adjustment
+                if (dx != 0 && dy != 0)
+                {
+                    Weight *= DiagonalFlowWeight;
+                }
+                
+                WeightedSum += Depth * Weight;
+                TotalWeight += Weight;
+            }
+        }
+        
+        if (TotalWeight > 0.0f)
+        {
+            return WeightedSum / TotalWeight;
         }
     }
-    
-    // Cubic interpolation for smooth transitions
-    float FracX = TerrainCoords.X - X0;
-    float FracY = TerrainCoords.Y - Y0;
-    
-    // Hermite interpolation for smoother boundaries
-    auto CubicInterp = [](float v0, float v1, float v2, float v3, float t) -> float
+    else
     {
-        float t2 = t * t;
-        float t3 = t2 * t;
+        // Original bilinear interpolation
+        float X1 = FMath::Clamp(X0 + 1, 0, SimulationData.TerrainWidth - 1);
+        float Y1 = FMath::Clamp(Y0 + 1, 0, SimulationData.TerrainHeight - 1);
         
-        return v1 + 0.5f * t * (v2 - v0 + t * (2.0f * v0 - 5.0f * v1 + 4.0f * v2 - v3 + 
-               t * (3.0f * (v1 - v2) + v3 - v0)));
-    };
-    
-    // Interpolate rows
-    float Row[4];
-    for (int32 i = 0; i < 4; i++)
-    {
-        Row[i] = CubicInterp(Samples[i][0], Samples[i][1], Samples[i][2], Samples[i][3], FracX);
+        float FracX = X - X0;
+        float FracY = Y - Y0;
+        
+        int32 Idx00 = Y0 * SimulationData.TerrainWidth + X0;
+        int32 Idx10 = Y0 * SimulationData.TerrainWidth + X1;
+        int32 Idx01 = Y1 * SimulationData.TerrainWidth + X0;
+        int32 Idx11 = Y1 * SimulationData.TerrainWidth + X1;
+        
+        float D00 = SimulationData.WaterDepthMap[Idx00];
+        float D10 = SimulationData.WaterDepthMap[Idx10];
+        float D01 = SimulationData.WaterDepthMap[Idx01];
+        float D11 = SimulationData.WaterDepthMap[Idx11];
+        
+        float D0 = FMath::Lerp(D00, D10, FracX);
+        float D1 = FMath::Lerp(D01, D11, FracX);
+        
+        return FMath::Lerp(D0, D1, FracY);
     }
     
-    // Interpolate column
-    float Result = CubicInterp(Row[0], Row[1], Row[2], Row[3], FracY);
-    
-    return FMath::Max(0.0f, Result);
+    return 0.0f;
 }
 
 // Override chunk overlap for water to ensure seamless boundaries
@@ -5361,47 +5878,46 @@ float UWaterSystem::CalculateNaturalWaveOffset(FVector2D WorldPos, float Time, f
     {
         Chunk.NaturalWaveCache.LastUpdateTime = Time;
         
-        // Classification based on existing thresholds
+        // Classification with tunable thresholds
         float FlowSpeed = FlowVector.Size();
         
-        if (FlowSpeed > 10.0f && TerrainGradient > 30.0f)
+        if (FlowSpeed > WaveTuning.RapidsFlowThreshold && TerrainGradient > WaveTuning.RapidsGradientThreshold)
             Chunk.NaturalWaveCache.Type = FNaturalWaveCache::Rapids;
-        else if (FlowSpeed > 5.0f)
+        else if (FlowSpeed > WaveTuning.RiverFlowThreshold)
             Chunk.NaturalWaveCache.Type = FNaturalWaveCache::River;
-        else if (Chunk.AverageDepth < 0.1f)
+        else if (Chunk.AverageDepth < WaveTuning.PuddleDepthThreshold)
             Chunk.NaturalWaveCache.Type = FNaturalWaveCache::Puddle;
-        else if (Chunk.AverageDepth < 1.0f)
+        else if (Chunk.AverageDepth < WaveTuning.PondDepthThreshold)
             Chunk.NaturalWaveCache.Type = FNaturalWaveCache::Pond;
         else
             Chunk.NaturalWaveCache.Type = FNaturalWaveCache::Lake;
     }
     
-    // Calculate waves based on type
+    float WaveOffset = 0.0f;
+    
+    // Calculate base waves based on type
     switch (Chunk.NaturalWaveCache.Type)
     {
         case FNaturalWaveCache::River:
         {
-            // FIXED: Improved river wave calculation to prevent parallel lines
             FVector2D FlowNormal = FlowVector.GetSafeNormal();
             FVector2D CrossFlow(-FlowNormal.Y, FlowNormal.X);
             
-            float Fr = FlowVector.Size() / FMath::Sqrt(9.81f * WaterDepth); // Froude number
+            float Fr = FlowVector.Size() / FMath::Sqrt(9.81f * WaterDepth);
             
-            // Base wave pattern
-            float Wavelength = WaterDepth * 4.0f; // Longer wavelength for smoother waves
-            float Amplitude = WaterDepth * 0.05f * FMath::Min(Fr, 1.5f); // Reduced amplitude
+            float Wavelength = WaterDepth * WaveTuning.RiverWavelengthMultiplier;
+            float Amplitude = FMath::Min(WaterDepth * WaveTuning.RiverWaveAmplitude, WaveTuning.RiverMaxAmplitude) *
+                             FMath::Min(Fr, WaveTuning.RiverFroudeLimit);
             
-            // Calculate position along and across flow
             float CrossPos = FVector2D::DotProduct(WorldPos * 0.01f, CrossFlow);
             float StreamPos = FVector2D::DotProduct(WorldPos * 0.01f, FlowNormal);
             
-            // Primary wave pattern with angle variation
             float Wave = 0.0f;
             
-            // Add multiple wave components at different angles to break up parallel lines
+            // Multiple wave components at different angles
             for (int i = 0; i < 3; i++)
             {
-                float AngleOffset = (i - 1) * 0.2f; // -0.2, 0, 0.2 radians
+                float AngleOffset = (i - 1) * WaveTuning.RiverAngleSpread;
                 FVector2D RotatedCross(
                     CrossFlow.X * FMath::Cos(AngleOffset) - CrossFlow.Y * FMath::Sin(AngleOffset),
                     CrossFlow.X * FMath::Sin(AngleOffset) + CrossFlow.Y * FMath::Cos(AngleOffset)
@@ -5410,112 +5926,287 @@ float UWaterSystem::CalculateNaturalWaveOffset(FVector2D WorldPos, float Time, f
                 float RotatedCrossPos = FVector2D::DotProduct(WorldPos * 0.01f, RotatedCross);
                 float WaveComponent = FMath::Sin(RotatedCrossPos / Wavelength * 2.0f * PI + i * 0.5f);
                 
-                // Vary amplitude by component
-                float ComponentAmplitude = Amplitude * (1.0f - i * 0.3f);
+                float ComponentAmplitude = Amplitude * (1.0f - i * WaveTuning.RiverAngleDamping);
                 Wave += WaveComponent * ComponentAmplitude;
             }
             
-            // Add flow-based modulation to break up regularity
-            float FlowModulation = 0.7f + 0.3f * FMath::Sin(StreamPos * 0.1f - Time * FlowVector.Size() * 0.05f);
+            float FlowModulation = WaveTuning.RiverFlowModulationMin +
+                                  WaveTuning.RiverFlowModulationMax * FMath::Sin(StreamPos * 0.1f - Time * FlowVector.Size() * 0.05f);
             Wave *= FlowModulation;
             
-            // Add small-scale turbulence
-            float Turbulence = FMath::Sin(WorldPos.X * 0.05f + Time * 3.0f) *
-                              FMath::Cos(WorldPos.Y * 0.07f - Time * 2.5f) * 0.01f;
+            float Turbulence = FMath::Sin(WorldPos.X * 0.05f + Time * WaveTuning.RiverTurbulenceSpeed) *
+                              FMath::Cos(WorldPos.Y * 0.07f - Time * WaveTuning.RiverTurbulenceSpeed * 0.83f) *
+                              WaveTuning.RiverTurbulenceScale;
             Wave += Turbulence * FlowVector.Size() / 10.0f;
             
-            return Wave;
+            // Enhanced fore-edge wave with tuning
+            float FlowSpeed = FlowVector.Size();
+            float WaveSpeed = FlowSpeed * WaveTuning.RiverForeEdgeSpeed;
+            float ForeWavelength = FMath::Clamp(FlowSpeed * WaveTuning.RiverForeEdgeWavelength, 10.0f, 60.0f);
+            float ForeAmplitude = FMath::Min(FlowSpeed / 15.0f, 1.0f) * WaterDepth * WaveTuning.RiverForeEdgeAmplitude;
+            
+            float ForeEdgeWave = FMath::Sin((StreamPos / ForeWavelength + Time * WaveSpeed) * 2.0f * PI) * ForeAmplitude;
+            ForeEdgeWave += FMath::Sin((StreamPos / (ForeWavelength * 0.7f) + Time * WaveSpeed * 1.2f) * 2.0f * PI) *
+                           ForeAmplitude * WaveTuning.RiverForeEdgeHarmonic;
+            
+            WaveOffset = Wave + ForeEdgeWave;
+            break;
         }
         
         case FNaturalWaveCache::Rapids:
         {
-            // FIXED: Enhanced rapids calculation with better turbulence
             float Turbulence = 0.0f;
-            float TurbScale = FMath::Min(TerrainGradient / 30.0f, 2.0f);
+            float TurbScale = FMath::Min(TerrainGradient / WaveTuning.RapidsGradientDivisor, WaveTuning.RapidsMaxScale);
             
-            // Multi-scale turbulent flow
-            for (int i = 0; i < 5; i++)
+            for (int i = 0; i < 3; i++)
             {
-                float Scale = FMath::Pow(2.0f, -i * 0.7f);
-                float Freq = 0.15f * Scale;
+                float Scale = FMath::Pow(2.0f, -i * 0.8f);
+                float Freq = WaveTuning.RapidsFrequency * Scale;
                 
-                // Use different hash functions for each scale to avoid repetition
                 float Phase1 = WorldPos.X * Freq + WorldPos.Y * Freq * 1.618f;
                 float Phase2 = WorldPos.X * Freq * 0.866f - WorldPos.Y * Freq * 0.5f;
                 
-                float Noise = FMath::Sin(Phase1 + Time * Scale * 8.0f) *
-                             FMath::Cos(Phase2 - Time * Scale * 6.0f);
+                float Noise = FMath::Sin(Phase1 + Time * Scale * WaveTuning.RapidsTimeScale) *
+                             FMath::Cos(Phase2 - Time * Scale * WaveTuning.RapidsTimeScale * 0.67f);
                 
-                // Kolmogorov turbulence scaling
-                Turbulence += Noise * TurbScale * FMath::Pow(Scale, 2.0f/3.0f) * 0.15f;
+                Turbulence += Noise * TurbScale * FMath::Pow(Scale, 2.0f/3.0f) * WaveTuning.RapidsTurbulenceScale;
             }
             
-            // Hydraulic jumps with spatial variation
             float Fr = FlowVector.Size() / FMath::Sqrt(9.81f * WaterDepth);
             if (Fr > 1.0f)
             {
-                float JumpHeight = WaterDepth * (FMath::Sqrt(1.0f + 8.0f * Fr * Fr) - 1.0f) * 0.05f;
+                float JumpHeight = WaterDepth * (FMath::Sqrt(1.0f + 8.0f * Fr * Fr) - 1.0f) * WaveTuning.RapidsJumpScale;
                 FVector2D FlowNorm = FlowVector.GetSafeNormal();
                 float FlowProj = FVector2D::DotProduct(WorldPos * 0.01f, FlowNorm);
                 
-                // Add spatial variation to hydraulic jumps
                 float JumpPhase = FlowProj * 2.0f + FMath::Sin(WorldPos.X * 0.03f) * 0.5f;
-                Turbulence += JumpHeight * (0.5f + 0.5f * FMath::Sin(JumpPhase + Time * 3.0f));
+                Turbulence += JumpHeight * (0.5f + 0.5f * FMath::Sin(JumpPhase + Time * WaveTuning.RapidsJumpTimeScale));
             }
             
-            return Turbulence;
+            WaveOffset = Turbulence;
+            break;
         }
         
-        // Other cases remain the same...
         case FNaturalWaveCache::Puddle:
         {
-            // Capillary waves - tiny ripples
             float Wave = 0.0f;
             for (int i = 0; i < 3; i++)
             {
                 float Scale = FMath::Exp(-i * 0.5f);
-                float Wavelength = 0.017f * Scale;
-                float Phase = (WorldPos.Size() * 0.01f / Wavelength) * 2.0f * PI - Time * 0.23f / Wavelength;
-                Wave += FMath::Sin(Phase) * Scale * 0.002f;
+                float Wavelength = WaveTuning.PuddleWavelength * Scale;
+                float Phase = (WorldPos.Size() * 0.01f / Wavelength) * 2.0f * PI - Time * WaveTuning.PuddleTimeScale / Wavelength;
+                Wave += FMath::Sin(Phase) * Scale * WaveTuning.PuddleAmplitude;
             }
-            return Wave * FMath::Min(WaterDepth / 0.1f, 1.0f);
+            WaveOffset = Wave * FMath::Min(WaterDepth / 0.1f, 1.0f);
+            break;
         }
         
         case FNaturalWaveCache::Pond:
         {
-            float Wave = FMath::Sin(WorldPos.X * 0.3f + Time * 2.0f) *
-                        FMath::Sin(WorldPos.Y * 0.3f - Time * 1.5f) * 0.01f;
-            if (WindStrength > 1.0f)
+            float Wave = FMath::Sin(WorldPos.X * WaveTuning.PondFrequency + Time * WaveTuning.PondTimeScale) *
+                        FMath::Sin(WorldPos.Y * WaveTuning.PondFrequency - Time * WaveTuning.PondTimeScale * 0.75f) *
+                        WaveTuning.PondAmplitude;
+            
+            if (WindStrength > WaveTuning.PondWindThreshold)
             {
                 float WindProj = FVector2D::DotProduct(WorldPos * 0.01f, WindDirection);
-                Wave += FMath::Sin(WindProj * 30.0f + Time * WindStrength * 2.0f) * 0.01f * (WindStrength / 5.0f);
+                Wave += FMath::Sin(WindProj * WaveTuning.PondWindFrequency + Time * WindStrength * 2.0f) *
+                       WaveTuning.PondWindScale * (WindStrength / 5.0f);
             }
-            return Wave;
+            WaveOffset = Wave;
+            break;
         }
         
         case FNaturalWaveCache::Lake:
         {
             float Fetch = Chunk.NaturalWaveCache.FetchDistance;
-            float Hs = FMath::Min(0.0016f * FMath::Sqrt(9.81f * Fetch) * FMath::Sqrt(WindStrength), WaterDepth * 0.5f);
+            float Hs = FMath::Min(WaveTuning.LakeFetchCoefficient * FMath::Sqrt(9.81f * Fetch) * FMath::Sqrt(WindStrength),
+                                 WaterDepth * WaveTuning.LakeDepthLimit);
             
             float Wave = 0.0f;
             for (int i = 0; i < 3; i++)
             {
-                float WaveLength = 20.0f * FMath::Pow(1.618f, -i * 0.7f);
+                float WaveLength = WaveTuning.LakeWavelengthBase * FMath::Pow(WaveTuning.LakeWavelengthScale, -i * 0.7f);
                 float k = 2.0f * PI / WaveLength;
                 float w = FMath::Sqrt(9.81f * k);
-                float Amplitude = (Hs / 4.0f) * FMath::Exp(-0.5f * i);
+                float Amplitude = (Hs / WaveTuning.LakeAmplitudeDivisor) * FMath::Exp(-0.5f * i);
                 
                 float WindProj = FVector2D::DotProduct(WorldPos * 0.01f, WindDirection);
                 float Phase = k * WindProj - w * Time;
                 Wave += Amplitude * FMath::Cos(Phase);
             }
-            return Wave;
+            WaveOffset = Wave;
+            break;
         }
         
         default:
-            return 0.0f;
+            WaveOffset = 0.0f;
     }
+    
+    // NEW: Add ripple waves with debug logging
+    if (ActiveRipples.Num() > 0)
+    {
+        // Calculate ripple visibility based on water type
+        float RippleVisibility = 0.0f;
+        switch (Chunk.NaturalWaveCache.Type)
+        {
+            case FNaturalWaveCache::Lake:
+                RippleVisibility = 1.0f;
+                break;
+            case FNaturalWaveCache::Pond:
+                RippleVisibility = 1.2f;
+                break;
+            case FNaturalWaveCache::River:
+                RippleVisibility = 0.3f;
+                break;
+            case FNaturalWaveCache::Rapids:
+                RippleVisibility = 0.1f;
+                break;
+            case FNaturalWaveCache::Puddle:
+                RippleVisibility = 0.8f;
+                break;
+        }
+        
+        if (RippleVisibility > 0.01f)
+        {
+            float RippleWave = 0.0f;
+            float InterferenceWave = 0.0f;
+            float CurrentTime = GetScaledTime();
+            
+            // Clean up expired ripples
+            for (int32 i = ActiveRipples.Num() - 1; i >= 0; i--)
+            {
+                if (CurrentTime - ActiveRipples[i].StartTime > RippleLifetime)
+                {
+                    ActiveRipples.RemoveAt(i);
+                }
+            }
+            
+            // Process active ripples
+            for (int32 i = 0; i < ActiveRipples.Num(); i++)
+            {
+                const FWaterRipple& Ripple = ActiveRipples[i];
+                float Age = CurrentTime - Ripple.StartTime;
+                
+                // Distance from ripple origin
+                float Distance = (WorldPos - Ripple.Origin).Size();
+                float CurrentRadius = Ripple.WaveSpeed * Age;
+                
+                // Skip if too far from current wave position
+                if (Distance > CurrentRadius + Ripple.Wavelength * 2.0f || Distance > Ripple.MaxRadius)
+                    continue;
+                
+                // Calculate wave position relative to expanding ring
+                float WavePosition = CurrentRadius - Distance;
+                
+                // Check if we're within the wave packet
+                if (FMath::Abs(WavePosition) < Ripple.Wavelength * 3.0f)
+                {
+                    // Wave packet with Gaussian envelope
+                    float Phase = (WavePosition / Ripple.Wavelength) * 2.0f * PI;
+                    float Envelope = FMath::Exp(-FMath::Square(WavePosition / (Ripple.Wavelength * 1.5f)));
+                    
+                    // Amplitude with distance and time damping
+                    float DistanceDamping = Ripple.InitialAmplitude / (1.0f + Distance * 0.002f);
+                    float TimeDamping = FMath::Pow(Ripple.Damping, Age);
+                    float Amplitude = DistanceDamping * TimeDamping * Envelope;
+                    
+                    // Add wave contribution
+                    float WaveContribution = Amplitude * FMath::Sin(Phase);
+                    RippleWave += WaveContribution;
+                    
+                    // Debug logging for first ripple
+                    if (i == 0 && FMath::FRand() < 0.01f) // Log 1% of samples to avoid spam
+                    {
+                        UE_LOG(LogTemp, Warning, TEXT("Ripple Debug: Age=%.2f, Radius=%.1f, Distance=%.1f, WavePos=%.1f, Amplitude=%.3f, Contribution=%.3f"),
+                               Age, CurrentRadius, Distance, WavePosition, Amplitude, WaveContribution);
+                    }
+                    
+                    // Calculate interference with other ripples
+                    for (int32 j = i + 1; j < ActiveRipples.Num(); j++)
+                    {
+                        const FWaterRipple& OtherRipple = ActiveRipples[j];
+                        float OtherAge = CurrentTime - OtherRipple.StartTime;
+                        float OtherDistance = (WorldPos - OtherRipple.Origin).Size();
+                        float OtherRadius = OtherRipple.WaveSpeed * OtherAge;
+                        
+                        // Check if both ripples affect this position
+                        if (FMath::Abs(OtherDistance - OtherRadius) < OtherRipple.Wavelength * 3.0f)
+                        {
+                            // Calculate phase difference
+                            float OtherPhase = ((OtherRadius - OtherDistance) / OtherRipple.Wavelength) * 2.0f * PI;
+                            float PhaseDiff = Phase - OtherPhase;
+                            
+                            // Interference amplitude
+                            float InterferenceAmp = FMath::Cos(PhaseDiff * 0.5f) * 0.5f;
+                            
+                            // Both ripples must be active at this point
+                            float OtherEnvelope = FMath::Exp(-FMath::Square((OtherRadius - OtherDistance) / (OtherRipple.Wavelength * 1.5f)));
+                            float CombinedEnvelope = Envelope * OtherEnvelope;
+                            
+                            InterferenceWave += InterferenceAmp * CombinedEnvelope * RippleInterferenceStrength;
+                        }
+                    }
+                }
+            }
+            
+            // Apply ripple visibility and depth attenuation
+            float DepthAttenuation = FMath::Clamp(1.0f - WaterDepth / 3.0f, 0.2f, 1.0f);
+            float RippleContribution = (RippleWave + InterferenceWave) * RippleVisibility * DepthAttenuation * RippleHeightScale;
+            WaveOffset += RippleContribution;
+            
+            // Debug log ripple contribution
+            if (FMath::Abs(RippleContribution) > 0.001f && FMath::FRand() < 0.001f)
+            {
+                UE_LOG(LogTemp, Warning, TEXT("Ripple Total: RippleWave=%.3f, Interference=%.3f, Final=%.3f"),
+                       RippleWave, InterferenceWave, RippleContribution);
+            }
+        }
+    }
+    
+    // Collision detection with tuning
+    float FlowSpeed = FlowVector.Size();
+    if (FlowSpeed > WaveTuning.CollisionFlowThreshold)
+    {
+        FVector2D SampleAhead = WorldPos + FlowVector.GetSafeNormal() * WaveTuning.CollisionSampleDistance;
+        FVector2D FlowAhead = GetFlowVectorAtWorld(SampleAhead);
+        float Convergence = FVector2D::DotProduct(FlowVector.GetSafeNormal(), FlowAhead.GetSafeNormal());
+        
+        if (Convergence < WaveTuning.CollisionThreshold)
+        {
+            float CollisionIntensity = FMath::Abs(Convergence) * (FlowSpeed / 10.0f);
+            float CollisionWave = FMath::Sin(Time * WaveTuning.CollisionTimeScale + WorldPos.X * 0.05f) *
+                                 FMath::Cos(Time * WaveTuning.CollisionTimeScale * 0.67f + WorldPos.Y * 0.05f) *
+                                 WaterDepth * WaveTuning.CollisionWaveScale * CollisionIntensity;
+            WaveOffset += CollisionWave;
+        }
+    }
+    
+    return FMath::Clamp(WaveOffset, WaterDepth * WaveTuning.GlobalDepthClampMin, WaterDepth * WaveTuning.GlobalDepthClampMax);
+}
+
+// Add splash function
+void UWaterSystem::AddSplash(FVector WorldPosition, float Intensity, float Size)
+{
+    if (ActiveRipples.Num() >= MaxActiveRipples)
+    {
+        // Remove oldest ripple
+        ActiveRipples.RemoveAt(0);
+    }
+    
+    FWaterRipple NewRipple;
+    NewRipple.Origin = FVector2D(WorldPosition.X, WorldPosition.Y);
+    NewRipple.InitialAmplitude = Intensity * 10.0f; // Scale for visible effect
+    NewRipple.WaveSpeed = FMath::Sqrt(9.81f * Size); // Physics-based wave speed
+    NewRipple.Wavelength = Size * 2.0f;
+    NewRipple.StartTime = GetScaledTime();
+    NewRipple.Damping = 0.98f;
+    NewRipple.MaxRadius = Size * 10.0f;
+    
+    ActiveRipples.Add(NewRipple);
+    
+    UE_LOG(LogTemp, Log, TEXT("Added splash at (%.1f, %.1f) - Total ripples: %d"),
+           WorldPosition.X, WorldPosition.Y, ActiveRipples.Num());
 }
 
 void UWaterSystem::DebugWaterCoordinates(FVector WorldPos)

@@ -50,6 +50,23 @@ void AWaterController::BeginPlay()
     
     // Register with MasterController for coordinate authority only
     RegisterWithMasterController();
+    
+    //Wave Tuning BP Integration
+    if (WaterSystem)
+        {
+            // Pass tuning parameters to water system
+            WaterSystem->SetWaveTuningParameters(
+                RiverWaveAmplitude,
+                RiverForeEdgeAmplitude,
+                RiverForeEdgeSpeed,
+                RiverForeEdgeWavelength,
+                RapidsTurbulenceScale,
+                RapidsFrequency,
+                RapidsJumpScale,
+                CollisionWaveScale,
+                CollisionThreshold
+            );
+        }
 }
 
 void AWaterController::Tick(float DeltaTime)

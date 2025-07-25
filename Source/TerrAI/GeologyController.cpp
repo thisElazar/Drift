@@ -85,6 +85,47 @@ void AGeologyController::Initialize(ADynamicTerrain* Terrain, UWaterSystem* Wate
     
     UE_LOG(LogTemp, Warning, TEXT("GeologyController: Initialized with %d geology cells (%dx%d)"),
            GeologyGrid.Num(), GeologyGridWidth, GeologyGridHeight);
+    
+    // Initialize hydraulic heads after grid creation
+        for (int32 i = 0; i < GeologyGrid.Num(); i++)
+        {
+            FSimplifiedGeology& Cell = GeologyGrid[i];
+            
+            // Get terrain height at this geology cell
+            int32 X = i % GeologyGridWidth;
+            int32 Y = i / GeologyGridWidth;
+            FVector WorldPos = TargetTerrain->TerrainToWorldPosition(X, Y);
+            float TerrainHeight = TargetTerrain->GetHeightAtPosition(WorldPos);
+            
+            // Initialize hydraulic head to water table elevation
+            Cell.LastTerrainHeight = TerrainHeight;
+            Cell.HydraulicHead = TerrainHeight - Cell.WaterTableDepth;
+            
+            // Set transmissivity based on rock type
+            switch (Cell.SurfaceRock)
+            {
+                case ERockType::Gravel:
+                    Cell.Transmissivity = 0.1f;     // Very high
+                    Cell.StorageCoefficient = 0.25f;
+                    break;
+                case ERockType::Sand:
+                    Cell.Transmissivity = 0.01f;    // High
+                    Cell.StorageCoefficient = 0.35f;
+                    break;
+                case ERockType::Silt:
+                    Cell.Transmissivity = 0.001f;   // Medium
+                    Cell.StorageCoefficient = 0.40f;
+                    break;
+                case ERockType::Clay:
+                    Cell.Transmissivity = 0.00001f; // Low
+                    Cell.StorageCoefficient = 0.45f;
+                    break;
+                case ERockType::Granite:
+                    Cell.Transmissivity = 0.000001f; // Very low
+                    Cell.StorageCoefficient = 0.05f;
+                    break;
+            }
+        }
 }
 
 void AGeologyController::InitializeGeologyGrid()
@@ -215,6 +256,7 @@ void AGeologyController::UpdateGeologySystem(float DeltaTime)
     ProcessSurfaceWaterInfiltration(DeltaTime);
     UpdateSimplifiedWaterTable(DeltaTime);
     ProcessGroundwaterDischarge(DeltaTime);
+       UpdateHydraulicHeadSystem(DeltaTime);
 }
 
 void AGeologyController::ProcessSurfaceWaterInfiltration(float DeltaTime)
@@ -368,50 +410,33 @@ void AGeologyController::UpdateSimplifiedWaterTable(float DeltaTime)
 
 void AGeologyController::ProcessGroundwaterDischarge(float DeltaTime)
 {
-    if (!TargetTerrain || !WaterSystem) return;
+    if (!MasterController || !WaterSystem) return;
     
-    // Check for springs where water table meets surface
-    for (int32 Y = 0; Y < GeologyGridHeight; Y += 4) // Sparse check for performance
+    for (int32 i = 0; i < GeologyGrid.Num(); i++)
     {
-        for (int32 X = 0; X < GeologyGridWidth; X += 4)
+        FSimplifiedGeology& Geology = GeologyGrid[i];
+        
+        // Spring discharge where water table at surface
+        if (Geology.WaterTableDepth < 0.1f)
         {
-            int32 Index = GetGridIndex(X, Y);
-            const FSimplifiedGeology& Geology = GeologyGrid[Index];
+            float SpringFlow = SpringFlowRate * DeltaTime;
+            int32 X = i % GeologyGridWidth;
+            int32 Y = i / GeologyGridWidth;
+            FVector WorldPos = TargetTerrain->TerrainToWorldPosition(X, Y);
             
-            FVector2D GridPos(X, Y);
-            FVector WorldPos;
-            if (MasterController)
-            {
-                FVector2D Pos2D = MasterController->ConvertGeologyToWaterGrid(GridPos);
-                WorldPos = FVector(Pos2D.X, Pos2D.Y, 0.0f);
-            }
-            else
-            {
-                WorldPos = TargetTerrain->TerrainToWorldPosition(GridPos.X, GridPos.Y);
-            }
-            float SurfaceHeight = TargetTerrain->GetHeightAtPosition(WorldPos);
-            float WaterTableHeight = SurfaceHeight - Geology.WaterTableDepth;
+            // Calculate cell area
+            float CellArea = MasterController->GetTerrainScale() * MasterController->GetTerrainScale() /
+                           (GeologyGridWidth * GeologyGridHeight);
             
-            // Spring forms when water table above surface
-            if (Geology.WaterTableDepth < 0.01f) // Water table at/above surface
-            {
-                float SpringFlow = SpringFlowRate * DeltaTime;
-                
-                // Add water to surface
-                // Scale up spring flow to match new depth scale
-                // 0.01 m³/s in real units = 1 depth unit/s in simulation
-                float ScaledSpringFlow = SpringFlow / AMasterWorldController::WATER_DEPTH_SCALE;
-                WaterSystem->AddWater(WorldPos, ScaledSpringFlow);
-                
-                // Lower water table slightly
-                GeologyGrid[Index].WaterTableDepth = 0.1f;
-                
-                UE_LOG(LogTemp, Warning, TEXT("Spring flowing at (%d,%d): %.3f m³/s"),
-                    X, Y, SpringFlow / DeltaTime);
-            }
+            // Route through master controller
+            MasterController->TransferGroundwaterToSurface(WorldPos, SpringFlow);
+            
+            // Update water table
+            Geology.WaterTableDepth += SpringFlow / (Geology.Permeability * CellArea);
         }
     }
 }
+
 
 // ===== QUERIES =====
 
@@ -639,7 +664,7 @@ void AGeologyController::ApplyInfiltration(FVector Location, float WaterAmount)
         int32 Index = GetGridIndex(X, Y);
         FSimplifiedGeology& Geology = GeologyGrid[Index];
         
-        // Update soil moisture
+        // Update soil moisture (existing code)
         float SoilCapacity = GetSoilCapacity(Geology.SurfaceRock);
         float SoilSpace = (1.0f - Geology.SoilMoisture) * SoilCapacity;
         float ToSoil = FMath::Min(WaterAmount, SoilSpace);
@@ -650,13 +675,231 @@ void AGeologyController::ApplyInfiltration(FVector Location, float WaterAmount)
         float ToWaterTable = WaterAmount - ToSoil;
         if (ToWaterTable > 0.0f && MasterController)
         {
-            // Convert excess water to groundwater volume using water authority
-            float GroundwaterVolume = MasterController->GetGeologyCellWaterVolume(
-                ToWaterTable, Geology.Permeability);
-            // Convert volume to depth change using cell area
+            // Raise water table and hydraulic head
             float CellArea = MasterController->GetTerrainScale() * MasterController->GetTerrainScale();
-            float DepthChange = GroundwaterVolume / (CellArea * Geology.Permeability);
-            Geology.WaterTableDepth = FMath::Max(0.0f, Geology.WaterTableDepth - DepthChange);
+            float WaterTableRise = ToWaterTable / (CellArea * Geology.StorageCoefficient);
+            
+            Geology.WaterTableDepth = FMath::Max(0.0f, Geology.WaterTableDepth - WaterTableRise);
+            Geology.HydraulicHead += WaterTableRise;
         }
     }
+}
+
+//Hydraulic Head System
+
+void AGeologyController::UpdateHydraulicHeadSystem(float DeltaTime)
+{
+    // Step 1: Update hydraulic heads based on current terrain
+    for (int32 i = 0; i < GeologyGrid.Num(); i++)
+    {
+        FSimplifiedGeology& Cell = GeologyGrid[i];
+        int32 X = i % GeologyGridWidth;
+        int32 Y = i / GeologyGridWidth;
+        FVector WorldPos = TargetTerrain->TerrainToWorldPosition(X, Y);
+        float CurrentTerrainHeight = TargetTerrain->GetHeightAtPosition(WorldPos);
+        
+        // Check if terrain changed
+        if (FMath::Abs(CurrentTerrainHeight - Cell.LastTerrainHeight) > 0.01f)
+        {
+            OnTerrainModified(WorldPos, Cell.LastTerrainHeight, CurrentTerrainHeight);
+            Cell.LastTerrainHeight = CurrentTerrainHeight;
+        }
+    }
+    
+    // Step 2: Lateral groundwater flow
+    UpdateLateralGroundwaterFlow(DeltaTime);
+    
+    // Step 3: Surface water interaction
+    ProcessHydraulicSurfaceInteraction(DeltaTime);
+}
+
+void AGeologyController::OnTerrainModified(FVector WorldLocation, float OldHeight, float NewHeight)
+{
+    FVector2D Coords = WorldToGridCoordinates(WorldLocation);
+    int32 X = FMath::FloorToInt(Coords.X);
+    int32 Y = FMath::FloorToInt(Coords.Y);
+    
+    if (!IsValidGridCoordinate(X, Y)) return;
+    
+    int32 Index = GetGridIndex(X, Y);
+    FSimplifiedGeology& Cell = GeologyGrid[Index];
+    
+    // Update water table to maintain same absolute elevation
+    float WaterTableElevation = OldHeight - Cell.WaterTableDepth;
+    Cell.WaterTableDepth = NewHeight - WaterTableElevation;
+    
+    // If terrain dropped below water table, we need to add surface water
+    if (NewHeight < WaterTableElevation)
+    {
+        float ExposedWaterDepth = WaterTableElevation - NewHeight;
+        
+        // Check current surface water
+        float CurrentWaterDepth = WaterSystem->GetWaterDepthAtPosition(WorldLocation);
+        
+        if (CurrentWaterDepth < ExposedWaterDepth)
+        {
+            // Mark for filling in the surface interaction update
+            // (Don't add water immediately to allow for gradual filling)
+            UE_LOG(LogTemp, Warning, TEXT("Terrain dropped below water table at %s. Water table at %.1fm, terrain at %.1fm"),
+                *WorldLocation.ToString(), WaterTableElevation, NewHeight);
+        }
+    }
+}
+
+void AGeologyController::ProcessHydraulicSurfaceInteraction(float DeltaTime)
+{
+    if (!WaterSystem || !MasterController) return;
+    
+    for (int32 i = 0; i < GeologyGrid.Num(); i++)
+    {
+        FSimplifiedGeology& Cell = GeologyGrid[i];
+        int32 X = i % GeologyGridWidth;
+        int32 Y = i / GeologyGridWidth;
+        FVector WorldPos = TargetTerrain->TerrainToWorldPosition(X, Y);
+        
+        float TerrainHeight = Cell.LastTerrainHeight;
+        float WaterTableElevation = Cell.GetWaterTableElevation(TerrainHeight);
+        float CurrentWaterDepth = WaterSystem->GetWaterDepthAtPosition(WorldPos);
+        float SurfaceWaterElevation = TerrainHeight + CurrentWaterDepth;
+        
+        // Case 1: Terrain is below water table (groundwater exposed)
+        if (TerrainHeight < WaterTableElevation)
+        {
+            float TargetWaterDepth = WaterTableElevation - TerrainHeight;
+            
+            // Check for artesian conditions
+            if (bEnableArtesianConditions && Cell.HydraulicHead > WaterTableElevation)
+            {
+                TargetWaterDepth = Cell.HydraulicHead - TerrainHeight;
+            }
+            
+            float DepthDeficit = TargetWaterDepth - CurrentWaterDepth;
+            
+            if (DepthDeficit > 0.001f)
+            {
+                // Fill rate based on permeability and deficit
+                float FillRate = Cell.Permeability * WaterTableFillMultiplier;
+                float WaterToAdd = DepthDeficit * FillRate * DeltaTime;
+                
+                // Clamp to prevent overshooting
+                WaterToAdd = FMath::Min(WaterToAdd, DepthDeficit);
+                
+                // Add water through master controller
+                MasterController->TransferGroundwaterToSurface(WorldPos, WaterToAdd);
+                
+                // Lower water table slightly as water emerges
+                float VolumeExtracted = WaterToAdd * MasterController->GetTerrainScale() *
+                                       MasterController->GetTerrainScale();
+                float WaterTableDrop = VolumeExtracted / (Cell.StorageCoefficient *
+                                      GeologyGridWidth * GeologyGridHeight);
+                Cell.WaterTableDepth += WaterTableDrop;
+                Cell.HydraulicHead -= WaterTableDrop;
+                
+                UE_LOG(LogTemp, VeryVerbose, TEXT("Filling water table hole: Added %.3fm water at %s"),
+                    WaterToAdd, *WorldPos.ToString());
+            }
+        }
+        // Case 2: Surface water above water table (infiltration)
+        else if (CurrentWaterDepth > 0.01f && SurfaceWaterElevation > WaterTableElevation)
+        {
+            float InfiltrationRate = GetInfiltrationRate(Cell.SurfaceRock);
+            float MaxInfiltration = CurrentWaterDepth * InfiltrationRate * DeltaTime;
+            
+            // Remove from surface
+            WaterSystem->RemoveWater(WorldPos, MaxInfiltration);
+            
+            // Raise water table
+            float InfiltratedVolume = MaxInfiltration * MasterController->GetTerrainScale() *
+                                     MasterController->GetTerrainScale();
+            float WaterTableRise = InfiltratedVolume / (Cell.StorageCoefficient *
+                                  GeologyGridWidth * GeologyGridHeight);
+            Cell.WaterTableDepth = FMath::Max(0.0f, Cell.WaterTableDepth - WaterTableRise);
+            Cell.HydraulicHead += WaterTableRise;
+        }
+    }
+}
+
+void AGeologyController::UpdateLateralGroundwaterFlow(float DeltaTime)
+{
+    // Copy current hydraulic heads for calculation
+    TArray<float> NewHydraulicHeads;
+    NewHydraulicHeads.SetNum(GeologyGrid.Num());
+    
+    for (int32 i = 0; i < GeologyGrid.Num(); i++)
+    {
+        NewHydraulicHeads[i] = GeologyGrid[i].HydraulicHead;
+    }
+    
+    // Calculate flow between cells using Darcy's law
+    for (int32 Y = 0; Y < GeologyGridHeight; Y++)
+    {
+        for (int32 X = 0; X < GeologyGridWidth; X++)
+        {
+            int32 Index = GetGridIndex(X, Y);
+            const FSimplifiedGeology& Cell = GeologyGrid[Index];
+            
+            float TotalFlow = 0.0f;
+            
+            // Check all 4 neighbors
+            TArray<FIntPoint> Neighbors = {
+                FIntPoint(X + 1, Y),
+                FIntPoint(X - 1, Y),
+                FIntPoint(X, Y + 1),
+                FIntPoint(X, Y - 1)
+            };
+            
+            for (const FIntPoint& Neighbor : Neighbors)
+            {
+                if (IsValidGridCoordinate(Neighbor.X, Neighbor.Y))
+                {
+                    int32 NeighborIndex = GetGridIndex(Neighbor.X, Neighbor.Y);
+                    const FSimplifiedGeology& NeighborCell = GeologyGrid[NeighborIndex];
+                    
+                    // Hydraulic gradient
+                    float HeadDifference = Cell.HydraulicHead - NeighborCell.HydraulicHead;
+                    float Distance = MasterController->GetTerrainScale(); // Cell spacing
+                    float Gradient = HeadDifference / Distance;
+                    
+                    // Average transmissivity (harmonic mean for accuracy)
+                    float AvgTransmissivity = 2.0f * Cell.Transmissivity * NeighborCell.Transmissivity /
+                                            (Cell.Transmissivity + NeighborCell.Transmissivity);
+                    
+                    // Flow rate (m³/s per meter width)
+                    float FlowRate = AvgTransmissivity * Gradient * Distance;
+                    TotalFlow += FlowRate * DeltaTime;
+                }
+            }
+            
+            // Update hydraulic head based on net flow
+            float CellArea = MasterController->GetTerrainScale() * MasterController->GetTerrainScale();
+            float HeadChange = TotalFlow / (CellArea * Cell.StorageCoefficient);
+            NewHydraulicHeads[Index] -= HeadChange;
+        }
+    }
+    
+    // Apply new hydraulic heads and update water table depths
+    for (int32 i = 0; i < GeologyGrid.Num(); i++)
+    {
+        FSimplifiedGeology& Cell = GeologyGrid[i];
+        Cell.HydraulicHead = NewHydraulicHeads[i];
+        
+        // Update water table depth to match new hydraulic head
+        float TerrainHeight = Cell.LastTerrainHeight;
+        Cell.WaterTableDepth = TerrainHeight - Cell.HydraulicHead;
+    }
+}
+
+float AGeologyController::GetHydraulicHeadAtLocation(FVector Location) const
+{
+    FVector2D Coords = WorldToGridCoordinates(Location);
+    int32 X = FMath::FloorToInt(Coords.X);
+    int32 Y = FMath::FloorToInt(Coords.Y);
+    
+    if (IsValidGridCoordinate(X, Y))
+    {
+        int32 Index = GetGridIndex(X, Y);
+        return GeologyGrid[Index].HydraulicHead;
+    }
+    
+    return 0.0f;
 }

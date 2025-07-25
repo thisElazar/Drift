@@ -88,27 +88,27 @@ namespace TerrAIConstants
     static constexpr float VOLUME_UPDATE_DISTANCE = 2000.0f;        // Volumetric water updates
     
     // Chunk system
-    static constexpr int32 MAX_CHUNK_UPDATES_PER_FRAME = 2;         // Standard chunk updates
-    static constexpr int32 MAX_WATER_UPDATES_PER_FRAME = 16;        // Water-only updates
-    static constexpr int32 EMERGENCY_CHUNK_UPDATES = 12;            // High pressure mode
+    static constexpr int32 MAX_CHUNK_UPDATES_PER_FRAME = 5;         // Standard chunk updates
+    static constexpr int32 MAX_WATER_UPDATES_PER_FRAME = 25;        // Water-only updates
+    static constexpr int32 EMERGENCY_CHUNK_UPDATES = 50;            // High pressure mode
     static constexpr int32 CHUNK_OVERLAP = 1;                       // Vertex overlap for seamless chunks
     
     // Physics and simulation
     static constexpr float MIN_WATER_DEPTH = 0.01f;                 // Minimum water depth
     static constexpr float MIN_EROSION_VELOCITY = 15.0f;            // Minimum velocity for erosion
     static constexpr float MIN_FLOW_SPEED_FOR_FX = 5.0f;           // Minimum flow for Niagara FX
-    static constexpr float WATER_DEPTH_SCALE = 25.5f;              // Water depth scaling factor
+    static constexpr float WATER_DEPTH_SCALE = 1.0f;              // Water depth scaling factor CHANGED FROM 25.5
     
     // Camera and input
     static constexpr float FIRST_PERSON_HEIGHT = 152.4f;           // 5 feet in cm
-    static constexpr float MIN_CAMERA_HEIGHT = 200.0f;             // Minimum camera height
-    static constexpr float MAX_CAMERA_HEIGHT = 10000.0f;           // Maximum camera height
+    static constexpr float MIN_CAMERA_HEIGHT = -100000.0f;             // Minimum camera height
+    static constexpr float MAX_CAMERA_HEIGHT = 100000.0f;           // Maximum camera height
     static constexpr float CAMERA_TRANSITION_SPEED = 3.0f;         // Camera transition speed
     
     // Atmospheric system
     static constexpr int32 ATMOSPHERIC_GRID_SIZE = 64;             // 64x64x8 atmospheric grid
     static constexpr int32 ATMOSPHERIC_LAYERS = 8;                 // Vertical atmospheric layers
     static constexpr float BASE_FOG_DENSITY = 0.02f;              // Base atmospheric fog
-    static constexpr float CLOUD_ALTITUDE = 2000.0f;              // Default cloud altitude
+    static constexpr float CLOUD_ALTITUDE = 3500.0f;              // Default cloud altitude
 }
 

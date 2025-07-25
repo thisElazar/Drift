@@ -1186,26 +1186,30 @@ void UAtmosphericSystem::ProcessEvapotranspiration(float DeltaTime)
  
 void UAtmosphericSystem::ProcessPrecipitation(float DeltaTime)
 {
-    if (!WaterSystem) return;
-    
-    // Simple: rain becomes surface water
+    AMasterWorldController* Master = TerrainSystem->CachedMasterController;
+    if (!Master) return;
+
     for (int32 i = 0; i < AtmosphericGrid.Num(); i++)
     {
         const FSimplifiedAtmosphericCell& Cell = AtmosphericGrid[i];
         
-        if (Cell.PrecipitationRate > 0.01f) // Raining?
+        if (Cell.PrecipitationRate > 0.01f)
         {
-            // Where does it fall?
             int32 X = i % GridWidth;
             int32 Y = i / GridWidth;
-            FVector WorldPos = GridToWorldCoordinates(X, Y);
+            FVector2D AtmosGridPos(X, Y);
+            FVector2D WaterGridPos;
             
-            // How much? (mm/hr → simulation units)
-            float WaterPerSecond = Cell.PrecipitationRate * 2.78e-7f / AMasterWorldController::WATER_DEPTH_SCALE;
+            // Route through master controller
+            float ActualWaterAdded = Master->TransferPrecipitationToSurface(
+                Cell.PrecipitationRate,
+                DeltaTime,
+                AtmosGridPos,
+                WaterGridPos
+            );
             
-            // Add to surface
-            WaterSystem->AddWater(WorldPos, WaterPerSecond * DeltaTime);
-            UE_LOG(LogTemp, Error, TEXT("ProcessPrecipitation Added Water"));
+            // Reduce atmospheric moisture by amount transferred
+            AtmosphericGrid[i].MoistureMass -= ActualWaterAdded;
         }
     }
 }

@@ -194,7 +194,7 @@ void UGamePreviewManager::AddWaterFeatures()
             float MaxOffset = FMath::Min(PreviewTerrain->TerrainWidth, PreviewTerrain->TerrainHeight) * PreviewTerrain->TerrainScale * 0.3f;
             
             // Add central water feature
-            PreviewTerrain->WaterSystem->AddWater(TerrainCenter, 800.0f);
+            PreviewTerrain->WaterSystem->AddWater(TerrainCenter, 8000000.0f);
             
             // Add smaller water features with bounds checking
             for (int32 i = 0; i < 6; i++)
@@ -203,7 +203,7 @@ void UGamePreviewManager::AddWaterFeatures()
                     FMath::RandRange(-MaxOffset, MaxOffset),
                     FMath::RandRange(-MaxOffset, MaxOffset),
                     0.0f);
-                PreviewTerrain->WaterSystem->AddWater(StreamStart, 300.0f);
+                PreviewTerrain->WaterSystem->AddWater(StreamStart, 300000.0f);
             }
             
             UE_LOG(LogTemp, Warning, TEXT("GamePreviewManager: Water features added"));

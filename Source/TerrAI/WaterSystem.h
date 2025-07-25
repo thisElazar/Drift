@@ -59,6 +59,98 @@ struct FWaterMeshRegion
     {}
 };
 
+USTRUCT(BlueprintType)
+struct FWaterRipple
+{
+    GENERATED_BODY()
+    
+    FVector2D Origin;
+    float InitialAmplitude;
+    float WaveSpeed;
+    float Wavelength;
+    float StartTime;
+    float Damping;
+    float MaxRadius;
+    
+    FWaterRipple()
+    {
+        Origin = FVector2D::ZeroVector;
+        InitialAmplitude = 1.0f;
+        WaveSpeed = 100.0f;
+        Wavelength = 50.0f;
+        StartTime = 0.0f;
+        Damping = 0.95f;
+        MaxRadius = 500.0f;
+    }
+};
+
+struct FWaveTuningParams
+{
+    // Classification
+    float RapidsFlowThreshold = 20.0f;
+    float RapidsGradientThreshold = 45.0f;
+    float RiverFlowThreshold = 5.0f;
+    float PuddleDepthThreshold = 0.1f;
+    float PondDepthThreshold = 1.0f;
+    
+    // River
+    float RiverWaveAmplitude = 0.02f;
+    float RiverWavelengthMultiplier = 4.0f;
+    float RiverMaxAmplitude = 0.5f;
+    float RiverFroudeLimit = 1.5f;
+    float RiverAngleSpread = 0.2f;
+    float RiverAngleDamping = 0.3f;
+    float RiverFlowModulationMin = 0.7f;
+    float RiverFlowModulationMax = 0.3f;
+    float RiverTurbulenceScale = 0.01f;
+    float RiverTurbulenceSpeed = 3.0f;
+    float RiverForeEdgeAmplitude = 0.025f;
+    float RiverForeEdgeSpeed = 0.4f;
+    float RiverForeEdgeWavelength = 3.0f;
+    float RiverForeEdgeHarmonic = 0.4f;
+    
+    // Rapids
+    float RapidsTurbulenceScale = 0.05f;
+    float RapidsFrequency = 0.2f;
+    float RapidsTimeScale = 6.0f;
+    float RapidsGradientDivisor = 30.0f;
+    float RapidsMaxScale = 1.5f;
+    float RapidsJumpScale = 0.04f;
+    float RapidsJumpTimeScale = 3.0f;
+    
+    // Puddle
+    float PuddleAmplitude = 0.002f;
+    float PuddleWavelength = 0.017f;
+    float PuddleTimeScale = 0.23f;
+    
+    // Pond
+    float PondAmplitude = 0.01f;
+    float PondFrequency = 0.3f;
+    float PondTimeScale = 2.0f;
+    float PondWindThreshold = 1.0f;
+    float PondWindScale = 0.01f;
+    float PondWindFrequency = 30.0f;
+    
+    // Lake
+    float LakeDepthLimit = 0.5f;
+    float LakeFetchCoefficient = 0.0016f;
+    float LakeWavelengthBase = 20.0f;
+    float LakeWavelengthScale = 1.618f;
+    float LakeAmplitudeDivisor = 4.0f;
+    
+    // Collision
+    float CollisionFlowThreshold = 3.0f;
+    float CollisionSampleDistance = 150.0f;
+    float CollisionThreshold = -0.3f;
+    float CollisionWaveScale = 0.1f;
+    float CollisionTimeScale = 12.0f;
+    
+    // Global
+    float GlobalDepthClampMin = -0.3f;
+    float GlobalDepthClampMax = 0.3f;
+};
+
+
 /**
  * Consolidated water material properties for volumetric rendering
  */
@@ -195,6 +287,8 @@ struct FWaterSurfaceChunk
     // PHASE 1-2: Visual effects driven by simulation state
     bool bHasCaustics = false;                      // Based on depth and flow patterns
     bool bHasFoam = false;                          // Based on FoamMap values
+    
+    
     
     FWaterSurfaceChunk()
     {
@@ -702,7 +796,24 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Water Shader")
     void UpdateWaterDepthTexture();
     
+    //ripples
+    UPROPERTY()
+    TArray<FWaterRipple> ActiveRipples;
 
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Physics|Ripples")
+    int32 MaxActiveRipples = 32;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Physics|Ripples")
+    float RippleLifetime = 10.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Physics|Ripples")
+    float RippleInterferenceStrength = 1.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Physics|Ripples")
+    float RippleHeightScale = 0.1f;
+    
+    UFUNCTION(BlueprintCallable, Category = "Water Physics")
+    void AddSplash(FVector WorldPosition, float Intensity = 1.0f, float Size = 50.0f);
     
     // UE5.4 Enhanced Input System Integration
     void HandleEnhancedInput(const struct FInputActionValue& ActionValue, FVector CursorWorldPosition);
@@ -982,9 +1093,62 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Physics|8-Directional Flow",
         meta = (ClampMin = "0.0", ClampMax = "1.0"))
     float WaterViscosity = 0.01f;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Physics|Texture Filtering")
+    bool bPreserveWaterEdges = true;
 
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Physics|Texture Filtering")
+    bool bUseGammaCorrection = false;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Physics|Texture Filtering",
+        meta = (ClampMin = "0.5", ClampMax = "2.0"))
+    float WaterDepthGamma = 1.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Physics|Smoothing")
+       bool bEnableSimulationSmoothing = true;
+
+       UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Physics|Smoothing",
+           meta = (ClampMin = "0.0", ClampMax = "1.0"))
+       float SimulationSmoothingStrength = 0.3f;
+
+       UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Physics|Smoothing")
+       bool bUseBicubicInterpolation = true;
+    
+    void SetWaveTuningParameters(float RiverAmp, float ForeEdgeAmp, float ForeEdgeSpeed,
+                                     float ForeEdgeWave, float RapidsTurb, float RapidsFreq,
+                                     float RapidsJump, float CollisionScale, float CollisionThresh)
+        {
+            WaveTuning.RiverWaveAmplitude = RiverAmp;
+            WaveTuning.RiverForeEdgeAmplitude = ForeEdgeAmp;
+            WaveTuning.RiverForeEdgeSpeed = ForeEdgeSpeed;
+            WaveTuning.RiverForeEdgeWavelength = ForeEdgeWave;
+            WaveTuning.RapidsTurbulenceScale = RapidsTurb;
+            WaveTuning.RapidsFrequency = RapidsFreq;
+            WaveTuning.RapidsJumpScale = RapidsJump;
+            WaveTuning.CollisionWaveScale = CollisionScale;
+            WaveTuning.CollisionThreshold = CollisionThresh;
+        }
 
 private:
+    
+    void ApplyEdgePreservingFilter(TArray<float>& Buffer, int32 Width, int32 Height);
+      void ApplyTemporalSmoothing(float DeltaTime);
+    // Temporal smoothing buffer
+    TArray<float> WaterDepthHistory;
+    
+    // Additional smoothing functions
+        void SmoothWaterDepthMap();
+        void ApplySpatialSmoothing();
+        
+        // Smoothing control
+        float LastSmoothingTime = 0.0f;
+        const float SmoothingInterval = 0.1f; // Apply smoothing every 0.1 seconds
+    
+    float AccumulatedScaledTime = 0.0f;
+      
+      // Get properly scaled time for wave animations
+      float GetScaledTime() const;
+    
     
     // ===== INTERNAL STATE =====
     
@@ -1037,6 +1201,10 @@ private:
     float CalculateNaturalWaveOffset(FVector2D WorldPos, float Time, float WaterDepth,
                                     FVector2D FlowVector, float WindStrength, FVector2D WindDirection,
                                     float TerrainGradient, FWaterSurfaceChunk& Chunk);
+    
+    FWaveTuningParams WaveTuning;
+    
+    
     
 };
 

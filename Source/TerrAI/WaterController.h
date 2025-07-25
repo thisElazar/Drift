@@ -262,9 +262,148 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Water System")
     ADynamicTerrain* GetTargetTerrain() const { return TargetTerrain; }
     
-    // ===== COORDINATE TRANSFORMATION - REMOVED =====
-    // GetTransformedWaterPosition() removed - caused scaling conflicts
-    // Water system now uses direct world coordinates for proper scaling
+    // Waving Tuning
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Classification")
+    float RapidsFlowThreshold = 20.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Classification")
+    float RapidsGradientThreshold = 45.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Classification")
+    float RiverFlowThreshold = 5.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Classification")
+    float PuddleDepthThreshold = 0.1f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Classification")
+    float PondDepthThreshold = 1.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|River")
+    float RiverWaveAmplitude = 0.02f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|River")
+    float RiverWavelengthMultiplier = 4.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|River")
+    float RiverMaxAmplitude = 0.5f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|River")
+    float RiverFroudeLimit = 1.5f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|River")
+    float RiverAngleSpread = 0.2f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|River")
+    float RiverAngleDamping = 0.3f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|River")
+    float RiverFlowModulationMin = 0.7f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|River")
+    float RiverFlowModulationMax = 0.3f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|River")
+    float RiverTurbulenceScale = 0.01f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|River")
+    float RiverTurbulenceSpeed = 3.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|River")
+    float RiverForeEdgeAmplitude = 0.025f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|River")
+    float RiverForeEdgeSpeed = 0.4f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|River")
+    float RiverForeEdgeWavelength = 3.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|River")
+    float RiverForeEdgeHarmonic = 0.4f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Rapids")
+    float RapidsTurbulenceScale = 0.05f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Rapids")
+    float RapidsFrequency = 0.2f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Rapids")
+    float RapidsTimeScale = 6.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Rapids")
+    float RapidsGradientDivisor = 30.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Rapids")
+    float RapidsMaxScale = 1.5f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Rapids")
+    float RapidsJumpScale = 0.04f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Rapids")
+    float RapidsJumpTimeScale = 3.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Puddle")
+    float PuddleAmplitude = 0.002f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Puddle")
+    float PuddleWavelength = 0.017f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Puddle")
+    float PuddleTimeScale = 0.23f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Pond")
+    float PondAmplitude = 0.01f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Pond")
+    float PondFrequency = 0.3f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Pond")
+    float PondTimeScale = 2.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Pond")
+    float PondWindThreshold = 1.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Pond")
+    float PondWindScale = 0.01f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Pond")
+    float PondWindFrequency = 30.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Lake")
+    float LakeDepthLimit = 0.5f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Lake")
+    float LakeFetchCoefficient = 0.0016f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Lake")
+    float LakeWavelengthBase = 20.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Lake")
+    float LakeWavelengthScale = 1.618f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Lake")
+    float LakeAmplitudeDivisor = 4.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Collision")
+    float CollisionFlowThreshold = 3.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Collision")
+    float CollisionSampleDistance = 150.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Collision")
+    float CollisionThreshold = -0.3f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Collision")
+    float CollisionWaveScale = 0.1f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Collision")
+    float CollisionTimeScale = 12.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Global")
+    float GlobalDepthClampMin = -0.3f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Global")
+    float GlobalDepthClampMax = 0.3f;
 
 protected:
     virtual void BeginPlay() override;

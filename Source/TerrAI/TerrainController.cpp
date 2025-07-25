@@ -750,12 +750,31 @@ void ATerrainController::StopLowerTerrain(const FInputActionValue& Value)
 
 void ATerrainController::StartTerrainEditing(bool bRaise)
 {
+    // CRITICAL: Ensure cursor continuity BEFORE changing editing state
+    if (!bIsEditingTerrain)
+    {
+        // Pre-populate the unified cursor to current position to prevent jump
+        FVector CurrentRawPosition;
+        if (PerformCursorTrace(CurrentRawPosition))
+        {
+            // If we have a valid smoothed position, use it as the baseline
+            if (bUnifiedCursorValid && UnifiedCursorPosition != FVector::ZeroVector)
+            {
+                // The cursor will smoothly transition from this position
+                UE_LOG(LogTemp, VeryVerbose, TEXT("[EDIT START] Maintaining cursor continuity"));
+            }
+            else
+            {
+                // Initialize with current raw position
+                UnifiedCursorPosition = CurrentRawPosition;
+                bUnifiedCursorValid = true;
+            }
+        }
+    }
+    
     bIsEditingTerrain = true;
     bIsRaisingTerrain = bRaise;
     bIsLoweringTerrain = !bRaise;
-    
-    // FIXED: Don't reset old cursor system - unified cursor handles this
-    // bCursorInitialized = false;  // Removed - causes snap-back
     
     UE_LOG(LogTemp, Warning, TEXT("Started %s terrain"), bRaise ? TEXT("raising") : TEXT("lowering"));
 }
@@ -827,15 +846,35 @@ void ATerrainController::StopRemoveWater(const FInputActionValue& Value)
 
 void ATerrainController::StartWaterEditing(bool bAdd)
 {
+    // CRITICAL: Ensure cursor continuity BEFORE changing editing state
+    if (!bIsEditingWater)
+    {
+        // Pre-populate the unified cursor to current position to prevent jump
+        FVector CurrentRawPosition;
+        if (PerformCursorTrace(CurrentRawPosition))
+        {
+            // If we have a valid smoothed position, use it as the baseline
+            if (bUnifiedCursorValid && UnifiedCursorPosition != FVector::ZeroVector)
+            {
+                // The cursor will smoothly transition from this position
+                UE_LOG(LogTemp, VeryVerbose, TEXT("[WATER EDIT START] Maintaining cursor continuity"));
+            }
+            else
+            {
+                // Initialize with current raw position
+                UnifiedCursorPosition = CurrentRawPosition;
+                bUnifiedCursorValid = true;
+            }
+        }
+    }
+    
     bIsEditingWater = true;
     bIsAddingWater = bAdd;
     bIsRemovingWater = !bAdd;
     
-    // FIXED: Don't reset old cursor system - unified cursor handles this
-    // bCursorInitialized = false;  // Removed - causes snap-back
-    
     UE_LOG(LogTemp, Warning, TEXT("Started %s water"), bAdd ? TEXT("adding") : TEXT("removing"));
 }
+
 
 void ATerrainController::StopWaterEditing()
 {
@@ -1208,90 +1247,136 @@ bool ATerrainController::PerformCursorTrace(FVector& OutHitLocation) const
         return false;
     }
     
-    // NEW APPROACH: Stable 2D projection instead of unstable 3D ray tracing
-    FVector MouseWorldLocation, MouseWorldDirection;
-    if (PC->DeprojectMousePositionToWorld(MouseWorldLocation, MouseWorldDirection))
+    // CAMERA-SPECIFIC CURSOR LOGIC
+    if (CurrentCameraMode == ECameraMode::FirstPerson)
     {
-       // UE_LOG(LogTemp, Warning, TEXT("[CURSOR DEBUG] Using stable 2D projection method"));
-       // UE_LOG(LogTemp, Warning, TEXT("[CURSOR DEBUG] MouseWorldLocation: %s, Direction: %s"),
-       //        *MouseWorldLocation.ToString(), *MouseWorldDirection.ToString());
-        
-        // STABLE METHOD: Project mouse ray onto terrain plane at actual terrain location
-        FVector PlaneNormal = FVector::UpVector;  // (0,0,1)
-        FVector PlanePoint = TargetTerrain ? TargetTerrain->GetActorLocation() : FVector::ZeroVector;
-        
-        float Denominator = FVector::DotProduct(MouseWorldDirection, PlaneNormal);
-        //UE_LOG(LogTemp, Warning, TEXT("[CURSOR DEBUG] Ray-Plane Denominator: %.6f"), Denominator);
-        
-        if (FMath::Abs(Denominator) > 0.0001f) // Ray not parallel to plane
+        // FIRST PERSON: Raycast from mouse position through the first person camera view
+        if (!FirstPersonCamera)
         {
-            // Calculate intersection with Z=0 plane
-            float T = FVector::DotProduct(PlanePoint - MouseWorldLocation, PlaneNormal) / Denominator;
-            FVector PlaneIntersection = MouseWorldLocation + (MouseWorldDirection * T);
+            return false;
+        }
+        
+        // Get mouse screen position and deproject through first person camera
+        FVector MouseWorldLocation, MouseWorldDirection;
+        if (PC->DeprojectMousePositionToWorld(MouseWorldLocation, MouseWorldDirection))
+        {
+            // Raycast from mouse ray into the world (no distance limit)
+            FHitResult HitResult;
+            FVector TraceStart = MouseWorldLocation;
+            FVector TraceEnd = MouseWorldLocation + (MouseWorldDirection * 100000.0f); // Very long range
             
-            //UE_LOG(LogTemp, Warning, TEXT("[CURSOR DEBUG] Plane intersection (X,Y): %s"), *PlaneIntersection.ToString());
+            // Set up collision parameters for terrain and objects
+            FCollisionQueryParams QueryParams;
+            QueryParams.bTraceComplex = true;
+            QueryParams.AddIgnoredActor(this); // Ignore the controller itself
             
-            // BOUNDS CHECK: Calculate bounds from terrain dimensions instead of GetActorBounds
-            if (TargetTerrain)
+            // Perform line trace
+            bool bHit = GetWorld()->LineTraceSingleByChannel(
+                HitResult,
+                TraceStart,
+                TraceEnd,
+                ECC_WorldStatic, // Hit terrain and static objects
+                QueryParams
+            );
+            
+            if (bHit)
             {
-                FVector TerrainMin, TerrainMax;
-                
-                // ELEGANT FIX: Calculate bounds from terrain properties
-                // This ensures cursor is always bounded to the actual terrain size
-                FVector TerrainLocation = TargetTerrain->GetActorLocation();
-                float WorldSizeX = TargetTerrain->TerrainWidth * TargetTerrain->TerrainScale;
-                float WorldSizeY = TargetTerrain->TerrainHeight * TargetTerrain->TerrainScale;
-                
-                // Set bounds based on actual terrain dimensions
-                TerrainMin = TerrainLocation;
-                TerrainMax = TerrainLocation + FVector(WorldSizeX, WorldSizeY, TargetTerrain->MaxTerrainHeight);
-                
-                //UE_LOG(LogTemp, Warning, TEXT("[CURSOR DEBUG] Calculated terrain bounds - Min: %s, Max: %s"),
-                //       *TerrainMin.ToString(), *TerrainMax.ToString());
-                
-                // Alternative: Try GetActorBounds first, but validate the result
-                FVector ActorOrigin;
-                FVector ActorBoxExtent;
-                TargetTerrain->GetActorBounds(false, ActorOrigin, ActorBoxExtent);
-                
-                // Only use actor bounds if they seem reasonable
-                if (ActorBoxExtent.X > 0 && ActorBoxExtent.Y > 0 &&
-                    ActorBoxExtent.X < WorldSizeX * 2.0f && ActorBoxExtent.Y < WorldSizeY * 2.0f)
-                {
-                    // Actor bounds are valid, use them
-                    TerrainMin = ActorOrigin - ActorBoxExtent;
-                    TerrainMax = ActorOrigin + ActorBoxExtent;
-                  //  UE_LOG(LogTemp, Warning, TEXT("[CURSOR DEBUG] Using actor bounds"));
-                }
-                else
-                {
-                    UE_LOG(LogTemp, Warning, TEXT("[CURSOR DEBUG] Actor bounds invalid, using calculated bounds"));
-                }
-                
-                // Clamp to terrain bounds
-                float ClampedX = FMath::Clamp(PlaneIntersection.X, TerrainMin.X, TerrainMax.X);
-                float ClampedY = FMath::Clamp(PlaneIntersection.Y, TerrainMin.Y, TerrainMax.Y);
-                
-                // Get terrain height at the stable X,Y position
-                float TerrainHeight = TargetTerrain->GetHeightAtPosition(FVector(ClampedX, ClampedY, 0.0f));
-                
-                // Return stable position: 2D projection + terrain height
-                OutHitLocation = FVector(ClampedX, ClampedY, TerrainHeight);
-                
-              //  UE_LOG(LogTemp, Warning, TEXT("[CURSOR DEBUG] STABLE result: %s (terrain height: %.1f)"),
-              //         *OutHitLocation.ToString(), TerrainHeight);
-                
+                OutHitLocation = HitResult.Location;
+                UE_LOG(LogTemp, VeryVerbose, TEXT("[FIRST PERSON CURSOR] Mouse raycast hit: %s"),
+                       *OutHitLocation.ToString());
                 return true;
+            }
+            else
+            {
+                // No hit - project to terrain plane at intersection point
+                FVector PlaneNormal = FVector::UpVector;
+                FVector PlanePoint = TargetTerrain ? TargetTerrain->GetActorLocation() : FVector::ZeroVector;
+                
+                float Denominator = FVector::DotProduct(MouseWorldDirection, PlaneNormal);
+                if (FMath::Abs(Denominator) > 0.0001f)
+                {
+                    float T = FVector::DotProduct(PlanePoint - MouseWorldLocation, PlaneNormal) / Denominator;
+                    if (T > 0) // Forward ray
+                    {
+                        FVector PlaneIntersection = MouseWorldLocation + (MouseWorldDirection * T);
+                        
+                        // Get terrain height at intersection point
+                        if (TargetTerrain)
+                        {
+                            float TerrainHeight = TargetTerrain->GetHeightAtPosition(PlaneIntersection);
+                            OutHitLocation = FVector(PlaneIntersection.X, PlaneIntersection.Y, TerrainHeight);
+                            
+                            UE_LOG(LogTemp, VeryVerbose, TEXT("[FIRST PERSON CURSOR] Terrain plane intersection: %s"),
+                                   *OutHitLocation.ToString());
+                            return true;
+                        }
+                    }
+                }
+                
+                // Fallback: no valid position
+                return false;
             }
         }
         else
         {
-            UE_LOG(LogTemp, Warning, TEXT("[CURSOR DEBUG] Ray parallel to plane - camera looking straight up/down"));
+            // Fallback: couldn't deproject mouse position
+            return false;
         }
     }
-    
-    UE_LOG(LogTemp, Error, TEXT("[CURSOR DEBUG] *** STABLE CURSOR PROJECTION FAILED ***"));
-    return false;
+    else
+    {
+        // OVERHEAD: Use existing stable 2D projection method
+        FVector MouseWorldLocation, MouseWorldDirection;
+        if (PC->DeprojectMousePositionToWorld(MouseWorldLocation, MouseWorldDirection))
+        {
+            // STABLE METHOD: Project mouse ray onto terrain plane
+            FVector PlaneNormal = FVector::UpVector;  // (0,0,1)
+            FVector PlanePoint = TargetTerrain ?
+                TargetTerrain->GetActorLocation() : FVector::ZeroVector;
+            
+            float Denominator = FVector::DotProduct(MouseWorldDirection, PlaneNormal);
+            
+            if (FMath::Abs(Denominator) > 0.0001f) // Ray not parallel to plane
+            {
+                // Calculate intersection with terrain plane
+                float T = FVector::DotProduct(PlanePoint - MouseWorldLocation, PlaneNormal) / Denominator;
+                FVector PlaneIntersection = MouseWorldLocation + (MouseWorldDirection * T);
+                
+                // BOUNDS CHECK: Calculate bounds from terrain dimensions
+                if (TargetTerrain)
+                {
+                    FVector TerrainMin, TerrainMax;
+                    
+                    // Calculate bounds from terrain properties
+                    FVector TerrainLocation = TargetTerrain->GetActorLocation();
+                    float WorldSizeX = TargetTerrain->TerrainWidth * TargetTerrain->TerrainScale;
+                    float WorldSizeY = TargetTerrain->TerrainHeight * TargetTerrain->TerrainScale;
+                    
+                    // Set bounds based on actual terrain dimensions
+                    TerrainMin = TerrainLocation;
+                    TerrainMax = TerrainLocation + FVector(WorldSizeX, WorldSizeY, TargetTerrain->MaxTerrainHeight);
+                    
+                    // Clamp to terrain bounds
+                    float ClampedX = FMath::Clamp(PlaneIntersection.X, TerrainMin.X, TerrainMax.X);
+                    float ClampedY = FMath::Clamp(PlaneIntersection.Y, TerrainMin.Y, TerrainMax.Y);
+                    
+                    // Get actual terrain height at clamped position
+                    float TerrainHeight = TargetTerrain->GetHeightAtPosition(FVector(ClampedX, ClampedY, 0.0f));
+                    
+                    // Return stable position: 2D projection + terrain height
+                    OutHitLocation = FVector(ClampedX, ClampedY, TerrainHeight);
+                    
+                    UE_LOG(LogTemp, VeryVerbose, TEXT("[OVERHEAD CURSOR] Stable result: %s"),
+                           *OutHitLocation.ToString());
+                    
+                    return true;
+                }
+            }
+        }
+        
+        // Fallback for overhead mode
+        return false;
+    }
 }
 
 void ATerrainController::ApplyMaterialToAllChunks(UMaterialInterface* Material)
@@ -2299,12 +2384,32 @@ void ATerrainController::ResetInputs()
 
 void ATerrainController::UpdateAuthorityCache(float DeltaTime)
 {
-    AuthorityCacheTimer += DeltaTime;
+    CursorUpdateTimer += DeltaTime;
     
-    if (AuthorityCacheTimer >= AuthorityCacheRate)
+    // Single cursor trace per frame
+    FVector CurrentRawCursorPosition;
+    bool bValidCursor = PerformCursorTrace(CurrentRawCursorPosition);
+    
+    if (bValidCursor)
     {
-        bMasterControllerValid = (MasterController != nullptr && IsValid(MasterController));
-        AuthorityCacheTimer = 0.0f;
+        if (!bUnifiedCursorValid)
+        {
+            // First time initialization
+            UnifiedCursorPosition = CurrentRawCursorPosition;
+            bUnifiedCursorValid = true;
+        }
+        else
+        {
+            // Adjust smoothing speed based on editing state, but always smooth
+            float SmoothingSpeed = (bIsEditingTerrain || bIsEditingWater) ? 35.0f : 15.0f;
+            
+            UnifiedCursorPosition = FMath::VInterpTo(
+                UnifiedCursorPosition,
+                CurrentRawCursorPosition,
+                DeltaTime,
+                SmoothingSpeed
+            );
+        }
     }
 }
 

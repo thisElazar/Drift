@@ -3054,7 +3054,7 @@ float AMasterWorldController::TransferPrecipitationToSurface(
     // Return adjusted water depth
     return WaterDepthToAdd * AreaRatio;
 }
-
+/*
 float AMasterWorldController::TransferEvaporationToAtmosphere(
     float EvaporationDepth,
     FVector2D WaterGridPos,
@@ -3074,7 +3074,7 @@ float AMasterWorldController::TransferEvaporationToAtmosphere(
     // Return adjusted moisture mass
     return MoistureMass * AreaRatio;
 }
-
+*/
 FVector2D AMasterWorldController::ConvertWaterToGeologyGrid(FVector2D WaterPos) const
 {
     float ScaleFactor = WorldScalingConfig.WaterConfig.WaterCellScale /
@@ -3124,5 +3124,90 @@ FVector2D AMasterWorldController::WorldToWaterGrid(FVector WorldPos) const
     );
 }
 
+float AMasterWorldController::TransferEvaporationToAtmosphere(
+    float EvaporationDepth,
+    FVector2D WaterGridPos,
+    FVector2D& OutAtmosphericGridPos) const
+{
+    // Convert grid positions
+    OutAtmosphericGridPos = ConvertWaterToAtmosphericGrid(WaterGridPos);
+    
+    // Calculate water volume
+    float WaterVolume = GetWaterCellVolume(EvaporationDepth);
+    
+    // Convert to moisture mass for atmosphere
+    float MoistureMass = WaterVolume * 1000.0f; // m³ to kg (assuming 1000 kg/m³)
+    
+    // Apply to atmospheric system
+    if (MainTerrain && MainTerrain->AtmosphericSystem)
+    {
+        int32 AtmosX = FMath::FloorToInt(OutAtmosphericGridPos.X);
+        int32 AtmosY = FMath::FloorToInt(OutAtmosphericGridPos.Y);
+        
+        if (AtmosX >= 0 && AtmosX < MainTerrain->AtmosphericSystem->GridWidth &&
+            AtmosY >= 0 && AtmosY < MainTerrain->AtmosphericSystem->GridHeight)
+        {
+            int32 AtmosIndex = AtmosY * MainTerrain->AtmosphericSystem->GridWidth + AtmosX;
+            MainTerrain->AtmosphericSystem->AtmosphericGrid[AtmosIndex].MoistureMass += MoistureMass;
+            
+            // Note: const_cast is needed here due to const function - alternatively make this non-const
+            // Track for water budget
+            const_cast<AMasterWorldController*>(this)->TotalSurfaceWater -= WaterVolume;
+            const_cast<AMasterWorldController*>(this)->TotalAtmosphericWater += WaterVolume;
+            
+            return MoistureMass;
+        }
+    }
+    
+    return 0.0f;
+}
 
+void AMasterWorldController::TransferSurfaceToGroundwater(
+    FVector WorldLocation,
+    float InfiltrationDepth)
+{
+    if (!GeologyController) return;
+    
+    // Convert infiltration depth to volume
+    float WaterVolume = GetWaterCellVolume(InfiltrationDepth);
+    
+    // Apply to geology system
+    GeologyController->ApplyInfiltration(WorldLocation, InfiltrationDepth);
+    
+    // Track for water budget
+    TotalSurfaceWater -= WaterVolume;
+    TotalGroundwater += WaterVolume;
+}
+
+void AMasterWorldController::TransferGroundwaterToSurface(
+    FVector WorldLocation,
+    float DischargeVolume)
+{
+    if (!MainTerrain || !MainTerrain->WaterSystem) return;
+    
+    // Convert volume to water depth
+    float WaterDepth = DischargeVolume / GetWaterCellArea();
+    
+    // Add to surface water
+    MainTerrain->WaterSystem->AddWater(WorldLocation, WaterDepth);
+    
+    // Track for water budget
+    TotalGroundwater -= DischargeVolume;
+    TotalSurfaceWater += DischargeVolume;
+}
+
+float AMasterWorldController::GetWaterCellArea() const
+{
+    float WaterCellSize = 1.0f;
+    if (MainTerrain && MainTerrain->WaterSystem)
+    {
+        float WorldSize = GetTerrainScale() * GetWorldDimensions().X;
+        float GridSize = MainTerrain->WaterSystem->SimulationData.TerrainWidth;
+        if (GridSize > 0)
+        {
+            WaterCellSize = WorldSize / GridSize;
+        }
+    }
+    return WaterCellSize * WaterCellSize;
+}
 // End of file
