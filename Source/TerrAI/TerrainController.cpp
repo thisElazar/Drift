@@ -18,6 +18,7 @@
 #include "EnhancedInputSubsystems.h"
 #include "InputMappingContext.h"
 #include "DynamicTerrain.h"
+#include "TerrAIGameInstance.h"
 #include "EngineUtils.h"
 #include "Engine/StaticMesh.h"
 #include "Materials/Material.h"
@@ -163,22 +164,54 @@ ATerrainController::ATerrainController()
 
 void ATerrainController::ApplyBrush(FVector WorldPosition, const FUniversalBrushSettings& Settings, float DeltaTime)
 {
-    if (!TargetTerrain || !CanReceiveBrush())
+    if (!CanReceiveBrush())
     {
         return;
     }
     
-    // Apply terrain modification using universal brush settings
-    if (bIsEditingTerrain)
+    // Handle terrain modification
+    if (bIsEditingTerrain && TargetTerrain)
     {
-        // Use the settings provided by the MasterController (already scaled)
         float ModificationAmount = Settings.BrushStrength * DeltaTime;
         
-        // Apply modification based on current terrain editing mode
         if (bIsRaisingTerrain || bIsLoweringTerrain)
         {
-            TargetTerrain->ModifyTerrain(WorldPosition, Settings.BrushRadius, 
+            TargetTerrain->ModifyTerrain(WorldPosition, Settings.BrushRadius,
                 ModificationAmount, bIsRaisingTerrain);
+        }
+    }
+    // Handle water modification through brush system
+    else if (bIsEditingWater && TargetTerrain && TargetTerrain->WaterSystem)
+    {
+        float WaterAmount = Settings.BrushStrength * DeltaTime;
+        
+        if (bIsAddingWater)
+        {
+            // Calculate volume for tracking
+            float CellArea = MasterController->GetWaterCellArea();
+            float RadiusInCells = Settings.BrushRadius / MasterController->GetTerrainScale();
+            float NumCells = PI * RadiusInCells * RadiusInCells;
+            float VolumeAdded = WaterAmount * CellArea * NumCells;
+            
+            // Add water
+            TargetTerrain->WaterSystem->AddWater(WorldPosition, WaterAmount);
+            
+            // Track user addition
+            MasterController->TrackUserWaterAddition(VolumeAdded);
+        }
+        else if (bIsRemovingWater)
+        {
+            // Calculate volume for tracking
+            float CellArea = MasterController->GetWaterCellArea();
+            float RadiusInCells = Settings.BrushRadius / MasterController->GetTerrainScale();
+            float NumCells = PI * RadiusInCells * RadiusInCells;
+            float VolumeRemoved = WaterAmount * CellArea * NumCells;
+            
+            // Remove water
+            TargetTerrain->WaterSystem->RemoveWater(WorldPosition, WaterAmount);
+            
+            // Track user removal
+            MasterController->TrackUserWaterRemoval(VolumeRemoved);
         }
     }
 }
@@ -261,6 +294,21 @@ void ATerrainController::InitializeControllerWithAuthority()
     
     // Get WaterController from MasterController
     WaterController = MasterController->WaterController;
+    
+    // Get GeologyController from MasterController
+        if (MasterController)
+        {
+            GeologyController = MasterController->GeologyController;
+            
+            if (GeologyController)
+            {
+                UE_LOG(LogTemp, Warning, TEXT("TerrainController: Got GeologyController from MasterController"));
+            }
+            else
+            {
+                UE_LOG(LogTemp, Error, TEXT("TerrainController: No GeologyController in MasterController!"));
+            }
+        }
     
     // Initialize atmospheric system
     if (TargetTerrain)
@@ -402,6 +450,11 @@ void ATerrainController::Tick(float DeltaTime)
         UpdateWaterModification(DeltaTime);
     }
     
+    if (CurrentEditingMode == EEditingMode::Spring)
+    {
+        UpdateSpringEditing(DeltaTime);
+    }
+    
     // Update atmospheric editing if active
     if (CurrentEditingMode == EEditingMode::Atmosphere)
     {
@@ -483,6 +536,22 @@ void ATerrainController::Tick(float DeltaTime)
                 } else if (bIsEditingWater) {
                     UMaterialInterface* MaterialToUse = bIsAddingWater ? WaterAddMaterial : WaterRemoveMaterial;
                     if (MaterialToUse) {
+                        BrushPreview->SetMaterial(0, MaterialToUse);
+                    }
+                } else if (bIsEditingSpring) {
+                    // Spring mode materials
+                    UMaterialInterface* MaterialToUse = nullptr;
+                    if (bIsAddingSpring && SpringAddMaterial)
+                    {
+                        MaterialToUse = SpringAddMaterial;
+                    }
+                    else if (bIsRemovingSpring && SpringRemoveMaterial)
+                    {
+                        MaterialToUse = SpringRemoveMaterial;
+                    }
+                    
+                    if (MaterialToUse)
+                    {
                         BrushPreview->SetMaterial(0, MaterialToUse);
                     }
                 }
@@ -578,6 +647,18 @@ void ATerrainController::SetupPlayerInputComponent(UInputComponent* PlayerInputC
             EnhancedInputComponent->BindAction(RemoveWaterAction, ETriggerEvent::Completed, this, &ATerrainController::StopRemoveWater);
         }
         
+        // Spring editing bindings
+            if (AddSpringAction)
+            {
+                EnhancedInputComponent->BindAction(AddSpringAction, ETriggerEvent::Started, this, &ATerrainController::StartAddSpring);
+                EnhancedInputComponent->BindAction(AddSpringAction, ETriggerEvent::Completed, this, &ATerrainController::StopAddSpring);
+            }
+            if (RemoveSpringAction)
+            {
+                EnhancedInputComponent->BindAction(RemoveSpringAction, ETriggerEvent::Started, this, &ATerrainController::StartRemoveSpring);
+                EnhancedInputComponent->BindAction(RemoveSpringAction, ETriggerEvent::Completed, this, &ATerrainController::StopRemoveSpring);
+            }
+        
         // Brush controls
         if (IncreaseBrushSizeAction)
         {
@@ -652,6 +733,11 @@ void ATerrainController::SetupPlayerInputComponent(UInputComponent* PlayerInputC
             EnhancedInputComponent->BindAction(CycleBrushModeAction, ETriggerEvent::Started, this, &ATerrainController::HandleBrushCycle);
         }
         
+        // Return to main menu (Escape key)
+        if (ReturnToMainMenuAction)
+        {
+            EnhancedInputComponent->BindAction(ReturnToMainMenuAction, ETriggerEvent::Started, this, &ATerrainController::ReturnToMainMenu);
+        }
     }
 }
 
@@ -887,24 +973,40 @@ void ATerrainController::StopWaterEditing()
 
 void ATerrainController::UpdateWaterModification(float DeltaTime)
 {
-    if (!TargetTerrain) return;
+    if (!TargetTerrain || !MasterController || !TargetTerrain->WaterSystem) return;
     
-    // Use the same cursor position that works for terrain editing
     FVector CursorWorldPos = GetCursorWorldPosition();
     
     if (bIsAddingWater)
     {
-        // CRITICAL: Use direct WaterSystem call, not through WaterController transform
-        if (TargetTerrain->WaterSystem)
+        float AmountToAdd = WaterBrushStrength * WaterAdditionRate * DeltaTime;
+        
+        // Measure exact volume change
+        float VolumeChange = TargetTerrain->WaterSystem->MeasureVolumeChange([&]()
         {
-            TargetTerrain->WaterSystem->AddWater(CursorWorldPos, WaterBrushStrength * WaterAdditionRate * DeltaTime);
+            TargetTerrain->WaterSystem->AddWater(CursorWorldPos, AmountToAdd);
+        });
+        
+        // Track the precise change
+        if (VolumeChange > 0.0f)
+        {
+            MasterController->TrackUserWaterAddition(VolumeChange);
         }
     }
     else if (bIsRemovingWater)
     {
-        if (TargetTerrain->WaterSystem)
+        float AmountToRemove = WaterBrushStrength * DeltaTime;
+        
+        // Measure exact volume change
+        float VolumeChange = TargetTerrain->WaterSystem->MeasureVolumeChange([&]()
         {
-            TargetTerrain->WaterSystem->RemoveWater(CursorWorldPos, WaterBrushStrength * DeltaTime);
+            TargetTerrain->WaterSystem->RemoveWater(CursorWorldPos, AmountToRemove);
+        });
+        
+        // Track the precise change (will be negative)
+        if (VolumeChange < 0.0f)
+        {
+            MasterController->TrackUserWaterRemoval(-VolumeChange);
         }
     }
 }
@@ -1094,8 +1196,13 @@ void ATerrainController::SetVisualMode(ETerrainVisualMode NewMode)
 void ATerrainController::ToggleEditingMode()
 {
     int32 CurrentModeInt = static_cast<int32>(CurrentEditingMode);
-    CurrentModeInt = (CurrentModeInt + 1) % 2; // Cycle through 3 modes ADJUSTED FROM 3 TO 2
+    CurrentModeInt = (CurrentModeInt + 1) % 4; // Cycle through Terrain, Water, Spring, Wind
     CurrentEditingMode = static_cast<EEditingMode>(CurrentModeInt);
+    
+    // Stop any current editing
+    StopTerrainEditing();
+    StopWaterEditing();
+    StopSpringEditing();
     
     switch (CurrentEditingMode)
     {
@@ -1105,16 +1212,15 @@ void ATerrainController::ToggleEditingMode()
         case EEditingMode::Water:
             UE_LOG(LogTemp, Warning, TEXT("Switched to WATER editing mode"));
             break;
-       // case EEditingMode::Atmosphere:
-       //     UE_LOG(LogTemp, Warning, TEXT("Switched to ATMOSPHERE editing mode - Brush: %s"),
-       //            *GetCurrentBrushDisplayName());
-       //     break;
+        case EEditingMode::Spring:
+            UE_LOG(LogTemp, Warning, TEXT("Switched to SPRING editing mode"));
+            UE_LOG(LogTemp, Warning, TEXT("  - Left Click: Add spring"));
+            UE_LOG(LogTemp, Warning, TEXT("  - Right Click: Remove springs"));
+            break;
+        case EEditingMode::Atmosphere:
+            // Currently disabled
+            break;
     }
-    
-    // Stop any current editing
-    StopTerrainEditing();
-    StopWaterEditing();
-    // UpdateBrushPreview(); // REMOVED: Function handled by Universal Brush System
 }
 
 void ATerrainController::HandleRainToggle()
@@ -1152,6 +1258,156 @@ void ATerrainController::ToggleRainInput(const FInputActionValue& Value)
 void ATerrainController::ToggleEditingModeInput(const FInputActionValue& Value)
 {
     ToggleEditingMode();
+}
+
+// Spring editing input handlers
+void ATerrainController::StartAddSpring(const FInputActionValue& Value)
+{
+    if (CurrentEditingMode == EEditingMode::Spring)
+    {
+        bIsAddingSpring = true;
+        bIsEditingSpring = true;
+        
+        // Visual feedback only - actual placement on release
+    }
+}
+
+void ATerrainController::StopAddSpring(const FInputActionValue& Value)
+{
+    if (CurrentEditingMode == EEditingMode::Spring && bIsAddingSpring)
+    {
+        // Place spring at cursor position with flow rate based on brush size
+        FVector CursorPosition = GetCursorWorldPosition();
+        if (CursorPosition != FVector::ZeroVector && GeologyController)
+        {
+            // Calculate flow rate from current brush size
+            float FlowRate = CalculateSpringFlowFromBrushSize();
+            
+            GeologyController->AddUserSpring(CursorPosition, FlowRate);
+            UE_LOG(LogTemp, Warning, TEXT("Placed spring at %s with flow rate %.2f m³/s (brush size: %.0f)"),
+                *CursorPosition.ToString(), FlowRate, MasterController->GetBrushRadius());
+        }
+        
+        bIsAddingSpring = false;
+        bIsEditingSpring = false;
+    }
+}
+
+void ATerrainController::StartRemoveSpring(const FInputActionValue& Value)
+{
+    if (CurrentEditingMode == EEditingMode::Spring)
+    {
+        bIsRemovingSpring = true;
+        bIsEditingSpring = true;
+    }
+}
+
+void ATerrainController::StopRemoveSpring(const FInputActionValue& Value)
+{
+    if (CurrentEditingMode == EEditingMode::Spring && bIsRemovingSpring)
+    {
+        // Remove springs near cursor position using current brush size as radius
+        FVector CursorPosition = GetCursorWorldPosition();
+        if (CursorPosition != FVector::ZeroVector && GeologyController && MasterController)
+        {
+            // Use current brush radius for removal
+            float RemovalRadius = MasterController->GetBrushRadius();
+            
+            GeologyController->RemoveUserSpring(CursorPosition, RemovalRadius);
+            UE_LOG(LogTemp, Warning, TEXT("Removed springs near %s (radius: %.0f)"),
+                *CursorPosition.ToString(), RemovalRadius);
+        }
+        
+        bIsRemovingSpring = false;
+        bIsEditingSpring = false;
+    }
+}
+
+// Spring editing state management
+void ATerrainController::StartSpringEditing(bool bAdd)
+{
+    // Ensure cursor continuity before changing editing state
+    if (!bIsEditingSpring)
+    {
+        FVector CurrentRawPosition;
+        if (PerformCursorTrace(CurrentRawPosition))
+        {
+            if (bUnifiedCursorValid && UnifiedCursorPosition != FVector::ZeroVector)
+            {
+                UE_LOG(LogTemp, VeryVerbose, TEXT("[SPRING EDIT START] Maintaining cursor continuity"));
+            }
+            else
+            {
+                UnifiedCursorPosition = CurrentRawPosition;
+                bUnifiedCursorValid = true;
+            }
+        }
+    }
+    
+    bIsEditingSpring = true;
+    bIsAddingSpring = bAdd;
+    bIsRemovingSpring = !bAdd;
+    
+    UE_LOG(LogTemp, Warning, TEXT("Started %s springs"), bAdd ? TEXT("adding") : TEXT("removing"));
+}
+
+void ATerrainController::StopSpringEditing()
+{
+    bIsEditingSpring = false;
+    bIsAddingSpring = false;
+    bIsRemovingSpring = false;
+    
+    UE_LOG(LogTemp, Warning, TEXT("Stopped spring editing"));
+}
+
+// UPDATED: Calculate spring flow rate based on brush size
+float ATerrainController::CalculateSpringFlowFromBrushSize() const
+{
+    if (!MasterController) return 1.0f;
+    
+    // Get current brush radius from the Universal Brush System
+    float BrushRadius = MasterController->GetBrushRadius();
+    
+    // Map brush radius to flow rate
+    // Default brush radius range is typically 100-5000 units
+    // Map this to flow rate of 0.1-10.0 m³/s
+    float MinBrushRadius = 100.0f;
+    float MaxBrushRadius = 5000.0f;
+    
+    float NormalizedRadius = FMath::GetMappedRangeValueClamped(
+        FVector2D(MinBrushRadius, MaxBrushRadius),
+        FVector2D(0.0f, 1.0f),
+        BrushRadius
+    );
+    
+    // Use a power curve for more intuitive scaling
+    // Small brushes = weak springs, large brushes = strong springs
+    float FlowRate = FMath::Lerp(MinSpringFlowRate, MaxSpringFlowRate,
+                                  FMath::Pow(NormalizedRadius, 1.5f));
+    
+    return FlowRate;
+}
+
+// Update function for spring editing
+void ATerrainController::UpdateSpringEditing(float DeltaTime)
+{
+    if (!bIsEditingSpring || !GeologyController)
+    {
+        return;
+    }
+    
+    // Get cursor position
+    FVector CursorPosition = GetCursorWorldPosition();
+    if (CursorPosition == FVector::ZeroVector || !ValidateCursorPosition(CursorPosition))
+    {
+        return;
+    }
+    
+    // Update the removal radius to match current brush size when removing
+    if (bIsRemovingSpring && MasterController)
+    {
+        SpringRemovalRadius = MasterController->GetBrushRadius();
+    }
 }
 
 void ATerrainController::ResetTerrain(const FInputActionValue& Value)
@@ -1582,6 +1838,7 @@ void ATerrainController::UpdatePerformanceStats(float DeltaTime)
         {
             case EEditingMode::Terrain: EditingModeText = TEXT("Terrain"); break;
             case EEditingMode::Water: EditingModeText = TEXT("Water"); break;
+            case EEditingMode::Spring: EditingModeText = TEXT("Spring"); break;
             case EEditingMode::Atmosphere: EditingModeText = TEXT("Atmosphere"); break;
         }
         GEngine->AddOnScreenDebugMessage(30, 0.5f, FColor::White,
@@ -1605,6 +1862,22 @@ void ATerrainController::UpdatePerformanceStats(float DeltaTime)
                 FString::Printf(TEXT("Atmospheric Brush: %s (Y to cycle)"), *GetCurrentBrushDisplayName()));
         }
         
+        if (CurrentEditingMode == EEditingMode::Spring && GEngine)
+        {
+            float CurrentFlowRate = CalculateSpringFlowFromBrushSize();
+            float BrushRadius = MasterController ? MasterController->GetBrushRadius() : 200.0f;
+            
+            GEngine->AddOnScreenDebugMessage(31, 0.5f, FColor::Cyan,
+                                             FString::Printf(TEXT("Spring Brush: %.0f radius = %.1f m³/s flow"),
+                                                             BrushRadius, CurrentFlowRate));
+            
+            if (GeologyController)
+            {
+                int32 SpringCount = GeologyController->UserSprings.Num();
+                GEngine->AddOnScreenDebugMessage(32, 0.5f, FColor::Cyan,
+                                                 FString::Printf(TEXT("Active Springs: %d"), SpringCount));
+            }
+        }
         // Show current visual mode
         FString VisualModeText;
         switch (CurrentVisualMode)
@@ -2461,6 +2734,19 @@ void ATerrainController::ValidateFirstPersonHeight(float DeltaTime)
         }
         
         FirstPersonValidationTimer = 0.0f;
+    }
+}
+
+void ATerrainController::ReturnToMainMenu()
+{
+    // Get game instance and cast to our custom type
+    if (UTerrAIGameInstance* GameInstance = Cast<UTerrAIGameInstance>(GetGameInstance()))
+    {
+        GameInstance->ReturnToMainMenu();
+    }
+    else
+    {
+        UE_LOG(LogTemp, Error, TEXT("ReturnToMainMenu: Failed to get TerrAIGameInstance"));
     }
 }
 

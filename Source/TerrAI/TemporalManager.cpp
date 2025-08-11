@@ -44,7 +44,7 @@ void UTemporalManager::InitializeDefaultTimeScales()
     SetSystemTimeScale(ESystemType::PlayerInteraction, 1.0f);     // Real-time
     
     // Short-term physics systems  
-    SetSystemTimeScale(ESystemType::WaterPhysics, 10.0f);         // 10 seconds = 1 second
+    SetSystemTimeScale(ESystemType::WaterPhysics, 10.0f);         // 10 seconds = 1 second 
     
     // Medium-term atmospheric systems
     SetSystemTimeScale(ESystemType::Atmospheric, 60.0f);          // 1 minute = 1 second

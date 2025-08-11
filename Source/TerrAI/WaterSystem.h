@@ -31,6 +31,8 @@
 #include "Stats/Stats.h"
 #include "MasterController.h"
 #include "AtmosphereController.h"
+#include "Engine/TextureRenderTarget2D.h"
+#include "Shaders/WaveComputeShader.h"
 #include "WaterSystem.generated.h"
 
 // Forward declarations
@@ -93,50 +95,7 @@ struct FWaveTuningParams
     float PuddleDepthThreshold = 0.1f;
     float PondDepthThreshold = 1.0f;
     
-    // River
-    float RiverWaveAmplitude = 0.02f;
-    float RiverWavelengthMultiplier = 4.0f;
-    float RiverMaxAmplitude = 0.5f;
-    float RiverFroudeLimit = 1.5f;
-    float RiverAngleSpread = 0.2f;
-    float RiverAngleDamping = 0.3f;
-    float RiverFlowModulationMin = 0.7f;
-    float RiverFlowModulationMax = 0.3f;
-    float RiverTurbulenceScale = 0.01f;
-    float RiverTurbulenceSpeed = 3.0f;
-    float RiverForeEdgeAmplitude = 0.025f;
-    float RiverForeEdgeSpeed = 0.4f;
-    float RiverForeEdgeWavelength = 3.0f;
-    float RiverForeEdgeHarmonic = 0.4f;
-    
-    // Rapids
-    float RapidsTurbulenceScale = 0.05f;
-    float RapidsFrequency = 0.2f;
-    float RapidsTimeScale = 6.0f;
-    float RapidsGradientDivisor = 30.0f;
-    float RapidsMaxScale = 1.5f;
-    float RapidsJumpScale = 0.04f;
-    float RapidsJumpTimeScale = 3.0f;
-    
-    // Puddle
-    float PuddleAmplitude = 0.002f;
-    float PuddleWavelength = 0.017f;
-    float PuddleTimeScale = 0.23f;
-    
-    // Pond
-    float PondAmplitude = 0.01f;
-    float PondFrequency = 0.3f;
-    float PondTimeScale = 2.0f;
-    float PondWindThreshold = 1.0f;
-    float PondWindScale = 0.01f;
-    float PondWindFrequency = 30.0f;
-    
-    // Lake
-    float LakeDepthLimit = 0.5f;
-    float LakeFetchCoefficient = 0.0016f;
-    float LakeWavelengthBase = 20.0f;
-    float LakeWavelengthScale = 1.618f;
-    float LakeAmplitudeDivisor = 4.0f;
+    // Removed water-type specific parameters - using physics-based generators only
     
     // Collision
     float CollisionFlowThreshold = 3.0f;
@@ -145,9 +104,7 @@ struct FWaveTuningParams
     float CollisionWaveScale = 0.1f;
     float CollisionTimeScale = 12.0f;
     
-    // Global
-    float GlobalDepthClampMin = -0.3f;
-    float GlobalDepthClampMax = 0.3f;
+    // Global parameters are now in wave control system
 };
 
 
@@ -177,8 +134,13 @@ struct FWaterMaterialParams
     UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0.0", ClampMax = "1.0"))
     float Turbidity = 0.1f;
     
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0.0", ClampMax = "0.1"))
-    float WaveStrength = 0.02f;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0.0", ClampMax = "0.001")) //max was .1
+    float WaveStrength = 0.00f; //was .02
+    
+    float WaveScale = 1.0f;
+        float WaveSpeed = 1.0f;
+        FVector2D WindDirection = FVector2D(1.0f, 0.0f);
+        float WindStrength = 1.0f;
     
     FWaterMaterialParams()
     {
@@ -188,7 +150,7 @@ struct FWaterMaterialParams
         DeepColor = FLinearColor(0.1f, 0.3f, 0.6f, 1.0f);
         ShallowColor = FLinearColor(0.6f, 0.8f, 0.9f, 1.0f);
         Turbidity = 0.1f;
-        WaveStrength = 0.02f;
+        WaveStrength = 0.00f; //was .02
     }
 };
 
@@ -279,6 +241,15 @@ struct FWaterSurfaceChunk
     int32 SurfaceResolution = 32;                   // Vertices per edge at LOD0
     int32 CurrentLOD = 0;                           // 0=highest detail, 3=lowest
     
+
+       int32 ChunkX = 0;  // ADD THIS
+       
+  
+       int32 ChunkY = 0;  // ADD THIS
+    
+
+       FVector2D WorldPosition = FVector2D::ZeroVector;  // ADD THIS
+    
     // PHASE 1-2: Flow data SYNCHRONIZED from simulation velocity
     float WavePhase = 0.0f;                         // Animation phase offset
     FVector2D FlowDirection = FVector2D::ZeroVector; // Derived from VelocityX/Y arrays
@@ -288,6 +259,13 @@ struct FWaterSurfaceChunk
     bool bHasCaustics = false;                      // Based on depth and flow patterns
     bool bHasFoam = false;                          // Based on FoamMap values
     
+    UPROPERTY()
+       bool bHasWater = false;  // ADD THIS
+       
+       UPROPERTY()
+       class UProceduralMeshComponent* MeshComponent = nullptr;  // ADD THIS
+       
+  
     
     
     FWaterSurfaceChunk()
@@ -308,21 +286,10 @@ struct FWaterSurfaceChunk
         bHasFoam = false;
     }
     
-    
-    // Natural wave cache
-        struct FNaturalWaveCache
-        {
-            enum EWaterType { Puddle, Pond, Lake, River, Rapids, Waterfall } Type = Pond;
-            float FetchDistance = 10.0f;
-            float ChannelWidth = 5.0f;
-            float LastUpdateTime = 0.0f;
-            
-            bool NeedsUpdate(float Time) const { return (Time - LastUpdateTime) > 5.0f; }
-        } NaturalWaveCache;
 };
 
 UCLASS(BlueprintType)
-class TERRAI_API UWaterSystem : public UObject, public IScalableSystem
+class TERRAI_API UWaterSystem : public UObject//,public IScalableSystem
 {
     GENERATED_BODY()
 
@@ -333,8 +300,8 @@ public:
     
     // ===== ISCALABLESYSTEM INTERFACE IMPLEMENTATION =====
     
-    virtual void ConfigureFromMaster(const FWorldScalingConfig& Config) override;
-    virtual void SynchronizeCoordinates(const FWorldCoordinateSystem& Coords) override;
+    virtual void ConfigureFromMaster(const FWorldScalingConfig& Config);
+    virtual void SynchronizeCoordinates(const FWorldCoordinateSystem& Coords);
    
     
     // ===== MASTER CONTROLLER COORDINATION =====
@@ -451,8 +418,6 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Physics")
     float MinWaterDepth = 0.01f;         // Ignore tiny amounts (performance)
     
-    // ===== EROSION SETTINGS - MOVED TO GEOLOGYCONTROLLER =====
-    // All erosion functionality moved to GeologyController for clean separation
     
     // ===== EDGE DRAINAGE SETTINGS =====
     
@@ -520,10 +485,10 @@ public:
     float VolumeUpdateDistance = 2000.0f;           // Max distance for surface updates (legacy name)
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Surface Water")
-    int32 MaxVolumeChunks = 64;                     // Performance limit on active surfaces (legacy name)
+    int32 MaxVolumeChunks = 100;                     // Performance limit on active surfaces (legacy name)
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Surface Water", meta = (ClampMin = "8", ClampMax = "256"))
-    int32 BaseSurfaceResolution = 64;               // Base resolution for water surfaces (higher = smoother)
+    int32 BaseSurfaceResolution = 32;               // Base resolution for water surfaces (higher = smoother)
     
     // ===== WATER AUTHORITY & QUALITY SETTINGS =====
     
@@ -727,7 +692,7 @@ public:
     float WaterShaderUpdateInterval = 0.1f;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Shader")
-    float WaterDepthScale = 25.5f;
+    float WaterDepthScale = 1.0f; //was 25.5
     
     // ===== PHASE 1 & 2: FLOW DISPLACEMENT SYSTEM =====
     
@@ -735,10 +700,10 @@ public:
     UTexture2D* FlowDisplacementTexture = nullptr;
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Displacement")
-    float DisplacementScale = 5.0f;
+    float DisplacementScale = 2.0f;
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Displacement")
-    float WaveAnimationSpeed = 2.0f;
+    float WaveAnimationSpeed = 1.0f;
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Displacement")
     float DisplacementStrength = 1.0f;
@@ -893,8 +858,6 @@ public:
     
     // ===== EDGE SEAM FIX FUNCTIONS =====
     
-    /** Helper function for exact boundary vertex matching */
- //   float GetExactWaterDepthAtWorld(FVector2D WorldPos) const;
     
     /** Calculate distance to water edge for shore blending */
     float CalculateDistanceToWaterEdge(FVector2D WorldPos, const FWaterSurfaceChunk& SurfaceChunk) const;
@@ -905,11 +868,6 @@ public:
     /** Apply shore blending to pull water surface below terrain */
     float ApplyShoreBlending(float WaterDepth, float BlendFactor, float DistanceToEdge) const;
     
-    /** Enhanced normal calculation considering flow direction */
- //   FVector CalculateWaterNormal(FVector2D WorldPos, FVector2D FlowVector, float WaterDepth) const;
-    
-    /** Get flow vector at world position */
- //   FVector2D GetFlowVectorAtWorld(FVector2D WorldPos) const;
     
 // Triangle generation
     void GenerateWaterSurfaceTriangles(int32 Resolution, TArray<int32>& Triangles, const TArray<int32>& VertexIndexMap);
@@ -1012,11 +970,20 @@ public:
     class AMasterWorldController* CachedMasterController = nullptr;
     
     
+    float GetAverageDepth() const;
+    void ApplyUniformDepthReduction(float DepthReduction);
     
+    float MeasureVolumeChange(TFunctionRef<void()> Operation);
     
     
 private:
   
+    
+    mutable float LastKnownTotalVolume = 0.0f;
+    mutable bool bVolumeNeedsUpdate = true;
+
+    void MarkVolumeAsDirty() { bVolumeNeedsUpdate = true; }
+    
     // ===== ISCALABLESYSTEM STATE =====
     
     FWorldScalingConfig CurrentWorldConfig;
@@ -1040,19 +1007,7 @@ private:
     float GetSimulationDepth(FVector2D WorldPos) const;
     FVector2D GetSimulationVelocity(FVector2D WorldPos) const;
    
-    
-  
-  /*
-    // Direct simulation data access
-    int32 GetSimulationIndex(FVector2D WorldPos) const;
-    float GetSimulationDepth(FVector2D WorldPos) const;
-    FVector2D GetSimulationVelocity(FVector2D WorldPos) const;
-    
-    // Shore blending functions
-    float CalculateDistanceToWaterEdge(FVector2D WorldPos, const FWaterSurfaceChunk& SurfaceChunk) const;
-    float CalculateShoreBlendFactor(float WaterDepth, float DistanceToEdge) const;
-    float ApplyShoreBlending(float WaterDepth, float BlendFactor, float DistanceToEdge) const;
-  */
+
     // ===== DEBUG OPTIMIZATION VARIABLES =====
     // Debug optimization variables
     static float LastDebugLogTime;
@@ -1114,35 +1069,15 @@ public:
        UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Physics|Smoothing")
        bool bUseBicubicInterpolation = true;
     
-    void SetWaveTuningParameters(float RiverAmp, float ForeEdgeAmp, float ForeEdgeSpeed,
-                                     float ForeEdgeWave, float RapidsTurb, float RapidsFreq,
-                                     float RapidsJump, float CollisionScale, float CollisionThresh)
-        {
-            WaveTuning.RiverWaveAmplitude = RiverAmp;
-            WaveTuning.RiverForeEdgeAmplitude = ForeEdgeAmp;
-            WaveTuning.RiverForeEdgeSpeed = ForeEdgeSpeed;
-            WaveTuning.RiverForeEdgeWavelength = ForeEdgeWave;
-            WaveTuning.RapidsTurbulenceScale = RapidsTurb;
-            WaveTuning.RapidsFrequency = RapidsFreq;
-            WaveTuning.RapidsJumpScale = RapidsJump;
-            WaveTuning.CollisionWaveScale = CollisionScale;
-            WaveTuning.CollisionThreshold = CollisionThresh;
-        }
+    // Removed SetWaveTuningParameters - use physics-based controls instead
 
 private:
     
     void ApplyEdgePreservingFilter(TArray<float>& Buffer, int32 Width, int32 Height);
-      void ApplyTemporalSmoothing(float DeltaTime);
-    // Temporal smoothing buffer
-    TArray<float> WaterDepthHistory;
     
     // Additional smoothing functions
-        void SmoothWaterDepthMap();
-        void ApplySpatialSmoothing();
-        
-        // Smoothing control
-        float LastSmoothingTime = 0.0f;
-        const float SmoothingInterval = 0.1f; // Apply smoothing every 0.1 seconds
+    void SmoothWaterDepthMap();
+    void ApplySpatialSmoothing();
     
     float AccumulatedScaledTime = 0.0f;
       
@@ -1204,6 +1139,123 @@ private:
     
     FWaveTuningParams WaveTuning;
     
+    
+private:
+    // Wave physics constants (no namespace, just class members)
+    
+
+    static constexpr float WaveGravity = 981.0f;              // cm/s² (UE units)
+    static constexpr float WaveMinWindForWaves = 0.1f;        // m/s
+    static constexpr float WaveDeepWaterLimit = 0.5f;         // depth/wavelength ratio
+    static constexpr float WaveTwoPi = 6.28318530718f;        // 2 * PI
+    static constexpr float WaveDensity = 1000.0f; // kg/m³ for water
+    
+    // Simple wave generation context (no forward declaration issues)
+    struct FWaveContext
+    {
+        FVector2D WorldPos;
+        float Time;
+        float WaterDepth;
+        FVector2D FlowVector;
+        float FlowSpeed;
+        float WindStrength;
+        FVector2D WindDirection;
+        float TerrainGradient;
+        float FroudeNumber;
+        float MeshResolution;     // NEW
+           float MinWavelength;      // NEW
+        
+        void Init(FVector2D Pos, float T, float Depth, FVector2D Flow,
+                  float Wind, FVector2D WindDir, float Gradient, float MeshRes = 100.0f)
+        {
+            WorldPos = Pos;
+            Time = T;
+            WaterDepth = Depth;
+            FlowVector = Flow;
+            FlowSpeed = Flow.Size();
+            WindStrength = Wind;
+            WindDirection = WindDir;
+            TerrainGradient = Gradient;
+            FroudeNumber = (Depth > 0.01f) ? FlowSpeed / FMath::Sqrt(WaveGravity * Depth) : 0.0f;
+            MeshResolution = MeshRes;
+            MinWavelength = MeshRes * 2.0f; // Nyquist frequency
+        }
+    };
+    
+    // Physics-based wave generators
+    float GenerateWindWaves(const FWaveContext& Context) const;
+    float GenerateFlowWaves(const FWaveContext& Context) const;
+    float GenerateCapillaryWaves(const FWaveContext& Context) const;
+    float GenerateGravityWaves(const FWaveContext& Context) const;
+    float GenerateCollisionWaves(const FWaveContext& Context) const;
+    float GenerateTurbulentWaves(const FWaveContext& Context) const;
+    float CombineWaveComponents(const TArray<float>& WaveHeights) const;
+    
+    float ApplySpatialSmoothing(float WaveHeight, FVector2D WorldPos, float SmoothingRadius) const;
+    
+
+public:
+    // ===== GPU VERTEX DISPLACEMENT SYSTEM =====
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Vertex Displacement")
+    bool bUseVertexDisplacement = false;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Vertex Displacement")
+    bool bDebugGPUDisplacement = false;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Vertex Displacement")
+    float GPUWaveScale = 1.0f;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Vertex Displacement")
+    float GPUWaveSpeed = 1.0f;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Vertex Displacement")
+    UTextureRenderTarget2D* WaveOutputTexture = nullptr;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Vertex Displacement")
+    UMaterialInterface* WaterMaterialWithDisplacement = nullptr;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Vertex Displacement")
+    float MeshRegenerationThreshold = 100.0f; // Only regenerate if water area changes by this much
+    
+    // Functions for GPU displacement
+    UFUNCTION(BlueprintCallable, Category = "GPU Vertex Displacement")
+    void InitializeGPUDisplacement();
+    
+    UFUNCTION(BlueprintCallable, Category = "GPU Vertex Displacement")
+    void ExecuteWaveComputeShader();
+    
+    UFUNCTION(BlueprintCallable, Category = "GPU Vertex Displacement")
+    void ToggleVertexDisplacement(bool bEnable);
+    
+    UFUNCTION(BlueprintCallable, Category = "GPU Vertex Displacement")
+    bool IsVertexDisplacementEnabled() const { return bUseVertexDisplacement; }
+    
+    UFUNCTION(BlueprintCallable, Category = "GPU Vertex Displacement")
+    void UpdateGPUWaveParameters(float DeltaTime);
+    
+    UFUNCTION(BlueprintCallable, Category = "GPU Vertex Displacement")
+    bool NeedsMeshRegeneration(int32 ChunkIndex) const;
+    
+    //UFUNCTION(BlueprintCallable, Category = "GPU Vertex Displacement")
+    void GenerateFlatBaseMesh(FWaterSurfaceChunk& Chunk);
+    
+    // Add in private section:
+    private:
+        TMap<int32, float> ChunkWaterAreas;
+        int32 FramesSinceLastMeshUpdate = 0;
+    
+private:
+    // GPU displacement tracking
+    float LastMeshGenerationArea = 0.0f;
+   
+    // Performance metrics
+    float GPUWaveComputeTime = 0.0f;
+    float CPUMeshUpdateTime = 0.0f;
+ 
+    // Chunk system constants
+        static constexpr int32 ChunkSize = 33;  // ADD THIS
+        static constexpr float ChunkWorldSize = 3200.0f;  // ADD THIS (33 * 100 units)
     
     
 };

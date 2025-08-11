@@ -433,6 +433,12 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Water Budget")
     void ResetWaterBudget();
     
+    UFUNCTION(BlueprintPure, Category = "Water Budget")
+    bool ValidateWaterBudgetIntegrity() const;
+    
+    UFUNCTION(Exec, Category = "Water Debug", CallInEditor)
+    void CheckWaterBudget();
+    
     // ===== DEBUG SETTINGS =====
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Budget")
     bool bShowWaterBudgetDebug = false;
@@ -608,14 +614,8 @@ public:
     
     UFUNCTION(BlueprintCallable, Category = "World Scaling")
     void LogAllSystemScalingStatus();
-    
-    // ===== ATMOSPHERE INTEGRATION TEST =====
-    
-    UFUNCTION(BlueprintCallable, Category = "Atmosphere Testing")
-    void TestAtmosphereIntegration();
-    
-    UFUNCTION(BlueprintCallable, Category = "Atmosphere Testing")
-    void TestWindWaveIntegration();
+
+
     
     // ===== COORDINATE TRANSFORM FUNCTIONS - AUTHORITATIVE =====
     
@@ -787,22 +787,28 @@ public:
 
     UFUNCTION(Exec, Category = "World Scaling", CallInEditor)
     void ForceSystemReregistration();
-    
-    UFUNCTION(BlueprintCallable, Category = "Water System Debug")
-    bool ValidateWaterSystemIntegration() const;
-    
+
     UFUNCTION(Exec, Category = "Debug")
     void LogDetailedScalingInfo();
     
     // Water transfer authority functions
      UFUNCTION(BlueprintCallable, Category = "Water Authority")
-     void TransferSurfaceToGroundwater(FVector WorldLocation, float InfiltrationDepth);
+     void TransferSurfaceToGroundwater(FVector WorldLocation, float InfiltrationVolume);
      
      UFUNCTION(BlueprintCallable, Category = "Water Authority")
      void TransferGroundwaterToSurface(FVector WorldLocation, float DischargeVolume);
-     
+    
+    UFUNCTION(BlueprintCallable, Category = "Water Authority")
+    void TransferPrecipitationToSurface(FVector WorldLocation, float PrecipitationVolume);
+    
      // Helper function
      float GetWaterCellArea() const;
+     
+     // Groundwater management for simplified water table
+     void SetInitialGroundwater(float VolumeM3);
+     bool CanGroundwaterEmerge(float RequestedVolume) const;
+     float GetGroundwaterVolume() const { return TotalGroundwater; }
+     bool RemoveGroundwater(float VolumeM3);  // For edge drainage
     
     // ===== FUNCTIONS =====
     UFUNCTION(BlueprintCallable, Category = "World Management")
@@ -826,8 +832,7 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Debug")
     void LogSystemPerformance();
     
-    UFUNCTION(BlueprintCallable, Category = "Debug", meta = (CallInEditor = true))
-    void DebugTemporalSystem();
+
     
     // ===== ADDITIONAL HELPER FUNCTIONS =====
     UFUNCTION(BlueprintCallable, Category = "Temporal Control")
@@ -910,13 +915,7 @@ public:
     
     // ===== INTER-SYSTEM TRANSFER FUNCTIONS =====
     
-    UFUNCTION(BlueprintCallable, Category = "Water Authority")
-    float TransferPrecipitationToSurface(
-        float PrecipitationRate,
-        float DeltaTime,
-        FVector2D AtmosphericGridPos,
-        FVector2D& OutWaterGridPos) const;
-    
+
     UFUNCTION(BlueprintCallable, Category = "Water Authority")
     float TransferEvaporationToAtmosphere(
         float EvaporationDepth,
@@ -945,8 +944,6 @@ public:
     UFUNCTION(BlueprintPure, Category = "Water Authority")
     FVector2D WorldToWaterGrid(FVector WorldPos) const;
 
-    UFUNCTION(BlueprintCallable, Category = "Debug")
-    void TestAllSystemConnections();
     
 private:
     // ===== MISSING HELPER FUNCTIONS =====
@@ -977,23 +974,22 @@ private:
     
     // Sequential system initialization (no retry logic)
     void InitializeSystemControllersSequentially();
+    
+
+        float LastBudgetUpdateTime = 0.0f;
+        static constexpr float MinBudgetUpdateInterval = 0.1f; // 10Hz max
 
     
 public:
     /** Diagnose TemporalManager integration issues */
     UFUNCTION(CallInEditor, Category = "Diagnostics")
     void DiagnoseTemporalManagerIntegration();
+
+
     
-    // ===== WATER VOLUME AUTHORITY VALIDATION =====
-    
-    UFUNCTION(BlueprintCallable, Category = "Water Authority Testing")
-    void ValidateWaterVolumeAuthority();
-    
-    UFUNCTION(BlueprintCallable, Category = "Water Authority Testing")
-    void TestWaterConservation();
-    
-    UFUNCTION(BlueprintCallable, Category = "Water Authority Testing")
-    void TestConversionAccuracy();
+    // Add to public section
+    UFUNCTION(BlueprintPure, Category = "Controllers")
+    AGeologyController* GetGeologyController() const { return GeologyController; }
     
     
 };

@@ -1191,25 +1191,27 @@ void UAtmosphericSystem::ProcessPrecipitation(float DeltaTime)
 
     for (int32 i = 0; i < AtmosphericGrid.Num(); i++)
     {
-        const FSimplifiedAtmosphericCell& Cell = AtmosphericGrid[i];
+        FSimplifiedAtmosphericCell& Cell = AtmosphericGrid[i];
         
         if (Cell.PrecipitationRate > 0.01f)
         {
             int32 X = i % GridWidth;
             int32 Y = i / GridWidth;
-            FVector2D AtmosGridPos(X, Y);
-            FVector2D WaterGridPos;
             
-            // Route through master controller
-            float ActualWaterAdded = Master->TransferPrecipitationToSurface(
-                Cell.PrecipitationRate,
-                DeltaTime,
-                AtmosGridPos,
-                WaterGridPos
-            );
+            // Convert precipitation rate to volume
+            float CellArea = CellSize * CellSize;
+            float PrecipitationDepthPerSec = Cell.PrecipitationRate * 2.78e-7f; // mm/hr to m/s
+            float PrecipitationVolume = PrecipitationDepthPerSec * CellArea * DeltaTime;
             
-            // Reduce atmospheric moisture by amount transferred
-            AtmosphericGrid[i].MoistureMass -= ActualWaterAdded;
+            // Get world position for this atmospheric cell
+            FVector WorldPos = GridToWorldCoordinates(X, Y);
+            
+            // Route through master controller with proper signature
+            Master->TransferPrecipitationToSurface(WorldPos, PrecipitationVolume);
+            
+            // Remove moisture from atmosphere to maintain conservation
+            float MoistureConsumed = PrecipitationVolume / CellArea; // Convert back to kg/m²
+            Cell.MoistureMass = FMath::Max(0.0f, Cell.MoistureMass - MoistureConsumed);
         }
     }
 }

@@ -33,6 +33,30 @@ enum class ERockType : uint8
     Basalt      UMETA(DisplayName = "Basalt")
 };
 
+// ===== USER-CREATED SPRINGS =====
+
+USTRUCT(BlueprintType)
+struct FUserSpring
+{
+    GENERATED_BODY()
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    FVector Location;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    float FlowRate = 1.0f; // m³/s
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    bool bActive = true;
+    
+    FUserSpring()
+    {
+        Location = FVector::ZeroVector;
+        FlowRate = 1.0f;
+        bActive = true;
+    }
+};
+
 USTRUCT(BlueprintType)
 struct FSimplifiedGeology
 {
@@ -44,8 +68,7 @@ struct FSimplifiedGeology
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
     float Hardness = 0.5f;  // 0-1 for erosion resistance
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    float WaterTableDepth = 10.0f;  // meters below surface
+    // Removed per-cell water table - using global system instead
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
     float SoilMoisture = 0.2f;  // 0-1 saturation
@@ -64,20 +87,18 @@ struct FSimplifiedGeology
        
        UPROPERTY(EditAnywhere, BlueprintReadWrite)
        float LastTerrainHeight = 0.0f;  // Track terrain changes
-       
-       // Helper functions
-       float GetWaterTableElevation(float TerrainHeight) const
-       {
-           return TerrainHeight - WaterTableDepth;
-       }
+
 
     FSimplifiedGeology()
     {
         SurfaceRock = ERockType::Sandstone;
         Hardness = 0.5f;
-        WaterTableDepth = 10.0f;
         SoilMoisture = 0.2f;
         Permeability = 0.5f;
+        HydraulicHead = 0.0f;
+        Transmissivity = 0.01f;
+        StorageCoefficient = 0.3f;
+        LastTerrainHeight = 0.0f;
     }
 };
 
@@ -105,31 +126,13 @@ public:
     // Simplified erosion handler - no actual erosion in simplified system
     void OnErosionOccurred(FVector Location, float ErosionAmount, ERockType ErodedType) {}
     
-    UFUNCTION(BlueprintCallable, Category = "Water Table")
-        void UpdateHydraulicHeadSystem(float DeltaTime);
-        
-        UFUNCTION(BlueprintCallable, Category = "Water Table")
-        void OnTerrainModified(FVector WorldLocation, float OldHeight, float NewHeight);
-        
-        UFUNCTION(BlueprintCallable, Category = "Water Table")
-        void ProcessHydraulicSurfaceInteraction(float DeltaTime);
-        
-        UFUNCTION(BlueprintCallable, Category = "Water Table")
-        void UpdateLateralGroundwaterFlow(float DeltaTime);
-        
-        UFUNCTION(BlueprintCallable, Category = "Water Table")
-        float GetHydraulicHeadAtLocation(FVector Location) const;
         
         // Water table fill rate based on rock permeability
-        UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Table")
-        float WaterTableFillMultiplier = 10.0f;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Table",
+        meta = (ClampMin = "1.0", ClampMax = "50.0"))
+    float WaterTableFillMultiplier = 20.0f;  // Increased from 10.0f
         
-        // Artesian conditions
-        UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Table")
-        bool bEnableArtesianConditions = false;
-        
-        UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Table")
-        float ArtesianPressureMultiplier = 1.2f;
+
 
 protected:
     virtual void BeginPlay() override;
@@ -158,14 +161,27 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Table")
     bool bEnableWaterTable = true;
     
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Table")
-    float AverageWaterTableDepth = 10.0f;
+    // ===== SIMPLIFIED GLOBAL WATER TABLE =====
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Global Water Table", 
+        meta = (ClampMin = "-4000.0", ClampMax = "500.0"))
+    float GlobalWaterTableElevation = -3500.0f;  // Absolute world height
     
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Table")
-    float GroundwaterFlowRate = 0.1f;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Global Water Table")
+    bool bUseProportionalWaterTable = false;  // If true, set as % of terrain height
     
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Table")
-    float SpringFlowRate = 0.01f;  // m³/s per meter of head
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Global Water Table",
+        meta = (ClampMin = "0.0", ClampMax = "1.0", EditCondition = "bUseProportionalWaterTable"))
+    float WaterTableHeightPercent = 0.02f;  // 2% of max terrain height
+    
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Global Water Table")
+    float GlobalWaterTableVolume = 0.0f;  // m³ - tracked by water budget
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Table",
+        meta = (ClampMin = "0.1", ClampMax = "5.0"))
+    float WaterEmergenceRate = 2.0f;  // Increased from 0.5f
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Global Water Table")
+    float GlobalPorosity = 0.3f;  // 30% void space in rock
 
     // ===== WATER CYCLE INTEGRATION =====
     
@@ -178,23 +194,49 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Water Cycle")
     float GetSoilMoistureAt(FVector Location) const;
     
-    UFUNCTION(BlueprintCallable, Category = "Water Cycle")
+    UFUNCTION(BlueprintPure, Category = "Global Water Table")
     float GetWaterTableDepthAtLocation(FVector Location) const;
+    
+    UFUNCTION(BlueprintCallable, Category = "Global Water Table")
+    void SetGlobalWaterTableElevation(float NewElevation);
+    
+    UFUNCTION(BlueprintCallable, Category = "Global Water Table")
+    void AddWaterToWaterTable(float VolumeM3);
+    
+    UFUNCTION(BlueprintCallable, Category = "Global Water Table")
+    float RemoveWaterFromWaterTable(float VolumeM3);
+    
+    UFUNCTION(BlueprintPure, Category = "Global Water Table")
+    float GetGroundwaterVolume() const { return GlobalWaterTableVolume; }
     
     UFUNCTION(BlueprintCallable, Category = "Water Cycle")
     float GetInfiltrationRate(ERockType Rock) const;
     
     UFUNCTION(BlueprintCallable, Category = "Water Cycle")
     void ApplyInfiltration(FVector Location, float WaterAmount);
+    
+    // ===== WATER TABLE INITIALIZATION =====
+    UFUNCTION(BlueprintCallable, Category = "Water Table")
+    void InitializeWaterTableFill();
 
     // ===== CORE UPDATE FUNCTIONS =====
     
     UFUNCTION(BlueprintCallable, Category = "Geology Update")
     void UpdateGeologySystem(float DeltaTime);
     
-    void UpdateSimplifiedWaterTable(float DeltaTime);
-    void ProcessSurfaceWaterInfiltration(float DeltaTime);
-    void ProcessGroundwaterDischarge(float DeltaTime);
+    UFUNCTION(BlueprintCallable, Category = "Water Table")
+    void EmergenceWaterAtPoints(const TArray<FVector>& WorldPositions, UWaterSystem* Water);
+
+    UFUNCTION(BlueprintCallable, Category = "Water Table")
+    void CheckInitialWaterTable();
+
+    UFUNCTION(BlueprintCallable, Category = "Water Table")
+    void OnWaterTableElevationChanged();
+    
+   // void ProcessSurfaceWaterInfiltration(float DeltaTime);
+    void InitializeWaterTable();
+    void UpdateWaterTableFromVolume();
+    void UpdateWaterTableDebugVisualization();
 
     // ===== QUERIES =====
     
@@ -203,6 +245,26 @@ public:
     
     UFUNCTION(BlueprintPure, Category = "Geology Query")
     bool IsLocationAboveWaterTable(FVector Location) const;
+
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "User Springs")
+    TArray<FUserSpring> UserSprings;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "User Springs", 
+        meta = (ClampMin = "0.1", ClampMax = "10.0"))
+    float DefaultSpringFlowRate = 1.0f; // m³/s - Blueprint controllable
+
+    UFUNCTION(BlueprintCallable, Category = "User Springs")
+    void AddUserSpring(FVector WorldLocation, float FlowRate = -1.0f);
+
+    UFUNCTION(BlueprintCallable, Category = "User Springs")
+    void RemoveUserSpring(FVector WorldLocation, float SearchRadius = 100.0f);
+
+    UFUNCTION(BlueprintCallable, Category = "User Springs")
+    void ClearAllUserSprings();
+
+    // Process springs in the update loop
+    void ProcessUserSprings(float DeltaTime);
 
     // ===== ISCALABLESYSTEM INTERFACE =====
     
@@ -223,6 +285,13 @@ public:
     
     UFUNCTION(BlueprintCallable, Category = "Debug")
     void DrawSimplifiedDebugInfo() const;
+    
+    // Debug visualization
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug")
+    bool bShowWaterTablePlane = false;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug")
+    FColor WaterTablePlaneColor = FColor(0, 100, 255, 128);
     
     
     UPROPERTY()
@@ -261,11 +330,36 @@ private:
     FVector2D WorldToGridCoordinates(const FVector& WorldPosition) const;
     FVector2D GeologyGridToWorldCoordinates(int32 X, int32 Y) const;
     bool IsValidGridCoordinate(int32 X, int32 Y) const;
+    bool IsEdgeCell(int32 X, int32 Y) const;
     float GetSoilCapacity(ERockType Rock) const;
+    float GetTotalWorldArea() const;
     
     // Grid dimensions
     int32 GridWidth = 32;
     int32 GridHeight = 32;
+    
+    // Water table initialization state
+    bool bWaterTableInitialized = false;
+    
+    // Debug mesh for water table visualization
+    class UProceduralMeshComponent* WaterTableDebugMesh = nullptr;
+    
+    
+    // Water Table Addition Code
+    private:
+        // Track locations that need water table maintenance
+        TArray<FVector> ActiveEmergencePoints;
+
+        // Water table maintenance
+        void ProcessWaterTableEmergence(float DeltaTime);
+
+        
+    public:
+        UFUNCTION(BlueprintCallable, Category = "Water Table")
+        void RegisterEmergencePoint(FVector WorldPosition);
+        
+        UFUNCTION(BlueprintCallable, Category = "Water Table")
+        void UnregisterEmergencePoint(FVector WorldPosition);
 
 };
 

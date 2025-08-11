@@ -179,6 +179,22 @@ void AMasterWorldController::InitializeWorld()
     // PHASE 7: Complete
     CurrentInitPhase = EInitializationPhase::Complete;
     UE_LOG(LogTemp, Warning, TEXT("AUTHORITY CHAIN COMPLETE - All systems initialized"));
+    
+    // PHASE 8: Delayed water budget calculation to ensure groundwater is initialized
+    if (GetWorld())
+    {
+        FTimerHandle WaterBudgetTimer;
+        GetWorld()->GetTimerManager().SetTimer(
+            WaterBudgetTimer,
+            [this]()
+            {
+                UpdateSystemWaterBudget();
+                UE_LOG(LogTemp, Warning, TEXT("[WATER BUDGET] Initial water budget calculated after all systems initialized"));
+            },
+            0.5f,  // 500ms delay to ensure GeologyController has initialized groundwater
+            false
+        );
+    }
 }
 
 // ===== INITIALIZATION PHASES =====
@@ -594,6 +610,18 @@ void AMasterWorldController::InitializeSystemControllersSequentially()
     
     // Step 5: Other controllers (require water system)
     FindOrCreateSystemControllers();
+    
+    // Step 5.5: Initialize Geology Controller and fill water table
+    if (GeologyController && MainTerrain && MainTerrain->WaterSystem)
+    {
+        // Initialize geology with terrain and water system
+        GeologyController->Initialize(MainTerrain, MainTerrain->WaterSystem);
+        
+        // CRITICAL: Fill initial water table (separate from water budget tracking)
+        GeologyController->InitializeWaterTableFill();
+        
+        UE_LOG(LogTemp, Warning, TEXT("GeologyController initialized and water table filled"));
+    }
     
     // Step 6: Establish connections between systems
     EstablishSystemConnections();
@@ -1721,6 +1749,17 @@ void AMasterWorldController::LogAllSystemScalingStatus()
     UE_LOG(LogTemp, Warning, TEXT("=== END SCALING STATUS ==="));
 }
 
+// ===== WATER BUDGET CONSOLE COMMAND =====
+
+void AMasterWorldController::CheckWaterBudget()
+{
+    bool bValid = ValidateWaterBudgetIntegrity();
+    UE_LOG(LogTemp, Warning, TEXT("=== WATER BUDGET CHECK ==="));
+    UE_LOG(LogTemp, Warning, TEXT("Status: %s"), bValid ? TEXT("✅ VALID") : TEXT("❌ INVALID"));
+    UE_LOG(LogTemp, Warning, TEXT("%s"), *GetWaterBudgetDebugString());
+    UE_LOG(LogTemp, Warning, TEXT("========================"));
+}
+
 // ===== WATER BUDGET IMPLEMENTATION =====
 
 void AMasterWorldController::UpdateSystemWaterBudget()
@@ -1754,17 +1793,14 @@ void AMasterWorldController::UpdateSystemWaterBudget()
         }
     }
     
-    // Calculate groundwater
     if (GeologyController)
     {
-        for (int32 i = 0; i < GeologyController->GeologyGrid.Num(); i++)
-        {
-            const auto& Cell = GeologyController->GeologyGrid[i];
-            // WaterTableDepth is positive when below surface
-            // If water table is at 5m depth and surface is at 0m, saturated depth = 5m
-            float SaturatedDepth = Cell.WaterTableDepth;
-            GroundwaterTotal += GetGeologyCellWaterVolume(SaturatedDepth, 0.3f);
-        }
+        GroundwaterTotal = GeologyController->GetGroundwaterVolume();
+    }
+    else
+    {
+        // If no geology controller, maintain tracked value
+        GroundwaterTotal = TotalGroundwater;
     }
     
     // Update totals
@@ -1802,16 +1838,15 @@ void AMasterWorldController::UpdateSystemWaterBudget()
         }
     }
     
-    // Check conservation
-    if (!IsWaterConserved(1.0f))
+    // Add validation check
+    if (!ValidateWaterBudgetIntegrity())
     {
-        float CurrentTotal = AtmosphericTotal + SurfaceTotal + GroundwaterTotal;
-        float NaturalDifference = CurrentTotal - InitialTotalWater;
-        float UserNetWater = UserAddedWater - UserRemovedWater;
-        float ActualDifference = NaturalDifference - UserNetWater;
+        UE_LOG(LogTemp, Warning, TEXT("[WATER BUDGET] Running emergency reconciliation..."));
         
-        UE_LOG(LogTemp, Error, TEXT("[WATER BUDGET] Conservation check: Natural diff: %.2f m³, User net: %.2f m³, Actual violation: %.2f m³"), 
-               NaturalDifference, UserNetWater, ActualDifference);
+        // Log current state for debugging
+        UE_LOG(LogTemp, Warning, TEXT("Water Budget Debug: %s"), *GetWaterBudgetDebugString());
+        
+        // Could add automatic correction here if needed
     }
 }
 
@@ -1824,21 +1859,6 @@ bool AMasterWorldController::IsWaterConserved(float Tolerance) const
     float PercentChange = (Difference / InitialTotalWater) * 100.0f;
     
     return PercentChange <= Tolerance;
-}
-
-FString AMasterWorldController::GetWaterBudgetDebugString() const
-{
-    float CurrentTotal = TotalAtmosphericWater + TotalSurfaceWater + TotalGroundwater;
-    float PercentAtmos = CurrentTotal > 0 ? (TotalAtmosphericWater / CurrentTotal) * 100.0f : 0.0f;
-    float PercentSurface = CurrentTotal > 0 ? (TotalSurfaceWater / CurrentTotal) * 100.0f : 0.0f;
-    float PercentGround = CurrentTotal > 0 ? (TotalGroundwater / CurrentTotal) * 100.0f : 0.0f;
-    
-    float UserNet = UserAddedWater - UserRemovedWater;
-    
-    return FString::Printf(TEXT("Water Budget - Total: %.2f m³\nAtmos: %.2f m³ (%.1f%%)\nSurface: %.2f m³ (%.1f%%)\nGround: %.2f m³ (%.1f%%)\nUser Net: %.2f m³ (+%.1f/-%.1f)"),
-        CurrentTotal, TotalAtmosphericWater, PercentAtmos, 
-        TotalSurfaceWater, PercentSurface, TotalGroundwater, PercentGround,
-        UserNet, UserAddedWater, UserRemovedWater);
 }
 
 float AMasterWorldController::GetTotalWaterVolume() const
@@ -1876,130 +1896,45 @@ void AMasterWorldController::ResetWaterBudget()
     UpdateSystemWaterBudget();
 }
 
-// ===== WATER VOLUME AUTHORITY VALIDATION =====
+// ===== WATER CONSERVATION VALIDATION =====
 
-void AMasterWorldController::ValidateWaterVolumeAuthority()
+bool AMasterWorldController::ValidateWaterBudgetIntegrity() const
 {
-    UE_LOG(LogTemp, Warning, TEXT("🔍 WATER VOLUME AUTHORITY VALIDATION"));
-    UE_LOG(LogTemp, Warning, TEXT("============================================"));
+    if (InitialTotalWater < 0.0f) return true; // Not initialized yet
     
-    // Test 1: Conversion Accuracy
-    TestConversionAccuracy();
+    float CurrentTotal = TotalAtmosphericWater + TotalSurfaceWater + TotalGroundwater;
+    float ExpectedTotal = InitialTotalWater + UserAddedWater - UserRemovedWater;
+    float Difference = FMath::Abs(CurrentTotal - ExpectedTotal);
+    float PercentError = (Difference / ExpectedTotal) * 100.0f;
     
-    // Test 2: Water Conservation
-    TestWaterConservation();
+    bool bIntegrityOK = PercentError < 1.0f; // Allow 1% tolerance
     
-    // Test 3: Grid Conversion Validation
-    FVector2D TestAtmosPos(32.0f, 32.0f);
-    FVector2D WaterPos = ConvertAtmosphericToWaterGrid(TestAtmosPos);
-    FVector2D BackToAtmos = ConvertWaterToAtmosphericGrid(WaterPos);
-    
-    float ConversionError = FVector2D::Distance(TestAtmosPos, BackToAtmos);
-    if (ConversionError < 0.01f)
+    if (!bIntegrityOK)
     {
-        UE_LOG(LogTemp, Warning, TEXT("✅ Grid conversions accurate (error: %.4f)"), ConversionError);
-    }
-    else
-    {
-        UE_LOG(LogTemp, Error, TEXT("❌ Grid conversion error: %.4f"), ConversionError);
+        UE_LOG(LogTemp, Error, TEXT("[WATER BUDGET] INTEGRITY VIOLATION:"));
+        UE_LOG(LogTemp, Error, TEXT("  Current Total: %.2f m³"), CurrentTotal);
+        UE_LOG(LogTemp, Error, TEXT("  Expected Total: %.2f m³"), ExpectedTotal);
+        UE_LOG(LogTemp, Error, TEXT("  Difference: %.2f m³ (%.1f%% error)"), Difference, PercentError);
+        UE_LOG(LogTemp, Error, TEXT("  Breakdown - Atmos: %.2f, Surface: %.2f, Ground: %.2f"), 
+               TotalAtmosphericWater, TotalSurfaceWater, TotalGroundwater);
     }
     
-    // Test 4: Authority consistency
-    bool bAtmosphericReady = MainTerrain && MainTerrain->AtmosphericSystem;
-    bool bWaterReady = MainTerrain && MainTerrain->WaterSystem;
-    
-    UE_LOG(LogTemp, Warning, TEXT("System Status:"));
-    UE_LOG(LogTemp, Warning, TEXT("  Atmospheric: %s"), bAtmosphericReady ? TEXT("✅ Ready") : TEXT("❌ Missing"));
-    UE_LOG(LogTemp, Warning, TEXT("  Water: %s"), bWaterReady ? TEXT("✅ Ready") : TEXT("❌ Missing"));
-    UE_LOG(LogTemp, Warning, TEXT("  Geology: %s"), GeologyController ? TEXT("✅ Ready") : TEXT("❌ Missing"));
-    
-    UE_LOG(LogTemp, Warning, TEXT("\n🎉 WATER VOLUME AUTHORITY VALIDATION COMPLETE!"));
+    return bIntegrityOK;
 }
 
-void AMasterWorldController::TestWaterConservation()
+FString AMasterWorldController::GetWaterBudgetDebugString() const
 {
-    UE_LOG(LogTemp, Warning, TEXT("🧪 Testing Water Conservation..."));
+    float CurrentTotal = TotalAtmosphericWater + TotalSurfaceWater + TotalGroundwater;
+    float PercentAtmos = CurrentTotal > 0 ? (TotalAtmosphericWater / CurrentTotal) * 100.0f : 0.0f;
+    float PercentSurface = CurrentTotal > 0 ? (TotalSurfaceWater / CurrentTotal) * 100.0f : 0.0f;
+    float PercentGround = CurrentTotal > 0 ? (TotalGroundwater / CurrentTotal) * 100.0f : 0.0f;
     
-    // Force water budget update
-    UpdateSystemWaterBudget();
+    float UserNet = UserAddedWater - UserRemovedWater;
     
-    float InitialTotal = GetTotalWaterVolume();
-    UE_LOG(LogTemp, Warning, TEXT("Initial total water: %.2f m³"), InitialTotal);
-    
-    // Test precipitation → surface conversion
-    if (MainTerrain && MainTerrain->AtmosphericSystem && MainTerrain->WaterSystem)
-    {
-        FVector TestLocation = MainTerrain->GetActorLocation() + FVector(1000, 1000, 0);
-        
-        // Add some atmospheric moisture
-        MainTerrain->AtmosphericSystem->CreateWeatherEffect(
-            FVector2D(1000, 1000), 500.0f, 5.0f);
-        
-        // FIXED: Declare timer handle and fix lambda capture
-        FTimerHandle ValidationTimer;
-        GetWorld()->GetTimerManager().SetTimer(
-            ValidationTimer,
-            [this, InitialTotal]()  // FIXED: Explicit capture
-            {
-                UpdateSystemWaterBudget();
-                float FinalTotal = GetTotalWaterVolume();
-                float Difference = FMath::Abs(FinalTotal - InitialTotal);
-                float PercentChange = InitialTotal > 0 ? (Difference / InitialTotal) * 100.0f : 0.0f;
-                
-                if (PercentChange < 1.0f)
-                {
-                    UE_LOG(LogTemp, Warning, TEXT("✅ Water conservation: %.3f%% change"), PercentChange);
-                }
-                else
-                {
-                    UE_LOG(LogTemp, Error, TEXT("❌ Water conservation violation: %.3f%% change"), PercentChange);
-                }
-            },
-            1.0f,
-            false
-        );
-    }
-}
-
-void AMasterWorldController::TestConversionAccuracy()
-{
-    UE_LOG(LogTemp, Warning, TEXT("🧮 Testing Conversion Accuracy..."));
-    
-    // Test depth ↔ moisture mass conversions
-    float TestDepth = 0.001f; // 1mm
-    float MoistureMass = DepthToMoistureMass(TestDepth);
-    float BackToDepth = MoistureMassToDepth(MoistureMass);
-    
-    float DepthError = FMath::Abs(TestDepth - BackToDepth);
-    if (DepthError < 0.0001f)
-    {
-        UE_LOG(LogTemp, Warning, TEXT("✅ Depth↔Moisture conversion accurate"));
-    }
-    else
-    {
-        UE_LOG(LogTemp, Error, TEXT("❌ Depth↔Moisture error: %.6f"), DepthError);
-    }
-    
-    // Test precipitation rate conversions
-    float TestPrecipRate = 10.0f; // 10 mm/hr
-    float MetersPerSec = PrecipitationRateToMetersPerSecond(TestPrecipRate);
-    float BackToPrecip = MetersPerSecondToPrecipitationRate(MetersPerSec);
-    
-    float PrecipError = FMath::Abs(TestPrecipRate - BackToPrecip);
-    if (PrecipError < 0.01f)
-    {
-        UE_LOG(LogTemp, Warning, TEXT("✅ Precipitation conversion accurate"));
-    }
-    else
-    {
-        UE_LOG(LogTemp, Error, TEXT("❌ Precipitation error: %.6f"), PrecipError);
-    }
-    
-    // Test expected values
-    UE_LOG(LogTemp, Warning, TEXT("Conversion Examples:"));
-    UE_LOG(LogTemp, Warning, TEXT("  1mm depth = %.3f kg/m²"), DepthToMoistureMass(0.001f));
-    UE_LOG(LogTemp, Warning, TEXT("  10 mm/hr = %.6f m/s"), PrecipitationRateToMetersPerSecond(10.0f));
-    UE_LOG(LogTemp, Warning, TEXT("  1 m³ water = %.0f L"), GetWaterCellVolume(0.01f) * 1000.0f);
+    return FString::Printf(TEXT("Water Budget - Total: %.2f m³\nAtmos: %.2f m³ (%.1f%%)\nSurface: %.2f m³ (%.1f%%)\nGround: %.2f m³ (%.1f%%)\nUser Net: %.2f m³ (+%.1f/-%.1f)"),
+        CurrentTotal, TotalAtmosphericWater, PercentAtmos, 
+        TotalSurfaceWater, PercentSurface, TotalGroundwater, PercentGround,
+        UserNet, UserAddedWater, UserRemovedWater);
 }
 
 // ===== HELPER FUNCTIONS FOR WATER BUDGET =====
@@ -2057,6 +1992,26 @@ float AMasterWorldController::GetGeologyCellWaterVolume(float SaturatedDepth, fl
     return SaturatedDepth * CellArea * Porosity;
 }
 
+
+// ===== PRECIPITATION TRANSFER AUTHORITY =====
+
+void AMasterWorldController::TransferPrecipitationToSurface(
+    FVector WorldLocation,
+    float PrecipitationVolume)
+{
+    if (!MainTerrain || !MainTerrain->WaterSystem || PrecipitationVolume <= 0.0f) return;
+    
+    // 1. UPDATE BUDGET (Authority Decision)
+    TotalAtmosphericWater -= PrecipitationVolume;
+    // REMOVED: TotalSurfaceWater += PrecipitationVolume; - Let UpdateSystemWaterBudget() count it
+    
+    // 2. APPLY TO SIMULATION (Pure Implementation)
+    float WaterDepth = PrecipitationVolume / GetWaterCellArea();
+    MainTerrain->WaterSystem->AddWater(WorldLocation, WaterDepth);
+    
+    UE_LOG(LogTemp, VeryVerbose, TEXT("[WATER TRANSFER] Precipitation->Surface: %.2f m³ at %s"),
+           PrecipitationVolume, *WorldLocation.ToString());
+}
 
 // ===== GRID CONVERSION FUNCTIONS =====
 
@@ -2158,8 +2113,8 @@ void AMasterWorldController::ApplyGameInstanceSettings()
 
 float AMasterWorldController::GetScaledBrushRadius(float BaseBrushRadius) const
 {
-    // Scale brush radius based on current world scale
-    float WorldScale = GetTerrainScale(); // Use GetTerrainScale() instead
+   
+    float WorldScale = GetTerrainScale();
     return BaseBrushRadius * WorldScale;
 }
 
@@ -2250,10 +2205,32 @@ void AMasterWorldController::SetBrushFalloffType(EBrushFalloffType NewType)
 float AMasterWorldController::CalculateBrushFalloff(float Distance, const FUniversalBrushSettings& Settings) const
 {
     float BrushRadius = Settings.BrushRadius;
-    float InnerRadius = Settings.InnerRadius * BrushRadius;
-    float OuterRadius = Settings.OuterRadius * BrushRadius;
     
-    // Early exit if outside brush range
+    // OPTION 3: Extend falloff beyond the stated radius for softer edges
+    // This creates a more natural terrain modification similar to the original system
+    const float FalloffExtension = 1.5f; // Extend falloff to 150% of radius
+    float ExtendedRadius = BrushRadius * FalloffExtension;
+    
+    // For backwards compatibility with original behavior,
+    // if InnerRadius is 0, use the original quadratic falloff
+    if (Settings.InnerRadius <= 0.001f)
+    {
+        // Original quadratic falloff behavior
+        if (Distance >= ExtendedRadius)
+        {
+            return 0.0f;
+        }
+        
+        // Classic quadratic falloff: (1 - distance/radius)^2
+        float NormalizedDistance = Distance / ExtendedRadius;
+        return FMath::Pow(1.0f - NormalizedDistance, 2.0f);
+    }
+    
+    // Otherwise use the advanced inner/outer radius system
+    float InnerRadius = Settings.InnerRadius * BrushRadius;
+    float OuterRadius = Settings.OuterRadius * ExtendedRadius; // Use extended radius
+    
+    // Early exit if outside extended brush range
     if (Distance >= OuterRadius)
     {
         return 0.0f;
@@ -2312,9 +2289,6 @@ float AMasterWorldController::CalculateBrushFalloff(float Distance, const FUnive
     }
     
     return FMath::Clamp(FalloffValue, 0.0f, 1.0f);
-    
-    UE_LOG(LogTemp, Warning, TEXT("Brush Falloff - Distance: %.2f, Radius: %.2f, Falloff: %.3f"),
-           Distance, Settings.BrushRadius, FalloffValue);
 }
 
 void AMasterWorldController::ApplyBrushToReceivers(FVector WorldPosition, float DeltaTime)
@@ -2436,254 +2410,6 @@ FUniversalBrushSettings AMasterWorldController::GetScaledBrushSettings() const
     ScaledSettings.BrushRadius *= ScaleMultiplier;
     
     return ScaledSettings;
-}
-
-bool AMasterWorldController::ValidateWaterSystemIntegration() const
-{
-    UE_LOG(LogTemp, Warning, TEXT("[WATER VALIDATION] Testing water system integration..."));
-    
-    if (!MainTerrain || !MainTerrain->WaterSystem)
-    {
-        UE_LOG(LogTemp, Error, TEXT("[WATER VALIDATION] FAIL - No terrain or water system"));
-        return false;
-    }
-    
-    UWaterSystem* WaterSystem = MainTerrain->WaterSystem;
-    
-    // Test 1: Authority dependency
-    if (!WaterSystem->IsRegisteredWithMaster())
-    {
-        UE_LOG(LogTemp, Error, TEXT("[WATER VALIDATION] FAIL - Water system not registered"));
-        return false;
-    }
-    
-    // Test 2: Coordinate consistency
-    FVector TestWorldPos(10000.0f, 15000.0f, 0.0f);
-    WaterSystem->AddWater(TestWorldPos, 5.0f);
-    float WaterDepth = WaterSystem->GetWaterDepthAtPosition(TestWorldPos);
-    
-    if (WaterDepth <= 0.0f)
-    {
-        UE_LOG(LogTemp, Error, TEXT("[WATER VALIDATION] FAIL - Water not added at test position"));
-        return false;
-    }
-    
-    // Test 3: Mesh generation validation
-    bool bFoundMeshForWater = false;
-    for (const auto& SurfaceChunk : WaterSystem->WaterSurfaceChunks)
-    {
-        float SimDepth = WaterSystem->GetChunkMaxDepthFromSimulation(SurfaceChunk.ChunkIndex);
-        bool bHasMesh = SurfaceChunk.SurfaceMesh && SurfaceChunk.SurfaceMesh->GetNumSections() > 0;
-        
-        if (SimDepth > WaterSystem->MinVolumeDepth && bHasMesh)
-        {
-            bFoundMeshForWater = true;
-            break;
-        }
-    }
-    
-    UE_LOG(LogTemp, Warning, TEXT("[WATER VALIDATION] ✅ ALL TESTS PASSED - Integration successful!"));
-    return true;
-}
-
-// ===== WIND-WAVE INTEGRATION TEST =====
-
-void AMasterWorldController::TestWindWaveIntegration()
-{
-    UE_LOG(LogTemp, Warning, TEXT("\n========================================"));
-    UE_LOG(LogTemp, Warning, TEXT("WIND-WAVE INTEGRATION TEST"));
-    UE_LOG(LogTemp, Warning, TEXT("========================================"));
-    
-    if (!AtmosphereController)
-    {
-        UE_LOG(LogTemp, Error, TEXT("TEST FAILED: No AtmosphereController found"));
-        return;
-    }
-    
-    if (!MainTerrain || !MainTerrain->WaterSystem)
-    {
-        UE_LOG(LogTemp, Error, TEXT("TEST FAILED: No water system available"));
-        return;
-    }
-    
-    UE_LOG(LogTemp, Warning, TEXT("\n🌬️ TESTING WIND DIRECTIONS:"));
-    
-    // Test 1: North wind
-    AtmosphereController->SetWind(FVector(0, 10, 0)); // 10 m/s north
-    UE_LOG(LogTemp, Warning, TEXT("1️⃣ Wind set to NORTH (10 m/s)"));
-    UE_LOG(LogTemp, Warning, TEXT("   Waves should move NORTH ↑"));
-    
-    // Test location query
-    FVector TestLoc = MainTerrain->GetActorLocation();
-    FVector WindAtLoc = AtmosphereController->GetWindAtLocation(TestLoc);
-    UE_LOG(LogTemp, Warning, TEXT("   Wind at terrain center: %s (%.1f m/s)"), 
-           *WindAtLoc.ToString(), WindAtLoc.Size());
-    
-    UE_LOG(LogTemp, Warning, TEXT("\n⚡ QUICK TEST SEQUENCE:"));
-    UE_LOG(LogTemp, Warning, TEXT("1. Add water to create a lake or pond"));
-    UE_LOG(LogTemp, Warning, TEXT("2. Run these commands in console (~ key):"));
-    UE_LOG(LogTemp, Warning, TEXT("\n   CARDINAL DIRECTIONS:"));
-    UE_LOG(LogTemp, Warning, TEXT("   AtmosphereController.SetWind 10 0 0   (EAST →)"));
-    UE_LOG(LogTemp, Warning, TEXT("   AtmosphereController.SetWind -10 0 0  (WEST ←)"));
-    UE_LOG(LogTemp, Warning, TEXT("   AtmosphereController.SetWind 0 10 0   (NORTH ↑)"));
-    UE_LOG(LogTemp, Warning, TEXT("   AtmosphereController.SetWind 0 -10 0  (SOUTH ↓)"));
-    UE_LOG(LogTemp, Warning, TEXT("\n   DIAGONAL WINDS:"));
-    UE_LOG(LogTemp, Warning, TEXT("   AtmosphereController.SetWind 10 10 0  (NORTHEAST ↗)"));
-    UE_LOG(LogTemp, Warning, TEXT("   AtmosphereController.SetWind -10 10 0 (NORTHWEST ↖)"));
-    UE_LOG(LogTemp, Warning, TEXT("\n   WIND STRENGTH:"));
-    UE_LOG(LogTemp, Warning, TEXT("   AtmosphereController.SetWindSpeed 2   (Calm breeze)"));
-    UE_LOG(LogTemp, Warning, TEXT("   AtmosphereController.SetWindSpeed 10  (Moderate wind)"));
-    UE_LOG(LogTemp, Warning, TEXT("   AtmosphereController.SetWindSpeed 25  (Strong wind)"));
-    
-    UE_LOG(LogTemp, Warning, TEXT("\n✅ WIND-WAVE INTEGRATION COMPLETE!"));
-    UE_LOG(LogTemp, Warning, TEXT("🌊 Waves now follow wind direction in real-time"));
-    UE_LOG(LogTemp, Warning, TEXT("🍃 Puddles show ripples, lakes show fetch waves"));
-    UE_LOG(LogTemp, Warning, TEXT("========================================\n"));
-}
-
-// ===== DEBUG TEMPORAL SYSTEM =====
-
-void AMasterWorldController::DebugTemporalSystem()
-{
-    UE_LOG(LogTemp, Warning, TEXT("=== TEMPORAL DEBUG ===="));
-    UE_LOG(LogTemp, Warning, TEXT("bEnableUnifiedTiming: %s"), bEnableUnifiedTiming ? TEXT("TRUE") : TEXT("FALSE"));
-    UE_LOG(LogTemp, Warning, TEXT("TemporalManager: %s"), TemporalManager ? TEXT("Valid") : TEXT("NULL"));
-    UE_LOG(LogTemp, Warning, TEXT("AtmosphereController: %s"), AtmosphereController ? TEXT("Valid") : TEXT("NULL"));
-    
-    if (!bEnableUnifiedTiming)
-    {
-        UE_LOG(LogTemp, Warning, TEXT("FIXING: Enabling unified timing..."));
-        bEnableUnifiedTiming = true;
-    }
-    
-    if (bLogSystemUpdates == false) 
-    {
-        UE_LOG(LogTemp, Warning, TEXT("FIXING: Enabling log system updates..."));
-        bLogSystemUpdates = true;
-    }
-    
-    UE_LOG(LogTemp, Warning, TEXT("=== TEMPORAL DEBUG COMPLETE ===="));
-}
-
-// ===== ATMOSPHERE INTEGRATION TEST =====
-
-void AMasterWorldController::TestAtmosphereIntegration()
-{
-    UE_LOG(LogTemp, Warning, TEXT("\n========================================"));
-    UE_LOG(LogTemp, Warning, TEXT("ATMOSPHERE INTEGRATION TEST"));
-    UE_LOG(LogTemp, Warning, TEXT("========================================"));
-    
-    // Test 1: Check if AtmosphereController exists
-    if (!AtmosphereController)
-    {
-        UE_LOG(LogTemp, Error, TEXT("TEST FAILED: No AtmosphereController found"));
-        return;
-    }
-    UE_LOG(LogTemp, Warning, TEXT("✅ TEST 1 PASSED: AtmosphereController exists"));
-    
-    // Test 2: Check if AtmosphericSystem exists on terrain
-    if (!MainTerrain || !MainTerrain->AtmosphericSystem)
-    {
-        UE_LOG(LogTemp, Error, TEXT("TEST FAILED: No AtmosphericSystem on terrain"));
-        return;
-    }
-    UE_LOG(LogTemp, Warning, TEXT("✅ TEST 2 PASSED: AtmosphericSystem exists"));
-    
-    // Test 3: Check if systems are connected (AtmosphereController has AtmosphericSystem reference)
-    // We can't check bSystemInitialized directly as it's private, but we can check the weather data
-    if (AtmosphereController->CurrentWeather.WeatherType == EWeatherType::Clear)
-    {
-        UE_LOG(LogTemp, Warning, TEXT("✅ TEST 3 PASSED: AtmosphereController has valid weather data"));
-    }
-    else
-    {
-        UE_LOG(LogTemp, Warning, TEXT("⚠️  TEST 3 WARNING: AtmosphereController weather may not be initialized"));
-    }
-    
-    // Test 4: Test weather change
-    UE_LOG(LogTemp, Warning, TEXT("\nTesting weather changes..."));
-    
-    // Set to clear weather
-    AtmosphereController->SetWeather(EWeatherType::Clear, 0.1f);
-    UE_LOG(LogTemp, Warning, TEXT("Weather set to CLEAR"));
-    
-    // Set to rain weather
-    AtmosphereController->SetWeather(EWeatherType::Rain, 0.1f);
-    UE_LOG(LogTemp, Warning, TEXT("Weather set to RAIN - precipitation should start within 30-60 seconds"));
-    
-    // Test 5: Check query methods
-    FVector TestLocation = MainTerrain->GetActorLocation() + FVector(1000, 1000, 100);
-    float Temperature = AtmosphereController->GetTemperatureAtLocation(TestLocation);
-    float Humidity = AtmosphereController->GetHumidityAtLocation(TestLocation);
-    FVector Wind = AtmosphereController->GetWindAtLocation(TestLocation);
-    float Precipitation = AtmosphereController->GetPrecipitationAtLocation(TestLocation);
-    
-    UE_LOG(LogTemp, Warning, TEXT("\nAtmosphere at test location:"));
-    UE_LOG(LogTemp, Warning, TEXT("  Temperature: %.1f°C"), Temperature);
-    UE_LOG(LogTemp, Warning, TEXT("  Humidity: %.2f"), Humidity);
-    UE_LOG(LogTemp, Warning, TEXT("  Wind: %s (Speed: %.1f m/s)"), *Wind.ToString(), Wind.Size());
-    UE_LOG(LogTemp, Warning, TEXT("  Precipitation: %.1f mm/hr"), Precipitation);
-    
-    // Test 6: Trigger a storm
-    AtmosphereController->TriggerStorm(2.0f, 60.0f);
-    UE_LOG(LogTemp, Warning, TEXT("\n⛈️  STORM TRIGGERED - Check for heavy rain!"));
-    
-    // Test 7: Check AtmosphericSystem weather patterns
-    if (MainTerrain->AtmosphericSystem->ActiveWeatherPatterns.Num() > 0)
-    {
-        UE_LOG(LogTemp, Warning, TEXT("✅ AtmosphericSystem has %d active weather patterns"), 
-               MainTerrain->AtmosphericSystem->ActiveWeatherPatterns.Num());
-    }
-    else
-    {
-        UE_LOG(LogTemp, Warning, TEXT("⚠️  No active weather patterns yet (may take time to generate)"));
-    }
-    
-    UE_LOG(LogTemp, Warning, TEXT("\n========================================"));
-    UE_LOG(LogTemp, Warning, TEXT("ATMOSPHERE INTEGRATION TEST COMPLETE"));
-    UE_LOG(LogTemp, Warning, TEXT("✅ Both systems are connected and working!"));
-    UE_LOG(LogTemp, Warning, TEXT("🌧️  Rain should appear within 30-60 seconds"));
-    UE_LOG(LogTemp, Warning, TEXT("========================================\n"));
-}
-
-
-void AMasterWorldController::TestAllSystemConnections()
-{
-    UE_LOG(LogTemp, Warning, TEXT("\n========================================"));
-    UE_LOG(LogTemp, Warning, TEXT("SYSTEM CONNECTION TEST"));
-    UE_LOG(LogTemp, Warning, TEXT("========================================"));
-    
-    // Test 1: Atmospheric scaling
-    if (MainTerrain && MainTerrain->AtmosphericSystem)
-    {
-        bool bRegistered = MainTerrain->AtmosphericSystem->IsRegisteredWithMaster();
-        bool bScaled = MainTerrain->AtmosphericSystem->IsSystemScaled();
-        UE_LOG(LogTemp, Warning, TEXT("AtmosphericSystem: Registered=%s, Scaled=%s"),
-            bRegistered ? TEXT("YES") : TEXT("NO"),
-            bScaled ? TEXT("YES") : TEXT("NO"));
-    }
-    
-    // Test 2: Water-Atmosphere connection
-    if (MainTerrain && MainTerrain->WaterSystem && MainTerrain->AtmosphericSystem)
-    {
-        bool bWaterKnowsAtmo = (MainTerrain->AtmosphericSystem->WaterSystem != nullptr);
-        bool bWaterKnowsMaster = (MainTerrain->WaterSystem->CachedMasterController != nullptr);
-        UE_LOG(LogTemp, Warning, TEXT("Water-Atmosphere: Connected=%s, Master=%s"),
-            bWaterKnowsAtmo ? TEXT("YES") : TEXT("NO"),
-            bWaterKnowsMaster ? TEXT("YES") : TEXT("NO"));
-    }
-    
-    // Test 3: Controller connections
-    if (AtmosphereController)
-    {
-        bool bHasAtmoSystem = (AtmosphereController->AtmosphericSystem != nullptr);
-        bool bHasWaterSystem = (AtmosphereController->WaterSystem != nullptr);
-        UE_LOG(LogTemp, Warning, TEXT("AtmosphereController: AtmoSystem=%s, WaterSystem=%s"),
-            bHasAtmoSystem ? TEXT("YES") : TEXT("NO"),
-            bHasWaterSystem ? TEXT("YES") : TEXT("NO"));
-    }
-    
-    UE_LOG(LogTemp, Warning, TEXT("========================================\n"));
 }
 
 
@@ -2985,96 +2711,9 @@ void AMasterWorldController::DiagnoseTemporalManagerIntegration()
 
 
 
-/*void AMasterWorldController::TestWaterConservation()
-{
-    UE_LOG(LogTemp, Warning, TEXT("🧪 Testing Water Conservation..."));
-    
-    // Force water budget update
-    UpdateSystemWaterBudget();
-    
-    float InitialTotal = GetTotalWaterVolume();
-    UE_LOG(LogTemp, Warning, TEXT("Initial total water: %.2f m³"), InitialTotal);
-    
-    // Test precipitation → surface conversion
-    if (MainTerrain && MainTerrain->AtmosphericSystem && MainTerrain->WaterSystem)
-    {
-        FVector TestLocation = MainTerrain->GetActorLocation() + FVector(1000, 1000, 0);
-        
-        // Add some atmospheric moisture
-        MainTerrain->AtmosphericSystem->CreateWeatherEffect(
-            FVector2D(1000, 1000), 500.0f, 5.0f);
-        
-        // Wait a frame for processing
-        GetWorld()->GetTimerManager().SetTimer(
-            FTimerHandle(),
-            [this, InitialTotal]()
-            {
-                UpdateSystemWaterBudget();
-                float FinalTotal = GetTotalWaterVolume();
-                float Difference = FMath::Abs(FinalTotal - InitialTotal);
-                float PercentChange = InitialTotal > 0 ? (Difference / InitialTotal) * 100.0f : 0.0f;
-                
-                if (PercentChange < 1.0f)
-                {
-                    UE_LOG(LogTemp, Warning, TEXT("✅ Water conservation: %.3f%% change"), PercentChange);
-                }
-                else
-                {
-                    UE_LOG(LogTemp, Error, TEXT("❌ Water conservation violation: %.3f%% change"), PercentChange);
-                }
-            },
-            1.0f,
-            false
-        );
-    }
-}
-*/
 
-float AMasterWorldController::TransferPrecipitationToSurface(
-    float PrecipitationRate,
-    float DeltaTime,
-    FVector2D AtmosphericGridPos,
-    FVector2D& OutWaterGridPos) const
-{
-    // Normalize delta time to prevent water multiplication
-    float NormalizedDeltaTime = FMath::Min(DeltaTime, 1.0f/30.0f);
-    
-    // Convert precipitation to water depth
-    float MetersPerSec = PrecipitationRateToMetersPerSecond(PrecipitationRate);
-    float WaterDepthToAdd = MetersPerSec * NormalizedDeltaTime;
-    
-    // Convert grid position
-    OutWaterGridPos = ConvertAtmosphericToWaterGrid(AtmosphericGridPos);
-    
-    // Account for cell size differences
-    float AtmosCellSize = WorldScalingConfig.AtmosphericConfig.CellSize;
-    float WaterCellSize = WorldScalingConfig.WaterConfig.WaterCellScale;
-    float AreaRatio = (AtmosCellSize * AtmosCellSize) / (WaterCellSize * WaterCellSize);
-    
-    // Return adjusted water depth
-    return WaterDepthToAdd * AreaRatio;
-}
-/*
-float AMasterWorldController::TransferEvaporationToAtmosphere(
-    float EvaporationDepth,
-    FVector2D WaterGridPos,
-    FVector2D& OutAtmosphericGridPos) const
-{
-    // Convert to moisture mass
-    float MoistureMass = DepthToMoistureMass(EvaporationDepth);
-    
-    // Convert grid position
-    OutAtmosphericGridPos = ConvertWaterToAtmosphericGrid(WaterGridPos);
-    
-    // Account for cell size differences
-    float WaterCellSize = WorldScalingConfig.WaterConfig.WaterCellScale;
-    float AtmosCellSize = WorldScalingConfig.AtmosphericConfig.CellSize;
-    float AreaRatio = (WaterCellSize * WaterCellSize) / (AtmosCellSize * AtmosCellSize);
-    
-    // Return adjusted moisture mass
-    return MoistureMass * AreaRatio;
-}
-*/
+
+
 FVector2D AMasterWorldController::ConvertWaterToGeologyGrid(FVector2D WaterPos) const
 {
     float ScaleFactor = WorldScalingConfig.WaterConfig.WaterCellScale /
@@ -3164,36 +2803,48 @@ float AMasterWorldController::TransferEvaporationToAtmosphere(
 
 void AMasterWorldController::TransferSurfaceToGroundwater(
     FVector WorldLocation,
-    float InfiltrationDepth)
+    float InfiltrationVolume)
 {
-    if (!GeologyController) return;
+    if (!GeologyController || InfiltrationVolume <= 0.0f) return;
     
-    // Convert infiltration depth to volume
-    float WaterVolume = GetWaterCellVolume(InfiltrationDepth);
+    // 1. UPDATE BUDGET FIRST (Authority Decision)
+    // REMOVED: TotalSurfaceWater -= InfiltrationVolume; - Let UpdateSystemWaterBudget() count it
+    TotalGroundwater += InfiltrationVolume;
     
-    // Apply to geology system
-    GeologyController->ApplyInfiltration(WorldLocation, InfiltrationDepth);
-    
-    // Track for water budget
-    TotalSurfaceWater -= WaterVolume;
-    TotalGroundwater += WaterVolume;
+    // 2. SYNC GEOLOGY CONTROLLER (Pure Implementation)
+    GeologyController->AddWaterToWaterTable(InfiltrationVolume);
 }
 
 void AMasterWorldController::TransferGroundwaterToSurface(
     FVector WorldLocation,
     float DischargeVolume)
 {
-    if (!MainTerrain || !MainTerrain->WaterSystem) return;
+    if (!MainTerrain || !MainTerrain->WaterSystem || DischargeVolume <= 0.0f) return;
     
-    // Convert volume to water depth
+    // Check if we have enough groundwater
+    if (TotalGroundwater < DischargeVolume)
+    {
+        DischargeVolume = TotalGroundwater;  // Take what we can
+    }
+    
+    // 1. UPDATE BUDGET FIRST (Authority Decision)
+    TotalGroundwater -= DischargeVolume;
+    // REMOVED: TotalSurfaceWater += DischargeVolume; - Let UpdateSystemWaterBudget() count it
+    
+    // 2. APPLY TO SIMULATION (Pure Implementation)
     float WaterDepth = DischargeVolume / GetWaterCellArea();
-    
-    // Add to surface water
     MainTerrain->WaterSystem->AddWater(WorldLocation, WaterDepth);
     
-    // Track for water budget
-    TotalGroundwater -= DischargeVolume;
-    TotalSurfaceWater += DischargeVolume;
+    // 3. SYNC GEOLOGY CONTROLLER
+    
+    UE_LOG(LogTemp, VeryVerbose, TEXT("[WATER TRANSFER] Groundwater->Surface: %.2f m³ at %s (Ground: %.0f m³, Surface: %.0f m³)"),
+           DischargeVolume, *WorldLocation.ToString(), TotalGroundwater, TotalSurfaceWater);
+    
+    // Keep GeologyController in sync
+   /* if (GeologyController)
+    {
+        GeologyController->RemoveWaterFromWaterTable(DischargeVolume);
+    }*/
 }
 
 float AMasterWorldController::GetWaterCellArea() const
@@ -3209,5 +2860,32 @@ float AMasterWorldController::GetWaterCellArea() const
         }
     }
     return WaterCellSize * WaterCellSize;
+}
+
+void AMasterWorldController::SetInitialGroundwater(float VolumeM3)
+{
+    TotalGroundwater = VolumeM3;
+    
+    // Don't update water budget during initialization - let the delayed timer handle it
+    // This prevents the budget calculation from running before water emergence happens
+    
+    UE_LOG(LogTemp, Warning, TEXT("[WATER BUDGET] Initial groundwater set to %.0f m³"), VolumeM3);
+}
+
+bool AMasterWorldController::CanGroundwaterEmerge(float RequestedVolume) const
+{
+    return TotalGroundwater >= RequestedVolume;
+}
+
+bool AMasterWorldController::RemoveGroundwater(float VolumeM3)
+{
+    if (TotalGroundwater >= VolumeM3)
+    {
+        TotalGroundwater -= VolumeM3;
+        // This water leaves the system (edge drainage)
+        UserRemovedWater += VolumeM3;  // Track as "removed"
+        return true;
+    }
+    return false;
 }
 // End of file

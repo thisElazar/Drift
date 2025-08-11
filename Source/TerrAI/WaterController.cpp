@@ -48,25 +48,15 @@ void AWaterController::BeginPlay()
         UE_LOG(LogTemp, Warning, TEXT("WaterController: No terrain assigned - set TargetTerrain in Blueprint"));
     }
     
+    // Initialize GPU water if enabled
+       if (bUseGPUVertexDisplacement && WaterSystem)
+       {
+           InitializeGPUWaterSystem();
+       }
+    
     // Register with MasterController for coordinate authority only
     RegisterWithMasterController();
     
-    //Wave Tuning BP Integration
-    if (WaterSystem)
-        {
-            // Pass tuning parameters to water system
-            WaterSystem->SetWaveTuningParameters(
-                RiverWaveAmplitude,
-                RiverForeEdgeAmplitude,
-                RiverForeEdgeSpeed,
-                RiverForeEdgeWavelength,
-                RapidsTurbulenceScale,
-                RapidsFrequency,
-                RapidsJumpScale,
-                CollisionWaveScale,
-                CollisionThreshold
-            );
-        }
 }
 
 void AWaterController::Tick(float DeltaTime)
@@ -77,6 +67,29 @@ void AWaterController::Tick(float DeltaTime)
     {
         UpdateWaterSystemFromController();
     }
+    
+    // Update GPU water if enabled
+        if (bUseGPUVertexDisplacement && WaterSystem)
+        {
+            WaterSystem->UpdateGPUWaveParameters(DeltaTime);
+            
+            // Show stats if requested
+            if (bShowGPUStats && GEngine)
+            {
+                static float StatsTimer = 0.0f;
+                StatsTimer += DeltaTime;
+                if (StatsTimer > 1.0f) // Update every second
+                {
+                    StatsTimer = 0.0f;
+                    FString StatsMessage = FString::Printf(
+                        TEXT("GPU Water: Scale=%.2f Speed=%.2f Wind=(%.2f,%.2f) Strength=%.2f"),
+                        GPUWaveScale, GPUWaveSpeed,
+                        WindDirection.X, WindDirection.Y, WindStrength
+                    );
+                    GEngine->AddOnScreenDebugMessage(1, 1.0f, FColor::Cyan, StatsMessage);
+                }
+            }
+        }
 }
 
 void AWaterController::RegisterWithMasterController()
@@ -529,3 +542,151 @@ UMaterialInterface* AWaterController::GetCurrentWaterMaterial() const
         default: return WaterMaterial;
     }
 }
+
+void AWaterController::EnableGPUWater()
+{
+    if (!WaterSystem)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("WaterController: No WaterSystem available"));
+        return;
+    }
+    
+    bUseGPUVertexDisplacement = true;
+    
+    // Initialize GPU system if needed
+    WaterSystem->InitializeGPUDisplacement();
+    
+    // Apply material
+    if (GPUWaterMaterial)
+    {
+        WaterSystem->WaterMaterialWithDisplacement = GPUWaterMaterial;
+    }
+    
+    // Enable GPU vertex displacement
+    WaterSystem->ToggleVertexDisplacement(true);
+    
+    // Update parameters
+    UpdateGPUWaveParameters();
+    
+    UE_LOG(LogTemp, Warning, TEXT("WaterController: GPU Water ENABLED"));
+}
+
+void AWaterController::DisableGPUWater()
+{
+    if (!WaterSystem)
+        return;
+    
+    bUseGPUVertexDisplacement = false;
+    WaterSystem->ToggleVertexDisplacement(false);
+    
+    UE_LOG(LogTemp, Warning, TEXT("WaterController: GPU Water DISABLED"));
+}
+
+void AWaterController::ToggleGPUWater()
+{
+    if (bUseGPUVertexDisplacement)
+    {
+        DisableGPUWater();
+    }
+    else
+    {
+        EnableGPUWater();
+    }
+}
+
+void AWaterController::UpdateGPUWaveParameters()
+{
+    if (!WaterSystem)
+        return;
+    
+    // Update material parameters
+    WaterSystem->MaterialParams.WaveScale = GPUWaveScale;
+    WaterSystem->MaterialParams.WaveSpeed = GPUWaveSpeed;
+    WaterSystem->MaterialParams.WindDirection = WindDirection;
+    WaterSystem->MaterialParams.WindStrength = WindStrength;
+    
+    // Update GPU displacement settings
+    if (GPUWaterMaterial)
+    {
+        WaterSystem->WaterMaterialWithDisplacement = GPUWaterMaterial;
+    }
+}
+
+void AWaterController::InitializeGPUWaterSystem()
+{
+    if (!WaterSystem)
+    {
+        UE_LOG(LogTemp, Error, TEXT("WaterController: Cannot initialize GPU water - no WaterSystem"));
+        return;
+    }
+    
+    // Initialize the GPU displacement system
+    WaterSystem->InitializeGPUDisplacement();
+    
+    // Set initial parameters
+    UpdateGPUWaveParameters();
+    
+    // Enable if requested
+    if (bUseGPUVertexDisplacement)
+    {
+        WaterSystem->ToggleVertexDisplacement(true);
+        UE_LOG(LogTemp, Warning, TEXT("WaterController: GPU Water System Initialized and Enabled"));
+    }
+}
+
+// Console commands
+void AWaterController::SetGPUWaves(bool bEnable)
+{
+    if (bEnable)
+        EnableGPUWater();
+    else
+        DisableGPUWater();
+}
+
+void AWaterController::SetWaveScale(float Scale)
+{
+    GPUWaveScale = Scale;
+    UpdateGPUWaveParameters();
+}
+
+void AWaterController::SetWaveSpeed(float Speed)
+{
+    GPUWaveSpeed = Speed;
+    UpdateGPUWaveParameters();
+}
+
+void AWaterController::SetWind(float X, float Y, float Strength)
+{
+    WindDirection = FVector2D(X, Y).GetSafeNormal();
+    WindStrength = Strength;
+    UpdateGPUWaveParameters();
+}
+
+#if WITH_EDITOR
+void AWaterController::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+    Super::PostEditChangeProperty(PropertyChangedEvent);
+    
+    if (!PropertyChangedEvent.Property)
+        return;
+    
+    FName PropertyName = PropertyChangedEvent.Property->GetFName();
+    
+    // Handle GPU water property changes
+    if (PropertyName == GET_MEMBER_NAME_CHECKED(AWaterController, bUseGPUVertexDisplacement))
+    {
+        if (bUseGPUVertexDisplacement)
+            EnableGPUWater();
+        else
+            DisableGPUWater();
+    }
+    else if (PropertyName == GET_MEMBER_NAME_CHECKED(AWaterController, GPUWaterMaterial) ||
+             PropertyName == GET_MEMBER_NAME_CHECKED(AWaterController, GPUWaveScale) ||
+             PropertyName == GET_MEMBER_NAME_CHECKED(AWaterController, GPUWaveSpeed) ||
+             PropertyName == GET_MEMBER_NAME_CHECKED(AWaterController, WindDirection) ||
+             PropertyName == GET_MEMBER_NAME_CHECKED(AWaterController, WindStrength))
+    {
+        UpdateGPUWaveParameters();
+    }
+}
+#endif

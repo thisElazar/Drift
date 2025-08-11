@@ -29,7 +29,7 @@
 #include "Kismet/GameplayStatics.h"
 #include "MasterController.h"
 #include "WaterController.h"  // CRITICAL: Add WaterController include
-#include "TimerManager.h"
+#include "TemporalManager.h"
 
 using namespace TerrAIConstants;  // Use named constants
 
@@ -154,7 +154,7 @@ void ADynamicTerrain::Tick(float DeltaTime)
     // Update water system
     if (WaterSystem && WaterSystem->IsSystemReady())
     {
-        WaterSystem->UpdateWaterSimulation(DeltaTime);
+    WaterSystem->UpdateWaterSimulation(DeltaTime);
     }
     
     // Update atmospheric system
@@ -360,7 +360,7 @@ void ADynamicTerrain::ModifyTerrainAtIndex(int32 X, int32 Y, float Radius, float
                     int32 Index = CurrentY * TerrainWidth + CurrentX;
                     if (Index >= 0 && Index < HeightMap.Num())
                     {
-                        // Quadratic falloff: smooth edges, strong center (more natural than linear)
+                        // ORIGINAL: Simple quadratic falloff
                         float Falloff = FMath::Pow(1.0f - (Distance / Radius), 2.0f);
                         float HeightChange = Strength * Falloff * (bRaise ? 1.0f : -1.0f);
                         
@@ -432,12 +432,55 @@ void ADynamicTerrain::ModifyTerrainAtIndex(int32 X, int32 Y, float Radius, float
         }
     }
     
-    // Invalidate water cache after terrain changes
-       if (WaterSystem)
-       {
-           WaterSystem->ForceTerrainSync();
-           WaterSystem->UpdateWaterDepthTexture();
-       }
+    // NEW: Water table emergence check
+        if (!bRaise && CachedMasterController && CachedMasterController->GeologyController)
+        {
+            AGeologyController* Geology = CachedMasterController->GeologyController;
+            float WaterTableElev = Geology->GlobalWaterTableElevation;
+            
+            // Collect all modified points
+            TArray<FVector> ModifiedPoints;
+            
+            for (int32 OffsetY = -IntRadius; OffsetY <= IntRadius; OffsetY++)
+            {
+                for (int32 OffsetX = -IntRadius; OffsetX <= IntRadius; OffsetX++)
+                {
+                    int32 CurrentX = X + OffsetX;
+                    int32 CurrentY = Y + OffsetY;
+                    
+                    if (CurrentX >= 0 && CurrentX < TerrainWidth &&
+                        CurrentY >= 0 && CurrentY < TerrainHeight)
+                    {
+                        float Distance = FMath::Sqrt((float)(OffsetX * OffsetX + OffsetY * OffsetY));
+                        if (Distance <= Radius)
+                        {
+                            int32 Index = CurrentY * TerrainWidth + CurrentX;
+                            float TerrainHeight = HeightMap[Index];
+                            
+                            if (TerrainHeight < WaterTableElev)
+                            {
+                                FVector WorldPos = TerrainToWorldPosition(CurrentX, CurrentY);
+                                ModifiedPoints.Add(WorldPos);
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Batch water emergence
+            if (ModifiedPoints.Num() > 0 && WaterSystem)
+            {
+                Geology->EmergenceWaterAtPoints(ModifiedPoints, WaterSystem);
+            }
+        }
+    
+    // NEW: Force water system to sync with terrain changes
+    if (WaterSystem)
+    {
+        WaterSystem->ForceTerrainSync();
+        //WaterSystem->bEnableWaterSimulation = true;
+        UE_LOG(LogTemp, Warning, TEXT("WaterSystem Synced and Restarted"));
+    }
 }
 
 // ===== CHUNK SYSTEM =====
@@ -1091,6 +1134,39 @@ float ADynamicTerrain::GetHeightSafe(int32 X, int32 Y) const
             UE_LOG(LogTemp, Error, TEXT("HeightMap index %d out of bounds (array size: %d)"), Index, HeightMap.Num());
         }
     }
+    
+    // NEW: Instead of returning 0, sample valid neighbors to prevent drainage holes
+    float NeighborSum = 0.0f;
+    int32 ValidNeighbors = 0;
+    
+    for (int32 dy = -1; dy <= 1; dy++)
+    {
+        for (int32 dx = -1; dx <= 1; dx++)
+        {
+            if (dx == 0 && dy == 0) continue; // Skip center
+            
+            int32 NX = X + dx;
+            int32 NY = Y + dy;
+            
+            // Check if neighbor is valid
+            if (NX >= 0 && NX < TerrainWidth && NY >= 0 && NY < TerrainHeight)
+            {
+                int32 NIndex = NY * TerrainWidth + NX;
+                if (NIndex >= 0 && NIndex < HeightMap.Num())
+                {
+                    NeighborSum += HeightMap[NIndex];
+                    ValidNeighbors++;
+                }
+            }
+        }
+    }
+    
+    if (ValidNeighbors > 0)
+    {
+        return NeighborSum / ValidNeighbors; // Return average of valid neighbors
+    }
+    
+    // Only return 0 if absolutely no valid neighbors exist
     return 0.0f;
 }
 
@@ -1921,6 +1997,7 @@ void ADynamicTerrain::ForceUpdateChunkGroup(const TArray<int32>& ChunkIndices)
             GenerateChunkMesh(Chunk.ChunkX, Chunk.ChunkY);
         }
     }
+    
 }
 
 bool ADynamicTerrain::ValidateChunkCoordinateConsistency() const
@@ -2184,18 +2261,14 @@ void ADynamicTerrain::InitializeWithMasterController(AMasterWorldController* Mas
     UE_LOG(LogTemp, Warning, TEXT("DynamicTerrain: Authority established - %dx%d terrain, %dx%d chunks"),
            TerrainWidth, TerrainHeight, ChunksX, ChunksY);
     
-    // Only generate terrain geometry - DO NOT initialize systems here
-    // MasterController will call system initialization in Phase 5
+
     GenerateProceduralTerrain();
     InitializeChunks();
     
     UE_LOG(LogTemp, Warning, TEXT("DynamicTerrain: Terrain generation complete, awaiting system initialization"));
 }
 
-// DELETE ENTIRE FUNCTION - no fallback allowed
-// InitializeStandaloneMode() removed - undermines authority
 
-// ADD: Authority validation function
 bool ADynamicTerrain::ValidateMasterControllerAuthority() const
 {
     bool bValid = true;
@@ -2223,8 +2296,6 @@ bool ADynamicTerrain::ValidateMasterControllerAuthority() const
     return bValid;
 }
 
-// Removed redundant WorldToTerrainCoordinatesAuthority function - use WorldToTerrainCoordinates instead
-
 void ADynamicTerrain::SetWorldSize(ETerrainWorldSize NewSize)
 {
     if (NewSize == CurrentWorldSize)
@@ -2249,8 +2320,6 @@ void ADynamicTerrain::ApplyWorldConfiguration(const FWorldSizeConfig& Config)
     ChunkSize = Config.ChunkSize;
     ChunksX = Config.ChunksX;
     ChunksY = Config.ChunksY;
-    
-    // Brush scaling now handled by MasterController authority
     
     UE_LOG(LogTemp, Warning, TEXT("Applied world config: %dx%d terrain, %dx%d chunks"), 
            TerrainWidth, TerrainHeight, ChunksX, ChunksY);

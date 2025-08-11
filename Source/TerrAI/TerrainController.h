@@ -38,6 +38,7 @@ enum class EEditingMode : uint8
 {
     Terrain        UMETA(DisplayName = "Terrain Editing"),
     Water          UMETA(DisplayName = "Water Editing"),
+    Spring         UMETA(DisplayName = "Spring Editing"),
     Atmosphere     UMETA(DisplayName = "Atmosphere Editing")
 };
 
@@ -171,6 +172,10 @@ public:
 
     UFUNCTION(BlueprintCallable, Category = "Water System")
     void ToggleRain();
+    
+    // Menu system integration
+    UFUNCTION(BlueprintCallable, Category = "Menu")
+    void ReturnToMainMenu();
 
     // ===== TIME CONTROL SETTINGS =====
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Time Control")
@@ -235,6 +240,9 @@ public:
 
     UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input")
     class UInputAction* ReturnToOverheadAction;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input")
+    class UInputAction* ReturnToMainMenuAction;
 
     // Camera system properties
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera System")
@@ -245,11 +253,42 @@ public:
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera System")
     float TransitionSpeed = TerrAIConstants::CAMERA_TRANSITION_SPEED;
+    
     UFUNCTION()
     void HandleWaterToggle();
 
     UFUNCTION()
     void HandleRainToggle();
+    
+    // Spring editing functions
+        UFUNCTION(BlueprintCallable, Category = "Spring Editing")
+        void StartSpringEditing(bool bAdd);
+
+        UFUNCTION(BlueprintCallable, Category = "Spring Editing")
+        void StopSpringEditing();
+
+        // Calculate spring flow based on brush size
+        UFUNCTION(BlueprintPure, Category = "Spring Editing")
+        float CalculateSpringFlowFromBrushSize() const;
+
+        // Spring editing properties
+        UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Spring Editing")
+        float MinSpringFlowRate = 0.1f;  // m³/s for smallest brush
+
+        UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Spring Editing")
+        float MaxSpringFlowRate = 10.0f;  // m³/s for largest brush
+
+        // Spring editing material for cursor preview
+        UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Materials")
+        UMaterialInterface* SpringAddMaterial = nullptr;
+
+        UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Materials")
+        UMaterialInterface* SpringRemoveMaterial = nullptr;
+
+        // Reference to Geology Controller
+        UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Controllers")
+        class AGeologyController* GeologyController = nullptr;
+
 
 protected:
     virtual void BeginPlay() override;
@@ -421,6 +460,31 @@ protected:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Brush Materials")
     UMaterialInterface* WaterRemoveMaterial = nullptr;
 
+    // Spring editing input actions
+        UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input")
+        class UInputAction* AddSpringAction;
+
+        UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input")
+        class UInputAction* RemoveSpringAction;
+
+        // Spring editing state
+        bool bIsEditingSpring = false;
+        bool bIsAddingSpring = false;
+        bool bIsRemovingSpring = false;
+        
+        // Dynamic removal radius (matches brush size)
+        float SpringRemovalRadius = 200.0f;
+
+        // Spring editing input handlers
+        void StartAddSpring(const FInputActionValue& Value);
+        void StopAddSpring(const FInputActionValue& Value);
+        void StartRemoveSpring(const FInputActionValue& Value);
+        void StopRemoveSpring(const FInputActionValue& Value);
+
+        // Spring update function
+        void UpdateSpringEditing(float DeltaTime);
+
+    
     // Legacy material support (deprecated - use above instead)
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Brush Preview", meta = (DeprecatedProperty, DeprecationMessage = "Use TerrainEditMaterial instead"))
     UMaterial* RaiseBrushMaterial = nullptr;

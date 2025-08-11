@@ -100,8 +100,6 @@ void AAtmosphereController::UpdateAtmosphericSystem(float DeltaTime)
        
     }
     
-    UE_LOG(LogTemp, Warning, TEXT("UpdateAtmosphericSystem called with DT=%.4f"), DeltaTime);
-    
     // Track update time for debugging
     LastSystemUpdateTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
     

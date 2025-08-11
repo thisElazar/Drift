@@ -41,10 +41,10 @@ UCLASS(BlueprintType, Blueprintable)
 class TERRAI_API AWaterController : public AActor
 {
     GENERATED_BODY()
-
+    
 public:
     AWaterController();
-
+    
     // ===== CORE SYSTEM =====
     
     UFUNCTION(BlueprintCallable, Category = "Water System")
@@ -52,7 +52,7 @@ public:
     
     UFUNCTION(BlueprintCallable, Category = "Water System")
     void ResetWaterSystem();
-
+    
     // ===== WATER-SPECIFIC BRUSH FUNCTIONS =====
     
     UFUNCTION(BlueprintCallable, Category = "Water Brush")
@@ -64,7 +64,7 @@ public:
     // ✅ TERRAIN SYNCHRONIZATION
     UFUNCTION(BlueprintCallable, Category = "Water System")
     void NotifyTerrainChanged();
-
+    
     // ===== MATERIALS - EASY ACCESS =====
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Materials")
@@ -134,22 +134,22 @@ public:
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Physics")
     bool bEnableWaterSimulation = true;
-
+    
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Physics")
     float WaterFlowSpeed = 50.0f;
-
+    
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Physics")
     float WaterEvaporationRate = 0.01f;
-
+    
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Physics")
     float WaterAbsorptionRate = 0.02f;
-
+    
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Physics")
     float WaterDamping = 0.95f;
-
+    
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Physics")
     float MaxWaterVelocity = 100.0f;
-
+    
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Physics")
     float MinWaterDepth = 0.01f;
     
@@ -174,13 +174,13 @@ public:
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Erosion")
     bool bEnableErosion = true;
-
+    
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Erosion")
     float ErosionRate = 0.1f;
-
+    
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Erosion")
     float MinErosionVelocity = 15.0f;
-
+    
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Erosion")
     float DepositionRate = 0.05f;
     
@@ -188,13 +188,13 @@ public:
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather")
     bool bIsRaining = false;
-
+    
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather")
     float RainIntensity = 1.0f;
-
+    
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather")
     float WeatherChangeInterval = 60.0f;
-
+    
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather")
     bool bAutoWeather = false;
     
@@ -236,7 +236,7 @@ public:
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug")
     bool bShowWaterStats = true;
-
+    
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug")
     bool bShowWaterDebugTexture = false;
     
@@ -266,149 +266,50 @@ public:
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Classification")
     float RapidsFlowThreshold = 20.0f;
-
+    
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Classification")
     float RapidsGradientThreshold = 45.0f;
-
+    
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Classification")
     float RiverFlowThreshold = 5.0f;
-
+    
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Classification")
     float PuddleDepthThreshold = 0.1f;
-
+    
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Classification")
     float PondDepthThreshold = 1.0f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|River")
-    float RiverWaveAmplitude = 0.02f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|River")
-    float RiverWavelengthMultiplier = 4.0f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|River")
-    float RiverMaxAmplitude = 0.5f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|River")
-    float RiverFroudeLimit = 1.5f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|River")
-    float RiverAngleSpread = 0.2f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|River")
-    float RiverAngleDamping = 0.3f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|River")
-    float RiverFlowModulationMin = 0.7f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|River")
-    float RiverFlowModulationMax = 0.3f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|River")
-    float RiverTurbulenceScale = 0.01f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|River")
-    float RiverTurbulenceSpeed = 3.0f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|River")
-    float RiverForeEdgeAmplitude = 0.025f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|River")
-    float RiverForeEdgeSpeed = 0.4f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|River")
-    float RiverForeEdgeWavelength = 3.0f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|River")
-    float RiverForeEdgeHarmonic = 0.4f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Rapids")
-    float RapidsTurbulenceScale = 0.05f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Rapids")
-    float RapidsFrequency = 0.2f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Rapids")
-    float RapidsTimeScale = 6.0f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Rapids")
-    float RapidsGradientDivisor = 30.0f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Rapids")
-    float RapidsMaxScale = 1.5f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Rapids")
-    float RapidsJumpScale = 0.04f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Rapids")
-    float RapidsJumpTimeScale = 3.0f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Puddle")
-    float PuddleAmplitude = 0.002f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Puddle")
-    float PuddleWavelength = 0.017f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Puddle")
-    float PuddleTimeScale = 0.23f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Pond")
-    float PondAmplitude = 0.01f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Pond")
-    float PondFrequency = 0.3f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Pond")
-    float PondTimeScale = 2.0f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Pond")
-    float PondWindThreshold = 1.0f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Pond")
-    float PondWindScale = 0.01f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Pond")
-    float PondWindFrequency = 30.0f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Lake")
-    float LakeDepthLimit = 0.5f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Lake")
-    float LakeFetchCoefficient = 0.0016f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Lake")
-    float LakeWavelengthBase = 20.0f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Lake")
-    float LakeWavelengthScale = 1.618f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Lake")
-    float LakeAmplitudeDivisor = 4.0f;
-
+    
+    // River parameters removed - using physics-based wave generation
+    
+    // Rapids parameters removed - using physics-based wave generation
+    
+    // Puddle parameters removed - using physics-based wave generation
+    
+    // Pond parameters removed - using physics-based wave generation
+    
+    // Lake parameters removed - using physics-based wave generation
+    
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Collision")
     float CollisionFlowThreshold = 3.0f;
-
+    
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Collision")
     float CollisionSampleDistance = 150.0f;
-
+    
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Collision")
     float CollisionThreshold = -0.3f;
-
+    
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Collision")
     float CollisionWaveScale = 0.1f;
-
+    
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Collision")
     float CollisionTimeScale = 12.0f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Global")
-    float GlobalDepthClampMin = -0.3f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Global")
-    float GlobalDepthClampMax = 0.3f;
-
+    
+    // Global clamp parameters removed - handled by physics-based system
+    
 protected:
     virtual void BeginPlay() override;
     virtual void Tick(float DeltaTime) override;
-
+    
 private:
     UPROPERTY()
     ADynamicTerrain* TargetTerrain = nullptr;
@@ -427,4 +328,65 @@ private:
     void ApplySettingsToWaterSystem();
     void UpdateWaterSystemFromController();
     UMaterialInterface* GetCurrentWaterMaterial() const;
+    
+    
+public:
+    // ===== GPU VERTEX DISPLACEMENT CONTROLS =====
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Water", meta = (DisplayPriority = 1))
+    bool bUseGPUVertexDisplacement = false;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Water", meta = (DisplayPriority = 2))
+    UMaterialInterface* GPUWaterMaterial = nullptr;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Water", meta = (DisplayPriority = 3))
+    float GPUWaveScale = 1.0f;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Water", meta = (DisplayPriority = 4))
+    float GPUWaveSpeed = 1.0f;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Water|Wind", meta = (DisplayPriority = 5))
+    FVector2D WindDirection = FVector2D(1.0f, 0.0f);
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Water|Wind", meta = (DisplayPriority = 6))
+    float WindStrength = 1.0f;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Water|Debug")
+    bool bShowGPUStats = false;
+    
+    // Blueprint callable functions for runtime control
+    UFUNCTION(BlueprintCallable, Category = "GPU Water", CallInEditor)
+    void EnableGPUWater();
+    
+    UFUNCTION(BlueprintCallable, Category = "GPU Water", CallInEditor)
+    void DisableGPUWater();
+    
+    UFUNCTION(BlueprintCallable, Category = "GPU Water", CallInEditor)
+    void ToggleGPUWater();
+    
+    UFUNCTION(BlueprintCallable, Category = "GPU Water")
+    void UpdateGPUWaveParameters();
+    
+    UFUNCTION(BlueprintCallable, Category = "GPU Water", CallInEditor)
+    void InitializeGPUWaterSystem();
+    
+    // Console command overrides
+    UFUNCTION(Exec)
+    void SetGPUWaves(bool bEnable);
+    
+    UFUNCTION(Exec)
+    void SetWaveScale(float Scale);
+    
+    UFUNCTION(Exec)
+    void SetWaveSpeed(float Speed);
+    
+    UFUNCTION(Exec)
+    void SetWind(float X, float Y, float Strength);
+    
+protected:
+    // Override PostEditChangeProperty to handle changes in editor
+#if WITH_EDITOR
+    virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif
+    
 };

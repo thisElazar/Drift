@@ -9,6 +9,7 @@
 #include "DrawDebugHelpers.h"
 #include "Kismet/GameplayStatics.h"
 #include "Engine/World.h"
+#include "ProceduralMeshComponent.h"
 
 AGeologyController::AGeologyController()
 {
@@ -22,6 +23,22 @@ void AGeologyController::BeginPlay()
     Super::BeginPlay();
     
     UE_LOG(LogTemp, Warning, TEXT("GeologyController: Beginning play"));
+    
+    // FIRST: Find master controller before anything else
+    if (!MasterController)
+    {
+        TArray<AActor*> MasterControllers;
+        UGameplayStatics::GetAllActorsOfClass(GetWorld(), AMasterWorldController::StaticClass(), MasterControllers);
+        if (MasterControllers.Num() > 0)
+        {
+            MasterController = Cast<AMasterWorldController>(MasterControllers[0]);
+            if (MasterController)
+            {
+                RegisterWithMasterController(MasterController);
+                UE_LOG(LogTemp, Warning, TEXT("GeologyController: Found and registered with MasterController"));
+            }
+        }
+    }
     
     // Find existing systems
     if (!WaterSystem)
@@ -40,20 +57,11 @@ void AGeologyController::BeginPlay()
     // Initialize the geology grid
     InitializeGeologyGrid();
     
-    // Initialize master controller reference
-    if (!MasterController)
-    {
-        TArray<AActor*> MasterControllers;
-        UGameplayStatics::GetAllActorsOfClass(GetWorld(), AMasterWorldController::StaticClass(), MasterControllers);
-        if (MasterControllers.Num() > 0)
-        {
-            MasterController = Cast<AMasterWorldController>(MasterControllers[0]);
-            if (MasterController)
-            {
-                RegisterWithMasterController(MasterController);
-            }
-        }
-    }
+    // Initialize water table (now MasterController should be available)
+    InitializeWaterTable();
+    
+    // Initial water table checking is now handled by MasterController during initialization
+    // to ensure proper timing with other systems
 }
 
 void AGeologyController::Tick(float DeltaTime)
@@ -81,6 +89,25 @@ void AGeologyController::Initialize(ADynamicTerrain* Terrain, UWaterSystem* Wate
     
     InitializeGeologyGrid();
     
+    // Try to find MasterController if not already set
+    if (!MasterController)
+    {
+        TArray<AActor*> MasterControllers;
+        UGameplayStatics::GetAllActorsOfClass(GetWorld(), AMasterWorldController::StaticClass(), MasterControllers);
+        if (MasterControllers.Num() > 0)
+        {
+            MasterController = Cast<AMasterWorldController>(MasterControllers[0]);
+            if (MasterController)
+            {
+                RegisterWithMasterController(MasterController);
+                UE_LOG(LogTemp, Warning, TEXT("GeologyController: Found and registered with MasterController during Initialize"));
+            }
+        }
+    }
+    
+    // Initialize water table AFTER grid is created and MasterController is found
+    InitializeWaterTable();
+    
     bSystemInitialized = true;
     
     UE_LOG(LogTemp, Warning, TEXT("GeologyController: Initialized with %d geology cells (%dx%d)"),
@@ -97,9 +124,9 @@ void AGeologyController::Initialize(ADynamicTerrain* Terrain, UWaterSystem* Wate
             FVector WorldPos = TargetTerrain->TerrainToWorldPosition(X, Y);
             float TerrainHeight = TargetTerrain->GetHeightAtPosition(WorldPos);
             
-            // Initialize hydraulic head to water table elevation
+            // Initialize hydraulic head to global water table elevation
             Cell.LastTerrainHeight = TerrainHeight;
-            Cell.HydraulicHead = TerrainHeight - Cell.WaterTableDepth;
+            Cell.HydraulicHead = GlobalWaterTableElevation;
             
             // Set transmissivity based on rock type
             switch (Cell.SurfaceRock)
@@ -163,7 +190,6 @@ void AGeologyController::InitializeGeologyGrid()
             // Set default values
             Cell.SurfaceRock = ERockType::Sandstone;
             Cell.Hardness = 0.5f;
-            Cell.WaterTableDepth = AverageWaterTableDepth;
             Cell.SoilMoisture = 0.2f;
             Cell.Permeability = 0.5f;
         }
@@ -174,15 +200,11 @@ void AGeologyController::InitializeGeologyGrid()
 
 void AGeologyController::SetWaterTableDepth(FVector Location, float Depth)
 {
-    FVector2D Coords = WorldToGridCoordinates(Location);
-    int32 X = FMath::FloorToInt(Coords.X);
-    int32 Y = FMath::FloorToInt(Coords.Y);
+    // This function now sets the global water table elevation based on the location's terrain height
+    if (!TargetTerrain) return;
     
-    if (IsValidGridCoordinate(X, Y))
-    {
-        int32 Index = GetGridIndex(X, Y);
-        GeologyGrid[Index].WaterTableDepth = FMath::Max(0.0f, Depth);
-    }
+    float TerrainHeight = TargetTerrain->GetHeightAtPosition(Location);
+    SetGlobalWaterTableElevation(TerrainHeight - Depth);
 }
 
 void AGeologyController::ReduceSoilMoisture(FVector Location, float Amount)
@@ -214,19 +236,63 @@ float AGeologyController::GetSoilMoistureAt(FVector Location) const
     return 0.0f;
 }
 
-float AGeologyController::GetWaterTableDepthAtLocation(FVector Location) const
+void AGeologyController::UpdateWaterTableDebugVisualization()
 {
-    FVector2D Coords = WorldToGridCoordinates(Location);
-    int32 X = FMath::FloorToInt(Coords.X);
-    int32 Y = FMath::FloorToInt(Coords.Y);
-    
-    if (IsValidGridCoordinate(X, Y))
+    if (!bShowWaterTablePlane) 
     {
-        int32 Index = GetGridIndex(X, Y);
-        return GeologyGrid[Index].WaterTableDepth;
+        if (WaterTableDebugMesh)
+        {
+            WaterTableDebugMesh->SetVisibility(false);
+        }
+        return;
     }
     
-    return AverageWaterTableDepth;
+    if (!WaterTableDebugMesh)
+    {
+        WaterTableDebugMesh = NewObject<UProceduralMeshComponent>(this);
+        WaterTableDebugMesh->SetupAttachment(RootComponent);
+        WaterTableDebugMesh->RegisterComponent();
+    }
+    
+    // Create a simple plane at water table elevation
+    TArray<FVector> Vertices;
+    TArray<int32> Triangles;
+    TArray<FVector> Normals;
+    TArray<FVector2D> UVs;
+    TArray<FColor> Colors;
+    
+    if (!MasterController) return;
+    
+    FVector2D WorldSize = MasterController->GetWorldDimensions();
+    float Scale = MasterController->GetTerrainScale();
+    
+    // Create quad
+    Vertices.Add(FVector(0, 0, GlobalWaterTableElevation));
+    Vertices.Add(FVector(WorldSize.X * Scale, 0, GlobalWaterTableElevation));
+    Vertices.Add(FVector(WorldSize.X * Scale, WorldSize.Y * Scale, GlobalWaterTableElevation));
+    Vertices.Add(FVector(0, WorldSize.Y * Scale, GlobalWaterTableElevation));
+    
+    Triangles.Add(0); Triangles.Add(1); Triangles.Add(2);
+    Triangles.Add(0); Triangles.Add(2); Triangles.Add(3);
+    
+    for (int i = 0; i < 4; i++)
+    {
+        Normals.Add(FVector::UpVector);
+        UVs.Add(FVector2D(0, 0));
+        Colors.Add(WaterTablePlaneColor);
+    }
+    
+    WaterTableDebugMesh->CreateMeshSection(0, Vertices, Triangles, 
+        Normals, UVs, Colors, TArray<FProcMeshTangent>(), false);
+    WaterTableDebugMesh->SetVisibility(true);
+}
+
+float AGeologyController::GetWaterTableDepthAtLocation(FVector Location) const
+{
+    // Simple: depth below surface at this location
+    if (!TargetTerrain) return 0.0f;
+    float TerrainHeight = TargetTerrain->GetHeightAtPosition(Location);
+    return TerrainHeight - GlobalWaterTableElevation;
 }
 
 float AGeologyController::GetInfiltrationRate(ERockType Rock) const
@@ -253,88 +319,349 @@ void AGeologyController::UpdateGeologySystem(float DeltaTime)
     if (!TargetTerrain || !WaterSystem) return;
     
     // Update in correct order for water conservation
-    ProcessSurfaceWaterInfiltration(DeltaTime);
-    UpdateSimplifiedWaterTable(DeltaTime);
-    ProcessGroundwaterDischarge(DeltaTime);
-       UpdateHydraulicHeadSystem(DeltaTime);
+   // ProcessSurfaceWaterInfiltration(DeltaTime);
+    
+    ProcessWaterTableEmergence(DeltaTime);
+    ProcessUserSprings(DeltaTime);  // Process user-created springs
+
+    UpdateWaterTableDebugVisualization();
 }
 
-void AGeologyController::ProcessSurfaceWaterInfiltration(float DeltaTime)
+void AGeologyController::ProcessWaterTableEmergence(float DeltaTime)
 {
-    // PHASE 3: Realistic infiltration from existing surface water
-    if (!WaterSystem || !TargetTerrain) return;
+    // Only process after initialization
+    if (!bWaterTableInitialized || !bEnableWaterTable || !WaterSystem || ActiveEmergencePoints.Num() == 0) return;
     
-    UE_LOG(LogTemp, Log, TEXT("GeologyController: Processing surface water infiltration"));
+    // Process registered emergence points
+    TArray<FVector> PointsToRemove;
     
-    for (int32 Y = 0; Y < GeologyGridHeight; Y++)
+    for (const FVector& EmergencePoint : ActiveEmergencePoints)
     {
-        for (int32 X = 0; X < GeologyGridWidth; X++)
+        float TerrainHeight = TargetTerrain->GetHeightAtPosition(EmergencePoint);
+        
+        // Check if still below water table
+        if (TerrainHeight >= GlobalWaterTableElevation)
         {
-            int32 Index = GetGridIndex(X, Y);
-            FSimplifiedGeology& Geology = GeologyGrid[Index];
+            PointsToRemove.Add(EmergencePoint);
+            continue;
+        }
+        
+        float CurrentWaterDepth = WaterSystem->GetWaterDepthAtPosition(EmergencePoint);
+        float WaterSurfaceHeight = TerrainHeight + CurrentWaterDepth;
+        
+        // If water surface reached water table, remove from active list
+        if (WaterSurfaceHeight >= GlobalWaterTableElevation - 0.1f) // Small tolerance
+        {
+            PointsToRemove.Add(EmergencePoint);
+            continue;
+        }
+        
+        // Add water to reach water table
+        float DepthDeficit = GlobalWaterTableElevation - WaterSurfaceHeight;
+        float DepthToAdd = DepthDeficit * WaterEmergenceRate * DeltaTime;
+        DepthToAdd = FMath::Min(DepthToAdd, DepthDeficit);
+        
+        // Use proper transfer function through MasterController
+        if (MasterController)
+        {
+            float CellArea = MasterController->GetWaterCellArea();
+            float Volume = DepthToAdd * CellArea;
             
-            // Convert geology grid to world position using master controller
-            FVector2D GridPos(X, Y);
-            FVector WorldPos;
-            if (MasterController)
+            if (MasterController->CanGroundwaterEmerge(Volume))
             {
-                FVector2D Pos2D = MasterController->ConvertGeologyToWaterGrid(FVector2D(X, Y));
-                WorldPos = FVector(Pos2D.X, Pos2D.Y, 0.0f);
+                // This handles BOTH adding water to surface AND updating water budgets
+                MasterController->TransferGroundwaterToSurface(EmergencePoint, Volume);
+                // No need to manually RemoveWaterFromWaterTable - the transfer handles it
             }
-            else
-            {
-                WorldPos = TargetTerrain->TerrainToWorldPosition(GridPos.X, GridPos.Y);
-            }
+        }
+    }
+    
+    // Clean up completed points
+    for (const FVector& Point : PointsToRemove)
+    {
+        ActiveEmergencePoints.Remove(Point);
+    }
+    
+    // Log status occasionally
+    static float LogTimer = 0.0f;
+    LogTimer += DeltaTime;
+    if (LogTimer > 5.0f && ActiveEmergencePoints.Num() > 0)
+    {
+        UE_LOG(LogTemp, Log, TEXT("Water table maintaining %d active emergence points"), ActiveEmergencePoints.Num());
+        LogTimer = 0.0f;
+    }
+}
+
+void AGeologyController::EmergenceWaterAtPoints(const TArray<FVector>& WorldPositions, UWaterSystem* Water)
+{
+    if (!Water || !MasterController) return;
+    
+    for (const FVector& WorldPos : WorldPositions)
+    {
+        float TerrainHeight = TargetTerrain->GetHeightAtPosition(WorldPos);
+        
+        if (TerrainHeight < GlobalWaterTableElevation)
+        {
+            float TargetDepth = GlobalWaterTableElevation - TerrainHeight;
+            float CurrentDepth = Water->GetWaterDepthAtPosition(WorldPos);
             
-            // Check for existing surface water at this location
-            float SurfaceWaterDepth = WaterSystem->GetWaterDepthAtPosition(WorldPos);
-            
-            if (SurfaceWaterDepth > 0.01f) // Has surface water to infiltrate
+            if (CurrentDepth < TargetDepth)
             {
-                // Calculate maximum infiltration rate based on rock type
-                float MaxInfiltrationRate = GetInfiltrationRate(Geology.SurfaceRock);
+                // Calculate how much water to add initially
+                float DepthToAdd = (TargetDepth - CurrentDepth) * WaterTableFillMultiplier;
                 
-                // Reduce infiltration if soil is already saturated
-                float SoilSaturation = Geology.SoilMoisture;
-                float EffectiveInfiltrationRate = MaxInfiltrationRate * (1.0f - SoilSaturation);
+                // Cap the initial fill to avoid instant flooding
+                const float MaxInitialDepth = 2.0f; // Maximum 2 meters initial fill
+                DepthToAdd = FMath::Min(DepthToAdd, MaxInitialDepth);
                 
-                // Calculate how much water can infiltrate this frame
-                float MaxInfiltrationDepth = EffectiveInfiltrationRate * DeltaTime;
-                float ActualInfiltrationDepth = FMath::Min(SurfaceWaterDepth, MaxInfiltrationDepth);
-                
-                if (ActualInfiltrationDepth > 0.001f) // Meaningful infiltration
+                // Use proper transfer function through MasterController
+                if (MasterController)
                 {
-                    // Remove water from surface
-                    WaterSystem->RemoveWater(WorldPos, ActualInfiltrationDepth);
+                    float CellArea = MasterController->GetWaterCellArea();
                     
-                    // Update soil moisture using water volume authority
-                    float SoilCapacity = GetSoilCapacity(Geology.SurfaceRock);
-                    float InfiltratedVolume = MasterController ? 
-                        MasterController->GetWaterCellVolume(ActualInfiltrationDepth) :
-                        ActualInfiltrationDepth;
-                    
-                    float SoilMoistureIncrease = InfiltratedVolume / SoilCapacity;
-                    Geology.SoilMoisture = FMath::Min(1.0f, Geology.SoilMoisture + SoilMoistureIncrease);
-                    
-                    // Update water table (excess water goes to groundwater)
-                    if (Geology.SoilMoisture >= 1.0f)
+                    // Validate cell area to prevent invalid volume calculations
+                    if (CellArea <= 0.0f || !FMath::IsFinite(CellArea))
                     {
-                        float ExcessWater = (Geology.SoilMoisture - 1.0f) * SoilCapacity;
-                        // Use geology cell water volume conversion with proper porosity
-                        float GroundwaterIncrease = MasterController ?
-                            MasterController->GetGeologyCellWaterVolume(ExcessWater, Geology.Permeability) :
-                            ExcessWater * Geology.Permeability;
-                        Geology.WaterTableDepth = FMath::Max(0.0f, Geology.WaterTableDepth - GroundwaterIncrease);
-                        Geology.SoilMoisture = 1.0f; // Cap at full saturation
+                        UE_LOG(LogTemp, Error, TEXT("Invalid cell area: %.2f - skipping emergence"), CellArea);
+                        continue;
                     }
                     
-                    UE_LOG(LogTemp, VeryVerbose, TEXT("Infiltrated %f depth at (%d,%d), soil moisture now %f"),
-                           ActualInfiltrationDepth, X, Y, Geology.SoilMoisture);
+                    float Volume = DepthToAdd * CellArea;
+                    
+                    // Validate volume before transfer
+                    if (!FMath::IsFinite(Volume) || Volume <= 0.0f)
+                    {
+                        UE_LOG(LogTemp, Error, TEXT("Invalid emergence volume: %.2f - skipping"), Volume);
+                        continue;
+                    }
+                    
+                    if (MasterController->CanGroundwaterEmerge(Volume))
+                    {
+                        // Use the proper transfer function
+                        MasterController->TransferGroundwaterToSurface(WorldPos, Volume);
+                    }
+                }
+                
+                // If we didn't fully fill to water table level, register for continuous filling
+                float NewDepth = CurrentDepth + DepthToAdd;
+                if (NewDepth < TargetDepth - 0.1f) // 0.1m tolerance
+                {
+                    RegisterEmergencePoint(WorldPos);
+                    UE_LOG(LogTemp, VeryVerbose, TEXT("Registered emergence point at %s (%.1fm below water table)"),
+                           *WorldPos.ToString(), TargetDepth - NewDepth);
                 }
             }
         }
     }
+    
+    // Log summary
+    if (WorldPositions.Num() > 0)
+    {
+        UE_LOG(LogTemp, Log, TEXT("Processed %d potential emergence points, %d active"),
+               WorldPositions.Num(), ActiveEmergencePoints.Num());
+    }
 }
+
+void AGeologyController::CheckInitialWaterTable()
+{
+    if (!TargetTerrain || !WaterSystem) 
+    {
+        UE_LOG(LogTemp, Error, TEXT("CheckInitialWaterTable: Missing TargetTerrain or WaterSystem"));
+        return;
+    }
+    
+    UE_LOG(LogTemp, Warning, TEXT("CheckInitialWaterTable: Starting scan for points below water table elevation %.1fm"), GlobalWaterTableElevation);
+    
+    TArray<FVector> BelowWaterPoints;
+    
+    // Iterate through terrain chunks directly
+    for (const FTerrainChunk& Chunk : TargetTerrain->TerrainChunks)
+    {
+        int32 ChunkX = Chunk.ChunkX;
+        int32 ChunkY = Chunk.ChunkY;
+        
+        // Sample 9 points per chunk (corners + center)
+        for (int32 dy = 0; dy <= 32; dy += 16)
+        {
+            for (int32 dx = 0; dx <= 32; dx += 16)
+            {
+                int32 X = ChunkX * 32 + dx;
+                int32 Y = ChunkY * 32 + dy;
+                
+                if (X < TargetTerrain->TerrainWidth && Y < TargetTerrain->TerrainHeight)
+                {
+                    FVector WorldPos = TargetTerrain->TerrainToWorldPosition(X, Y);
+                    float Height = TargetTerrain->GetHeightAtPosition(WorldPos);
+                    
+                    if (Height < GlobalWaterTableElevation)
+                    {
+                        BelowWaterPoints.Add(WorldPos);
+                    }
+                }
+            }
+        }
+    }
+    
+    EmergenceWaterAtPoints(BelowWaterPoints, WaterSystem);
+}
+
+void AGeologyController::OnWaterTableElevationChanged()
+{
+    CheckInitialWaterTable();
+}
+
+void AGeologyController::RegisterEmergencePoint(FVector WorldPosition)
+{
+    // Only register if actually below water table
+    float TerrainHeight = TargetTerrain->GetHeightAtPosition(WorldPosition);
+    if (TerrainHeight < GlobalWaterTableElevation)
+    {
+        ActiveEmergencePoints.AddUnique(WorldPosition);
+        UE_LOG(LogTemp, VeryVerbose, TEXT("Registered emergence point at %s"), *WorldPosition.ToString());
+    }
+}
+
+void AGeologyController::UnregisterEmergencePoint(FVector WorldPosition)
+{
+    ActiveEmergencePoints.Remove(WorldPosition);
+}
+/*
+void AGeologyController::ProcessSurfaceWaterInfiltration(float DeltaTime)
+{
+    if (!WaterSystem || !MasterController) return;
+    
+    // Static timer to reduce frequency
+    static float InfiltrationTimer = 0.0f;
+    InfiltrationTimer += DeltaTime;
+    
+    if (InfiltrationTimer < 0.5f) return; // 2Hz update
+    
+    // Get total surface water volume
+    float TotalWaterVolume = WaterSystem->GetTotalWaterVolume();
+    if (TotalWaterVolume <= 0.01f)
+    {
+        InfiltrationTimer = 0.0f;
+        return;
+    }
+    
+    // Uniform infiltration: NOW LINKED TO WATER SYSTEM, WAS 0.00002 m/s 
+    float InfiltrationDepth = WaterSystem->WaterAbsorptionRate * InfiltrationTimer;
+    float FractionToInfiltrate = FMath::Min(InfiltrationDepth / WaterSystem->GetAverageDepth(), 0.1f);
+    
+    // Apply uniform removal
+    float InfiltratedVolume = TotalWaterVolume * FractionToInfiltrate;
+    WaterSystem->ApplyUniformDepthReduction(InfiltrationDepth);
+    
+    // Add to water table
+    AddWaterToWaterTable(InfiltratedVolume);
+    
+    InfiltrationTimer = 0.0f;
+}
+*/
+
+void AGeologyController::InitializeWaterTableFill()
+{
+    if (bWaterTableInitialized || !TargetTerrain || !WaterSystem)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("InitializeWaterTableFill: Already initialized or missing components"));
+        return;
+    }
+        
+    UE_LOG(LogTemp, Warning, TEXT("Filling initial water table at elevation %.1fm"), 
+           GlobalWaterTableElevation);
+    
+    // Find all points below water table
+    TArray<FVector> BelowWaterPoints;
+    
+    // Sample terrain at reasonable intervals
+    const int32 SampleInterval = 16; // Every 16 units
+    for (int32 Y = 0; Y < TargetTerrain->TerrainHeight; Y += SampleInterval)
+    {
+        for (int32 X = 0; X < TargetTerrain->TerrainWidth; X += SampleInterval)
+        {
+            FVector WorldPos = TargetTerrain->TerrainToWorldPosition(X, Y);
+            float Height = TargetTerrain->GetHeightAtPosition(WorldPos);
+            
+            if (Height < GlobalWaterTableElevation)
+            {
+                float DepthToFill = GlobalWaterTableElevation - Height;
+                
+                // Add water directly - this is initial world state, not a "transfer"
+                WaterSystem->AddWater(WorldPos, DepthToFill);
+                
+                // Register for continuous emergence if not fully filled
+                RegisterEmergencePoint(WorldPos);
+            }
+        }
+    }
+    
+    bWaterTableInitialized = true;
+    
+    UE_LOG(LogTemp, Warning, TEXT("Water table fill complete - %d emergence points active"), 
+           ActiveEmergencePoints.Num());
+}
+
+// ===== USER SPRING FUNCTIONS =====
+
+void AGeologyController::AddUserSpring(FVector WorldLocation, float FlowRate)
+{
+    FUserSpring NewSpring;
+    NewSpring.Location = WorldLocation;
+    NewSpring.FlowRate = (FlowRate > 0.0f) ? FlowRate : DefaultSpringFlowRate;
+    NewSpring.bActive = true;
+    
+    UserSprings.Add(NewSpring);
+    
+    UE_LOG(LogTemp, Warning, TEXT("Added user spring at %s with flow rate %.2f m³/s"), 
+        *WorldLocation.ToString(), NewSpring.FlowRate);
+}
+
+void AGeologyController::RemoveUserSpring(FVector WorldLocation, float SearchRadius)
+{
+    for (int32 i = UserSprings.Num() - 1; i >= 0; i--)
+    {
+        if (FVector::Dist(UserSprings[i].Location, WorldLocation) <= SearchRadius)
+        {
+            UE_LOG(LogTemp, Warning, TEXT("Removed user spring at %s"), 
+                *UserSprings[i].Location.ToString());
+            UserSprings.RemoveAt(i);
+        }
+    }
+}
+
+void AGeologyController::ClearAllUserSprings()
+{
+    UserSprings.Empty();
+    UE_LOG(LogTemp, Warning, TEXT("Cleared all user springs"));
+}
+
+void AGeologyController::ProcessUserSprings(float DeltaTime)
+{
+    if (!MasterController || UserSprings.Num() == 0) return;
+    
+    for (FUserSpring& Spring : UserSprings)
+    {
+        if (!Spring.bActive) continue;
+        
+        // Calculate volume to add this frame
+        float VolumeToAdd = Spring.FlowRate * DeltaTime;
+        
+        // Check if we have enough groundwater
+        if (MasterController->CanGroundwaterEmerge(VolumeToAdd))
+        {
+            // Transfer from groundwater to surface
+            MasterController->TransferGroundwaterToSurface(Spring.Location, VolumeToAdd);
+        }
+        else
+        {
+            // Not enough groundwater - disable spring
+            Spring.bActive = false;
+            UE_LOG(LogTemp, Warning, TEXT("Spring at %s ran dry - insufficient groundwater"), 
+                *Spring.Location.ToString());
+        }
+    }
+}
+
 FVector2D AGeologyController::GeologyGridToWorldCoordinates(int32 X, int32 Y) const
 {
     // Use master controller for grid conversions
@@ -354,87 +681,142 @@ FVector2D AGeologyController::GeologyGridToWorldCoordinates(int32 X, int32 Y) co
         TerrainOrigin.Y + (Y * CellSizeY)
     );
 }
-void AGeologyController::UpdateSimplifiedWaterTable(float DeltaTime)
+void AGeologyController::InitializeWaterTable()
 {
-    // Copy current depths
-    for (int32 i = 0; i < GeologyGrid.Num(); i++)
+    if (bUseProportionalWaterTable && TargetTerrain)
     {
-        TempWaterTableDepths[i] = GeologyGrid[i].WaterTableDepth;
+        // Get max terrain height by sampling the terrain
+        float MaxTerrainHeight = 0.0f;
+        for (int32 Y = 0; Y < TargetTerrain->TerrainHeight; Y += 10)
+        {
+            for (int32 X = 0; X < TargetTerrain->TerrainWidth; X += 10)
+            {
+                FVector Pos = TargetTerrain->TerrainToWorldPosition(X, Y);
+                float Height = TargetTerrain->GetHeightAtPosition(Pos);
+                MaxTerrainHeight = FMath::Max(MaxTerrainHeight, Height);
+            }
+        }
+        GlobalWaterTableElevation = MaxTerrainHeight * WaterTableHeightPercent;
     }
     
-    // Simple lateral flow between cells
-    for (int32 Y = 1; Y < GeologyGridHeight - 1; Y++)
+    // Defer volume calculation if MasterController isn't ready yet
+    if (!MasterController)
     {
-        for (int32 X = 1; X < GeologyGridWidth - 1; X++)
+        UE_LOG(LogTemp, Warning, TEXT("Water table elevation set to %.1fm - volume calculation deferred until MasterController ready"), 
+            GlobalWaterTableElevation);
+        return;
+    }
+    
+    // Calculate initial volume based on world size
+    float WorldArea = GetTotalWorldArea();
+    if (WorldArea <= 0.0f || !FMath::IsFinite(WorldArea))
+    {
+        UE_LOG(LogTemp, Error, TEXT("Invalid world area calculated: %.2f - using default"), WorldArea);
+        // Use a reasonable default based on terrain dimensions
+        if (TargetTerrain)
         {
-            int32 Index = GetGridIndex(X, Y);
-            float CurrentDepth = GeologyGrid[Index].WaterTableDepth;
-            
-            // Get neighbor depths
-            float NeighborSum = 0.0f;
-            int32 NeighborCount = 0;
-            
-            // 4-neighbor averaging
-            int32 Neighbors[4] = {
-                GetGridIndex(X - 1, Y),
-                GetGridIndex(X + 1, Y),
-                GetGridIndex(X, Y - 1),
-                GetGridIndex(X, Y + 1)
-            };
-            
-            for (int32 NeighborIndex : Neighbors)
-            {
-                if (NeighborIndex >= 0 && NeighborIndex < GeologyGrid.Num())
-                {
-                    NeighborSum += GeologyGrid[NeighborIndex].WaterTableDepth;
-                    NeighborCount++;
-                }
-            }
-            
-            if (NeighborCount > 0)
-            {
-                float NeighborAvg = NeighborSum / NeighborCount;
-                float FlowRate = GroundwaterFlowRate * GeologyGrid[Index].Permeability;
-                TempWaterTableDepths[Index] = FMath::Lerp(CurrentDepth, NeighborAvg,
-                    FlowRate * DeltaTime);
-            }
+            float TerrainScale = TargetTerrain->TerrainScale;
+            WorldArea = TargetTerrain->TerrainWidth * TerrainScale * TargetTerrain->TerrainHeight * TerrainScale;
+        }
+        else
+        {
+            WorldArea = 1000000.0f; // 1km² default
         }
     }
     
-    // Apply new depths
-    for (int32 i = 0; i < GeologyGrid.Num(); i++)
+    float AverageDepth = 100.0f; // Assume 100m average saturated thickness
+    GlobalWaterTableVolume = WorldArea * AverageDepth * GlobalPorosity;
+    
+    // Validate the calculated volume
+    if (!FMath::IsFinite(GlobalWaterTableVolume) || GlobalWaterTableVolume <= 0.0f)
     {
-        GeologyGrid[i].WaterTableDepth = TempWaterTableDepths[i];
+        UE_LOG(LogTemp, Error, TEXT("Invalid water table volume calculated: %.2f - using default"), GlobalWaterTableVolume);
+        GlobalWaterTableVolume = 1000000.0f; // Default 1 million m³
+    }
+    
+    // Register initial groundwater with master controller
+    MasterController->SetInitialGroundwater(GlobalWaterTableVolume);
+    
+    UE_LOG(LogTemp, Warning, TEXT("Water table initialized at elevation %.1fm with %.0f m³ (World Area: %.0f m²)"), 
+        GlobalWaterTableElevation, GlobalWaterTableVolume, WorldArea);
+}
+
+
+void AGeologyController::UpdateWaterTableFromVolume()
+{
+    if (!MasterController) return;
+    
+    // Get current volume from master controller
+    GlobalWaterTableVolume = MasterController->GetGroundwaterVolume();
+    
+    // Calculate new elevation: Volume = Area * Height * Porosity
+    float WorldArea = GetTotalWorldArea();
+    float EffectiveHeight = GlobalWaterTableVolume / (WorldArea * GlobalPorosity);
+    
+    // Water table elevation is height above bedrock (assumed at z=0)
+    GlobalWaterTableElevation = EffectiveHeight;
+}
+
+void AGeologyController::SetGlobalWaterTableElevation(float NewElevation)
+{
+    GlobalWaterTableElevation = NewElevation;
+    
+    // Update volume to match new elevation
+    if (MasterController)
+    {
+        float WorldArea = GetTotalWorldArea();
+        GlobalWaterTableVolume = NewElevation * WorldArea * GlobalPorosity;
+        MasterController->SetInitialGroundwater(GlobalWaterTableVolume);
     }
 }
 
-void AGeologyController::ProcessGroundwaterDischarge(float DeltaTime)
+void AGeologyController::AddWaterToWaterTable(float VolumeM3)
 {
-    if (!MasterController || !WaterSystem) return;
+    if (VolumeM3 <= 0.0f) return; // Skip zero volumes
     
-    for (int32 i = 0; i < GeologyGrid.Num(); i++)
+    // Skip tiny volumes to avoid log spam
+    if (VolumeM3 < 0.001f)
     {
-        FSimplifiedGeology& Geology = GeologyGrid[i];
-        
-        // Spring discharge where water table at surface
-        if (Geology.WaterTableDepth < 0.1f)
-        {
-            float SpringFlow = SpringFlowRate * DeltaTime;
-            int32 X = i % GeologyGridWidth;
-            int32 Y = i / GeologyGridWidth;
-            FVector WorldPos = TargetTerrain->TerrainToWorldPosition(X, Y);
-            
-            // Calculate cell area
-            float CellArea = MasterController->GetTerrainScale() * MasterController->GetTerrainScale() /
-                           (GeologyGridWidth * GeologyGridHeight);
-            
-            // Route through master controller
-            MasterController->TransferGroundwaterToSurface(WorldPos, SpringFlow);
-            
-            // Update water table
-            Geology.WaterTableDepth += SpringFlow / (Geology.Permeability * CellArea);
-        }
+        GlobalWaterTableVolume += VolumeM3;
+        return; // Skip calculations and logging
     }
+    
+    // Add to total volume
+    GlobalWaterTableVolume += VolumeM3;
+    
+    // Calculate new water table elevation
+    float WorldArea = GetTotalWorldArea();
+    float EffectiveArea = WorldArea * GlobalPorosity;
+    
+    // Height change = Volume / (Area * Porosity)
+    float HeightChange = VolumeM3 / EffectiveArea;
+    GlobalWaterTableElevation += HeightChange;
+    
+    // Only log significant additions
+    if (VolumeM3 > 1.0f)
+    {
+        UE_LOG(LogTemp, Log, TEXT("Added %.1f m³ to water table, new elevation: %.2f m"),
+            VolumeM3, GlobalWaterTableElevation);
+    }
+}
+
+float AGeologyController::RemoveWaterFromWaterTable(float VolumeM3)
+{
+    // Can't remove more than we have
+    float ActualRemoval = FMath::Min(VolumeM3, GlobalWaterTableVolume);
+    
+    // Remove from total volume
+    GlobalWaterTableVolume -= ActualRemoval;
+    
+    // Calculate new water table elevation
+    float WorldArea = GetTotalWorldArea();
+    float EffectiveArea = WorldArea * GlobalPorosity;
+    
+    // Height change = Volume / (Area * Porosity)
+    float HeightChange = ActualRemoval / EffectiveArea;
+    GlobalWaterTableElevation -= HeightChange;
+    
+    return ActualRemoval;
 }
 
 
@@ -516,6 +898,22 @@ float AGeologyController::GetSoilCapacity(ERockType Rock) const
     }
 }
 
+
+bool AGeologyController::IsEdgeCell(int32 X, int32 Y) const
+{
+    return X == 0 || X == GeologyGridWidth - 1 || Y == 0 || Y == GeologyGridHeight - 1;
+}
+
+float AGeologyController::GetTotalWorldArea() const
+{
+    if (!MasterController) return 1000000.0f;  // Default 1 km²
+    
+    FVector2D WorldDims = MasterController->GetWorldDimensions();
+    float TerrainScale = MasterController->GetTerrainScale();
+    
+    return WorldDims.X * WorldDims.Y * TerrainScale * TerrainScale;
+}
+
 // ===== ISCALABLESYSTEM INTERFACE =====
 
 void AGeologyController::ConfigureFromMaster(const FWorldScalingConfig& Config)
@@ -595,26 +993,22 @@ void AGeologyController::ShowWaterTable(bool bEnable)
             int32 Index = GetGridIndex(X, Y);
             const FSimplifiedGeology& Cell = GeologyGrid[Index];
             
-            FVector2D GridPos(X, Y);
-            FVector WorldPos = TargetTerrain->TerrainToWorldPosition(GridPos.X, GridPos.Y);
+            FVector WorldPos = TargetTerrain->TerrainToWorldPosition(X, Y);
             float SurfaceHeight = TargetTerrain->GetHeightAtPosition(WorldPos);
             
-            // Draw water table depth
-            FVector WaterTablePos = WorldPos;
-            WaterTablePos.Z = SurfaceHeight - Cell.WaterTableDepth;
-            
-            FColor DepthColor = FColor::Blue;
-            if (Cell.WaterTableDepth < 1.0f) // Near surface
+            // Draw water table plane intersection
+            if (SurfaceHeight > GlobalWaterTableElevation)
             {
-                DepthColor = FColor::Cyan;
+                // Above water table - draw down to it
+                FVector WaterTablePos = WorldPos;
+                WaterTablePos.Z = GlobalWaterTableElevation;
+                DrawDebugLine(GetWorld(), WorldPos, WaterTablePos, FColor::Blue, false, 5.0f, 0, 2.0f);
             }
-            else if (Cell.WaterTableDepth > 20.0f) // Deep
+            else
             {
-                DepthColor = FColor::Purple;
+                // Below water table - draw as cyan
+                DrawDebugSphere(GetWorld(), WorldPos, 50.0f, 8, FColor::Cyan, false, 5.0f);
             }
-            
-            // Draw line from surface to water table
-            DrawDebugLine(GetWorld(), WorldPos, WaterTablePos, DepthColor, false, 5.0f, 0, 2.0f);
             
             // Show soil moisture as sphere size
             float SphereRadius = 10.0f + (Cell.SoilMoisture * 40.0f);
@@ -629,23 +1023,27 @@ void AGeologyController::DrawSimplifiedDebugInfo() const
     if (!GetWorld() || !TargetTerrain) return;
     
     // Calculate averages
-    float AvgWaterDepth = 0.0f;
     float AvgSoilMoisture = 0.0f;
     int32 SpringCount = 0;
     
-    for (const FSimplifiedGeology& Cell : GeologyGrid)
+    for (int32 i = 0; i < GeologyGrid.Num(); i++)
     {
-        AvgWaterDepth += Cell.WaterTableDepth;
-        AvgSoilMoisture += Cell.SoilMoisture;
-        if (Cell.WaterTableDepth < 0.1f) SpringCount++;
+        AvgSoilMoisture += GeologyGrid[i].SoilMoisture;
+        // Check if terrain below water table
+        int32 X = i % GeologyGridWidth;
+        int32 Y = i / GeologyGridWidth;
+        FVector WorldPos = TargetTerrain->TerrainToWorldPosition(X, Y);
+        float TerrainHeight = TargetTerrain->GetHeightAtPosition(WorldPos);
+        if (TerrainHeight < GlobalWaterTableElevation) SpringCount++;
     }
     
-    AvgWaterDepth /= GeologyGrid.Num();
     AvgSoilMoisture /= GeologyGrid.Num();
     
     FString DebugText = FString::Printf(
-        TEXT("Geology Stats:\nAvg Water Table: %.1fm\nAvg Soil Moisture: %.1f%%\nActive Springs: %d"),
-        AvgWaterDepth, AvgSoilMoisture * 100.0f, SpringCount);
+           TEXT("Geology Stats:\nWater Table Elevation: %.1fm\nAvg Soil Moisture: %.1f%%\nActive Springs: %d\nActive Emergence Points: %d\nWater Volume: %.0f m³"),
+           GlobalWaterTableElevation, AvgSoilMoisture * 100.0f, SpringCount,
+           ActiveEmergencePoints.Num(), GlobalWaterTableVolume);
+
     
     GEngine->AddOnScreenDebugMessage(10, 5.0f, FColor::Yellow, DebugText);
 }
@@ -679,227 +1077,11 @@ void AGeologyController::ApplyInfiltration(FVector Location, float WaterAmount)
             float CellArea = MasterController->GetTerrainScale() * MasterController->GetTerrainScale();
             float WaterTableRise = ToWaterTable / (CellArea * Geology.StorageCoefficient);
             
-            Geology.WaterTableDepth = FMath::Max(0.0f, Geology.WaterTableDepth - WaterTableRise);
-            Geology.HydraulicHead += WaterTableRise;
-        }
-    }
-}
-
-//Hydraulic Head System
-
-void AGeologyController::UpdateHydraulicHeadSystem(float DeltaTime)
-{
-    // Step 1: Update hydraulic heads based on current terrain
-    for (int32 i = 0; i < GeologyGrid.Num(); i++)
-    {
-        FSimplifiedGeology& Cell = GeologyGrid[i];
-        int32 X = i % GeologyGridWidth;
-        int32 Y = i / GeologyGridWidth;
-        FVector WorldPos = TargetTerrain->TerrainToWorldPosition(X, Y);
-        float CurrentTerrainHeight = TargetTerrain->GetHeightAtPosition(WorldPos);
-        
-        // Check if terrain changed
-        if (FMath::Abs(CurrentTerrainHeight - Cell.LastTerrainHeight) > 0.01f)
-        {
-            OnTerrainModified(WorldPos, Cell.LastTerrainHeight, CurrentTerrainHeight);
-            Cell.LastTerrainHeight = CurrentTerrainHeight;
-        }
-    }
-    
-    // Step 2: Lateral groundwater flow
-    UpdateLateralGroundwaterFlow(DeltaTime);
-    
-    // Step 3: Surface water interaction
-    ProcessHydraulicSurfaceInteraction(DeltaTime);
-}
-
-void AGeologyController::OnTerrainModified(FVector WorldLocation, float OldHeight, float NewHeight)
-{
-    FVector2D Coords = WorldToGridCoordinates(WorldLocation);
-    int32 X = FMath::FloorToInt(Coords.X);
-    int32 Y = FMath::FloorToInt(Coords.Y);
-    
-    if (!IsValidGridCoordinate(X, Y)) return;
-    
-    int32 Index = GetGridIndex(X, Y);
-    FSimplifiedGeology& Cell = GeologyGrid[Index];
-    
-    // Update water table to maintain same absolute elevation
-    float WaterTableElevation = OldHeight - Cell.WaterTableDepth;
-    Cell.WaterTableDepth = NewHeight - WaterTableElevation;
-    
-    // If terrain dropped below water table, we need to add surface water
-    if (NewHeight < WaterTableElevation)
-    {
-        float ExposedWaterDepth = WaterTableElevation - NewHeight;
-        
-        // Check current surface water
-        float CurrentWaterDepth = WaterSystem->GetWaterDepthAtPosition(WorldLocation);
-        
-        if (CurrentWaterDepth < ExposedWaterDepth)
-        {
-            // Mark for filling in the surface interaction update
-            // (Don't add water immediately to allow for gradual filling)
-            UE_LOG(LogTemp, Warning, TEXT("Terrain dropped below water table at %s. Water table at %.1fm, terrain at %.1fm"),
-                *WorldLocation.ToString(), WaterTableElevation, NewHeight);
-        }
-    }
-}
-
-void AGeologyController::ProcessHydraulicSurfaceInteraction(float DeltaTime)
-{
-    if (!WaterSystem || !MasterController) return;
-    
-    for (int32 i = 0; i < GeologyGrid.Num(); i++)
-    {
-        FSimplifiedGeology& Cell = GeologyGrid[i];
-        int32 X = i % GeologyGridWidth;
-        int32 Y = i / GeologyGridWidth;
-        FVector WorldPos = TargetTerrain->TerrainToWorldPosition(X, Y);
-        
-        float TerrainHeight = Cell.LastTerrainHeight;
-        float WaterTableElevation = Cell.GetWaterTableElevation(TerrainHeight);
-        float CurrentWaterDepth = WaterSystem->GetWaterDepthAtPosition(WorldPos);
-        float SurfaceWaterElevation = TerrainHeight + CurrentWaterDepth;
-        
-        // Case 1: Terrain is below water table (groundwater exposed)
-        if (TerrainHeight < WaterTableElevation)
-        {
-            float TargetWaterDepth = WaterTableElevation - TerrainHeight;
-            
-            // Check for artesian conditions
-            if (bEnableArtesianConditions && Cell.HydraulicHead > WaterTableElevation)
+            // Add to global water table instead of per-cell
+            if (MasterController)
             {
-                TargetWaterDepth = Cell.HydraulicHead - TerrainHeight;
-            }
-            
-            float DepthDeficit = TargetWaterDepth - CurrentWaterDepth;
-            
-            if (DepthDeficit > 0.001f)
-            {
-                // Fill rate based on permeability and deficit
-                float FillRate = Cell.Permeability * WaterTableFillMultiplier;
-                float WaterToAdd = DepthDeficit * FillRate * DeltaTime;
-                
-                // Clamp to prevent overshooting
-                WaterToAdd = FMath::Min(WaterToAdd, DepthDeficit);
-                
-                // Add water through master controller
-                MasterController->TransferGroundwaterToSurface(WorldPos, WaterToAdd);
-                
-                // Lower water table slightly as water emerges
-                float VolumeExtracted = WaterToAdd * MasterController->GetTerrainScale() *
-                                       MasterController->GetTerrainScale();
-                float WaterTableDrop = VolumeExtracted / (Cell.StorageCoefficient *
-                                      GeologyGridWidth * GeologyGridHeight);
-                Cell.WaterTableDepth += WaterTableDrop;
-                Cell.HydraulicHead -= WaterTableDrop;
-                
-                UE_LOG(LogTemp, VeryVerbose, TEXT("Filling water table hole: Added %.3fm water at %s"),
-                    WaterToAdd, *WorldPos.ToString());
+                MasterController->TransferSurfaceToGroundwater( Location, ToWaterTable);
             }
         }
-        // Case 2: Surface water above water table (infiltration)
-        else if (CurrentWaterDepth > 0.01f && SurfaceWaterElevation > WaterTableElevation)
-        {
-            float InfiltrationRate = GetInfiltrationRate(Cell.SurfaceRock);
-            float MaxInfiltration = CurrentWaterDepth * InfiltrationRate * DeltaTime;
-            
-            // Remove from surface
-            WaterSystem->RemoveWater(WorldPos, MaxInfiltration);
-            
-            // Raise water table
-            float InfiltratedVolume = MaxInfiltration * MasterController->GetTerrainScale() *
-                                     MasterController->GetTerrainScale();
-            float WaterTableRise = InfiltratedVolume / (Cell.StorageCoefficient *
-                                  GeologyGridWidth * GeologyGridHeight);
-            Cell.WaterTableDepth = FMath::Max(0.0f, Cell.WaterTableDepth - WaterTableRise);
-            Cell.HydraulicHead += WaterTableRise;
-        }
     }
-}
-
-void AGeologyController::UpdateLateralGroundwaterFlow(float DeltaTime)
-{
-    // Copy current hydraulic heads for calculation
-    TArray<float> NewHydraulicHeads;
-    NewHydraulicHeads.SetNum(GeologyGrid.Num());
-    
-    for (int32 i = 0; i < GeologyGrid.Num(); i++)
-    {
-        NewHydraulicHeads[i] = GeologyGrid[i].HydraulicHead;
-    }
-    
-    // Calculate flow between cells using Darcy's law
-    for (int32 Y = 0; Y < GeologyGridHeight; Y++)
-    {
-        for (int32 X = 0; X < GeologyGridWidth; X++)
-        {
-            int32 Index = GetGridIndex(X, Y);
-            const FSimplifiedGeology& Cell = GeologyGrid[Index];
-            
-            float TotalFlow = 0.0f;
-            
-            // Check all 4 neighbors
-            TArray<FIntPoint> Neighbors = {
-                FIntPoint(X + 1, Y),
-                FIntPoint(X - 1, Y),
-                FIntPoint(X, Y + 1),
-                FIntPoint(X, Y - 1)
-            };
-            
-            for (const FIntPoint& Neighbor : Neighbors)
-            {
-                if (IsValidGridCoordinate(Neighbor.X, Neighbor.Y))
-                {
-                    int32 NeighborIndex = GetGridIndex(Neighbor.X, Neighbor.Y);
-                    const FSimplifiedGeology& NeighborCell = GeologyGrid[NeighborIndex];
-                    
-                    // Hydraulic gradient
-                    float HeadDifference = Cell.HydraulicHead - NeighborCell.HydraulicHead;
-                    float Distance = MasterController->GetTerrainScale(); // Cell spacing
-                    float Gradient = HeadDifference / Distance;
-                    
-                    // Average transmissivity (harmonic mean for accuracy)
-                    float AvgTransmissivity = 2.0f * Cell.Transmissivity * NeighborCell.Transmissivity /
-                                            (Cell.Transmissivity + NeighborCell.Transmissivity);
-                    
-                    // Flow rate (m³/s per meter width)
-                    float FlowRate = AvgTransmissivity * Gradient * Distance;
-                    TotalFlow += FlowRate * DeltaTime;
-                }
-            }
-            
-            // Update hydraulic head based on net flow
-            float CellArea = MasterController->GetTerrainScale() * MasterController->GetTerrainScale();
-            float HeadChange = TotalFlow / (CellArea * Cell.StorageCoefficient);
-            NewHydraulicHeads[Index] -= HeadChange;
-        }
-    }
-    
-    // Apply new hydraulic heads and update water table depths
-    for (int32 i = 0; i < GeologyGrid.Num(); i++)
-    {
-        FSimplifiedGeology& Cell = GeologyGrid[i];
-        Cell.HydraulicHead = NewHydraulicHeads[i];
-        
-        // Update water table depth to match new hydraulic head
-        float TerrainHeight = Cell.LastTerrainHeight;
-        Cell.WaterTableDepth = TerrainHeight - Cell.HydraulicHead;
-    }
-}
-
-float AGeologyController::GetHydraulicHeadAtLocation(FVector Location) const
-{
-    FVector2D Coords = WorldToGridCoordinates(Location);
-    int32 X = FMath::FloorToInt(Coords.X);
-    int32 Y = FMath::FloorToInt(Coords.Y);
-    
-    if (IsValidGridCoordinate(X, Y))
-    {
-        int32 Index = GetGridIndex(X, Y);
-        return GeologyGrid[Index].HydraulicHead;
-    }
-    
-    return 0.0f;
 }

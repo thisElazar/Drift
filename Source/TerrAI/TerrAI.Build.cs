@@ -1,11 +1,20 @@
-// TerrAI.Build.cs - Fixed build configuration for water system
+// TerrAI.Build.cs - Fixed build configuration with shader support
 using UnrealBuildTool;
+using System.IO;  // Add this for Path class
 
 public class TerrAI : ModuleRules
 {
     public TerrAI(ReadOnlyTargetRules Target) : base(Target)
     {
         PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
+
+        // ========== SHADER DIRECTORY SETUP ==========
+        // Map the /Project/ shader directory to your project's Shaders folder
+        string ProjectShaderDir = Path.Combine(ModuleDirectory, "..", "..", "Shaders");
+        if (Directory.Exists(ProjectShaderDir))
+        {
+            PublicIncludePaths.Add(Path.GetFullPath(ProjectShaderDir));
+        }
 
         // Core dependencies (always needed)
         PublicDependencyModuleNames.AddRange(new string[] {
@@ -15,10 +24,17 @@ public class TerrAI : ModuleRules
             "InputCore",
             "EnhancedInput",
             "ProceduralMeshComponent",
+            "Niagara",
+            "NiagaraCore"
+        });
+
+        // Rendering dependencies for shader support
+        PublicDependencyModuleNames.AddRange(new string[] {
+            "Renderer",        // Add this for shader support
             "RenderCore",
             "RHI",
-            "Niagara",          // Phase 4: Niagara FX integration
-            "NiagaraCore"       // Phase 4: Niagara core functionality
+            "RHICore",
+            "Projects"         // Add this for shader mapping
         });
 
         // Private dependencies (internal use only)
@@ -26,13 +42,6 @@ public class TerrAI : ModuleRules
             "Slate",
             "SlateCore",
             "UMG"
-        });
-
-        // Water system requires these additional modules
-        PublicDependencyModuleNames.AddRange(new string[] {
-            "Engine",              // For texture creation and updates
-            "RenderCore",          // For texture operations
-            "RHI"                  // For low-level rendering
         });
 
         // Editor-only dependencies (only include if building for editor)
@@ -47,16 +56,9 @@ public class TerrAI : ModuleRules
             });
         }
 
-        // Performance and threading
-        PublicDependencyModuleNames.AddRange(new string[] {
-            "Core"
-        });
-
         // Enable optimizations
         bUseUnity = true;
         MinFilesUsingPrecompiledHeaderOverride = 1;
         
-        // Remove the undefined identifier warnings line - it's deprecated
-        // bEnableUndefinedIdentifierWarnings = false; // REMOVED - deprecated in UE5
     }
 }
