@@ -4,7 +4,7 @@
  * ============================================
  * Purpose: Centralized Blueprint interface for all water system controls
  * Benefits: Clean separation, easier material assignment, better organization
- * Version: Complete with Niagara FX integration
+ * Version: GPU Water Added, Niagara Stripped to only Includes
  */
 #pragma once
 
@@ -93,42 +93,6 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Water Visuals")
     void SetWaterVisualMode(EWaterVisualMode NewMode);
     
-    // ===== NIAGARA FX SYSTEM =====
-    
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Niagara FX")
-    bool bEnableNiagaraFX = true;
-    
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Niagara FX")
-    UNiagaraSystem* RiverFlowEmitterTemplate = nullptr;
-    
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Niagara FX")
-    UNiagaraSystem* FoamEmitterTemplate = nullptr;
-    
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Niagara FX")
-    UNiagaraSystem* LakeMistEmitterTemplate = nullptr;
-    
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Niagara FX")
-    UNiagaraSystem* RainImpactEmitterTemplate = nullptr;
-    
-    // Niagara Performance Settings
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Niagara FX", meta = (ClampMin = "0.01", ClampMax = "1.0"))
-    float NiagaraUpdateRate = 0.1f;
-    
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Niagara FX", meta = (ClampMin = "500", ClampMax = "10000"))
-    float MaxNiagaraDistance = 3000.0f;
-    
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Niagara FX", meta = (ClampMin = "1", ClampMax = "128"))
-    int32 MaxActiveNiagaraComponents = 32;
-    
-    // Niagara Effect Parameters
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Niagara FX", meta = (ClampMin = "0.1", ClampMax = "10.0"))
-    float FoamIntensityScale = 1.0f;
-    
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Niagara FX", meta = (ClampMin = "0.1", ClampMax = "5.0"))
-    float MistDensityScale = 1.0f;
-    
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Niagara FX", meta = (ClampMin = "1.0", ClampMax = "50.0"))
-    float MinFlowSpeedForFX = 5.0f;
     
     // ===== PHYSICS PARAMETERS =====
     
@@ -170,19 +134,6 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Volumetric Water")
     int32 BaseSurfaceResolution = 64;
     
-    // ===== EROSION SYSTEM =====
-    
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Erosion")
-    bool bEnableErosion = true;
-    
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Erosion")
-    float ErosionRate = 0.1f;
-    
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Erosion")
-    float MinErosionVelocity = 15.0f;
-    
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Erosion")
-    float DepositionRate = 0.05f;
     
     // ===== WEATHER SYSTEM =====
     
@@ -329,6 +280,11 @@ private:
     void UpdateWaterSystemFromController();
     UMaterialInterface* GetCurrentWaterMaterial() const;
     
+    bool bPendingGPUInit = false;
+     int32 GPUInitRetryCount = 0;
+    
+    void SetupDynamicMaterialParameters(UMaterialInstanceDynamic* DynMat);
+    
     
 public:
     // ===== GPU VERTEX DISPLACEMENT CONTROLS =====
@@ -382,6 +338,9 @@ public:
     
     UFUNCTION(Exec)
     void SetWind(float X, float Y, float Strength);
+    
+    UFUNCTION(BlueprintCallable, Category = "Debug")
+    void DebugGPUWater();
     
 protected:
     // Override PostEditChangeProperty to handle changes in editor

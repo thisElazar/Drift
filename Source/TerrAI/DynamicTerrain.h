@@ -118,26 +118,26 @@ public:
     
     UPROPERTY()
     class AMasterWorldController* CachedMasterController = nullptr;
-
+    
 protected:
     virtual void BeginPlay() override;
-
+    
 public:
     virtual void Tick(float DeltaTime) override;
     
     
-
+    
     // ===== CORE TERRAIN FUNCTIONS =====
     
     /** Generates simple sinusoidal terrain for quick testing */
     UFUNCTION(BlueprintCallable, Category = "Terrain Generation")
     void GenerateSimpleTerrain();
-
+    
     /** Generates complex multi-octave procedural terrain with realistic features */
     UFUNCTION(BlueprintCallable, Category = "Terrain Generation")
     void GenerateProceduralTerrain();
-
-    /** 
+    
+    /**
      * Modifies terrain height at world position with circular brush pattern
      * @param WorldPosition - Center point in world coordinates
      * @param Radius - Brush radius in world units (500+ recommended)
@@ -146,8 +146,8 @@ public:
      */
     UFUNCTION(BlueprintCallable, Category = "Terrain Editing")
     void ModifyTerrain(FVector WorldPosition, float Radius, float Strength, bool bRaise = true);
-
-    /** 
+    
+    /**
      * Modifies terrain height at terrain grid coordinates
      * @param X,Y - Terrain grid coordinates (0 to TerrainWidth/Height)
      * @param Radius - Brush radius in terrain units
@@ -156,7 +156,7 @@ public:
      */
     UFUNCTION(BlueprintCallable, Category = "Terrain Editing")
     void ModifyTerrainAtIndex(int32 X, int32 Y, float Radius, float Strength, bool bRaise = true);
-
+    
     // ===== UTILITY FUNCTIONS =====
     
     UFUNCTION(BlueprintCallable)
@@ -164,48 +164,48 @@ public:
     
     // Clean generation for startup (automatic reset)
     void PerformCleanGeneration(bool bInitializeSystems = true);
-
+    
     // ===== MISSING FUNCTION DECLARATIONS =====
     UFUNCTION(BlueprintCallable, Category = "Master Controller")
     void InitializeWithMasterController(AMasterWorldController* Master);
     
-    UFUNCTION(BlueprintCallable, Category = "Master Controller") 
+    UFUNCTION(BlueprintCallable, Category = "Master Controller")
     bool ValidateMasterControllerAuthority() const;
     
     UFUNCTION(BlueprintCallable, Category = "Terrain Utilities")
     FVector TerrainToWorldPosition(int32 X, int32 Y) const;
-
+    
     UFUNCTION(BlueprintCallable, Category = "Terrain Utilities")
     float GetHeightAtPosition(FVector WorldPosition) const;
-
+    
     UFUNCTION(BlueprintCallable, Category = "Terrain Utilities")
     float GetHeightAtIndex(int32 X, int32 Y) const;
-
+    
     // Safe height map access methods
     UFUNCTION(BlueprintCallable, Category = "Terrain Utilities")
     float GetHeightSafe(int32 X, int32 Y) const;
-
+    
     UFUNCTION(BlueprintCallable, Category = "Terrain Utilities")
     void SetHeightSafe(int32 X, int32 Y, float Height);
-
+    
     // ===== CHUNK MANAGEMENT =====
     
-    /** 
+    /**
      * Updates a single terrain chunk's mesh geometry
      * @param ChunkIndex - Linear index into TerrainChunks array
      */
     UFUNCTION(BlueprintCallable, Category = "Chunk System")
     void UpdateChunk(int32 ChunkIndex);
-
-    /** 
+    
+    /**
      * Converts terrain coordinates to chunk index
      * @param X,Y - Terrain grid coordinates
      * @return Linear chunk index, or -1 if coordinates are invalid
      */
     UFUNCTION(BlueprintCallable, Category = "Chunk System")
     int32 GetChunkIndexFromCoordinates(int32 X, int32 Y) const;
-
-    /** 
+    
+    /**
      * Marks chunk for update in next processing cycle
      * @param ChunkIndex - Chunk to mark for update
      */
@@ -246,7 +246,7 @@ public:
     
     UFUNCTION(BlueprintCallable, Category = "Volumetric Water")
     FVector GetChunkWorldPosition(int32 ChunkIndex) const;
-
+    
     // ===== WATER SYSTEM INTEGRATION =====
     
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Water System")
@@ -262,7 +262,7 @@ public:
     
     UFUNCTION(BlueprintCallable, Category = "Water System")
     bool IsWaterSystemReady() const;
-  
+    
     // ===== ATMOSPHERIC SYSTEM INTEGRATION =====
     
     UFUNCTION(BlueprintCallable, Category = "Atmospheric System")
@@ -276,11 +276,11 @@ public:
     
     UFUNCTION(BlueprintCallable, Category = "Atmospheric System")
     FVector GetWindAt(FVector WorldPosition) const;
- 
+    
     
     UFUNCTION(BlueprintCallable, Category = "Atmospheric System")
     UAtmosphericSystem* GetAtmosphericSystem() const { return AtmosphericSystem; }
-
+    
     // ===== SCALABLE WORLD CONFIGURATION =====
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "World Configuration")
@@ -292,36 +292,36 @@ public:
     // ===== TERRAIN DIMENSIONS - SYNCHRONIZED FROM MASTERCONTROLLER =====
     // These are working properties synchronized with MasterController authority (NO DEFAULTS)
     int32 TerrainWidth;  // Synchronized with MasterController
-    int32 TerrainHeight; // Synchronized with MasterController  
+    int32 TerrainHeight; // Synchronized with MasterController
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terrain Settings")
     float TerrainScale = 100.0f;
-
+    
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terrain Settings")
     float MaxTerrainHeight = 10000.0f;
-
+    
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terrain Settings")
     float MinTerrainHeight = -10000.0f;
-
+    
     // ===== SCALABLE CHUNK SYSTEM =====
     
     int32 ChunkSize = 32;  // Synchronized with MasterController authority
-
+    
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Chunk System")
     int32 ChunkOverlap = 2;  // 2 vertex overlap for seamless chunks (enhanced for authority integration)
-
+    
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Chunk System")
     int32 MaxUpdatesPerFrame = 2;  // Reduced for better performance
-
-
+    
+    
     // ===== PERFORMANCE SETTINGS =====
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Performance")
     float ModificationCooldown = 0.05f; // 20 modifications per second max
-
+    
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Performance")
     bool bShowPerformanceStats = true;
-
+    
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Performance")
     bool bShowChunkBounds = false;
     
@@ -332,12 +332,12 @@ public:
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Performance")
     int32 MaxWaterUpdatesPerFrame = 16; // Higher throughput for water-only updates
-
+    
     // ===== PUBLIC CHUNK ACCESS =====
     
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Chunk System")
     TArray<FTerrainChunk> TerrainChunks;
-
+    
     int32 ChunksX = 0;  // Synchronized with MasterController authority
     int32 ChunksY = 0;  // Synchronized with MasterController authority
     
@@ -397,15 +397,17 @@ public:
     
     // Performance optimization helpers
     float GetCachedFrameTime() const;
-
+    
+    
+    // ===== TERRAIN DATA =====
+    TArray<float> HeightMap;
+    
 private:
     // ===== INTERNAL COMPONENTS =====
     
     UPROPERTY(VisibleAnywhere)
     USceneComponent* TerrainRoot;
-    
-    // ===== TERRAIN DATA =====
-    TArray<float> HeightMap;
+
     
     // ===== CHUNK MANAGEMENT =====
     TSet<int32> PendingChunkUpdates;
@@ -506,8 +508,30 @@ private:
     mutable FString CachedChunkNameBuffer;
     mutable FString CachedDebugStringBuffer;
     
-    // SINGLE SOURCE OF TRUTH HELPERS
+  
+    
+    
+    
+    
+public:
+    
+    // SINGLE SOURCE OF TRUTH HELPER
     void InitializeTerrainData();
     
- 
+    
+    // Add this function to check if a position is valid
+    UFUNCTION(BlueprintCallable, Category = "Terrain")
+    bool IsValidPosition(const FVector& WorldPosition) const
+    {
+        if (TerrainChunks.Num() == 0)
+            return false;
+        
+        // Convert world position to terrain coordinates
+        int32 X = FMath::FloorToInt((WorldPosition.X / TerrainScale) + TerrainWidth * 0.5f);
+        int32 Y = FMath::FloorToInt((WorldPosition.Y / TerrainScale) + TerrainHeight * 0.5f);
+        
+        return X >= 0 && X < TerrainWidth && Y >= 0 && Y < TerrainHeight;
+    }
+    
+    
 };

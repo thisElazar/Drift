@@ -48,7 +48,6 @@ UWaterSystem::UWaterSystem()
     MaxWaterVelocity = 100.0f;
     MinWaterDepth = 0.01f;
     
-    // Erosion settings removed - now handled by GeologyController
     
     // Weather settings
     bIsRaining = false;
@@ -81,11 +80,7 @@ UWaterSystem::UWaterSystem()
     WaterfallDrainageMultiplier = 0.3f;
     MinDepthThreshold = 0.1f;
     
-    // Initialize Niagara FX settings
-    bEnableNiagaraFX = true;
-    NiagaraUpdateRate = 0.1f;
-    MaxNiagaraDistance = 3000.0f;
-    MaxActiveNiagaraComponents = 32;
+
     
     // Initialize Water Authority & Quality Settings
     MinMeshDepth = 0.01f;
@@ -102,7 +97,7 @@ UWaterSystem::UWaterSystem()
     
     if (bEnableVerboseLogging)
     {
-        UE_LOG(LogTemp, Warning, TEXT("WaterSystem: Created with surface water and Niagara FX support"));
+        UE_LOG(LogTemp, Warning, TEXT("WaterSystem: Created surface water"));
     }
 }
 
@@ -162,174 +157,81 @@ bool UWaterSystem::IsSystemReady() const
 
 void UWaterSystem::UpdateWaterSimulation(float DeltaTime)
 {
-    
-    // Accumulate scaled time for wave animations
-       AccumulatedScaledTime += DeltaTime;
-    
-    if (!IsSystemReady() || !bEnableWaterSimulation)
+    if (!SimulationData.IsValid() || !OwnerTerrain)
     {
-        //UE_LOG(LogTemp, Warning, TEXT("UPDATEWATERSIMULATIONFAIL"));
         return;
     }
     
-    // WATER CONSERVATION DIAGNOSTIC: Track water before simulation
-    static float LastTotalWater = -1.0f;
-    float CurrentTotalWater = GetTotalWaterInSystem();
-    if (LastTotalWater >= 0.0f && FMath::Abs(CurrentTotalWater - LastTotalWater) > 0.01f)
-    {
-        UE_LOG(LogTemp, Warning, TEXT("[WATER DIAGNOSTIC] Water changed by %.4f before simulation step"), 
-               CurrentTotalWater - LastTotalWater);
-    }
-    LastTotalWater = CurrentTotalWater;
+    // Performance timing
+    float SimulationStartTime = FPlatformTime::Seconds();
     
-    // Step 1: Update weather system
-    if (bAutoWeather)
-    {
-        UpdateWeatherSystem(DeltaTime);
-    }
+    // Step 1: Track time for time-based effects
+   // AccumulatedTime += DeltaTime;
+   // AccumulatedScaledTime += DeltaTime * TimeScale;
     
-    // Update atmospheric interface (FIXED)
-    if (CachedMasterController && CachedMasterController->AtmosphereController)
-      {
-          // Sample wind at terrain origin - wind is fairly uniform anyway
-          FVector TerrainOrigin = OwnerTerrain ? OwnerTerrain->GetActorLocation() : FVector::ZeroVector;
-          CachedWindData = CachedMasterController->AtmosphereController->GetWindAtLocation(TerrainOrigin);
-      }
-      else
-      {
-          CachedWindData = FVector::ZeroVector; // Default when no atmosphere controller
-      }
+    // Step 2: Process water sources (rain, rivers, etc.)
+  //  if (bEnableRain && RainIntensity > 0.0f)
+   // {
+       // ApplyRainfall(DeltaTime); // Use existing rain function
+   // }
     
-    // Step 2: Apply rain if active
-    /* Depreciated, now handled in Atmosphere
-    if (bIsRaining)
-    {
-        ApplyRain(DeltaTime);
-    }
-    */
-    // DIAGNOSTIC: Log if rain is somehow still active
-    if (bIsRaining)
-    {
-        UE_LOG(LogTemp, Error, TEXT("[WATER DIAGNOSTIC] Rain is active! This will add water. Intensity: %.2f"), RainIntensity);
-    }
     // Step 3: Calculate water flow forces
     CalculateWaterFlow(DeltaTime);
     
     if (bEnableSimulationSmoothing)
+    {
+        static int32 FramesSinceSmoothing = 0;
+        if (++FramesSinceSmoothing >= 6)
         {
-            static int32 FramesSinceSmoothing = 0;
-               if (++FramesSinceSmoothing >= 6)  // Every 6 simulation frames
-               {
-                   ApplySpatialSmoothing();
-                   FramesSinceSmoothing = 0;
-               }
+            ApplySpatialSmoothing();
+            FramesSinceSmoothing = 0;
         }
-    
-    // After Step 3 (compute waves on GPU)
-     if (bUseVertexDisplacement)
-     {
-         // Update GPU wave parameters and execute compute shader
-         UpdateGPUWaveParameters(DeltaTime);
-         
-         // Check if any chunks need mesh regeneration
-         for (FWaterSurfaceChunk& Chunk : WaterSurfaceChunks)
-         {
-             if (Chunk.bHasWater && NeedsMeshRegeneration(Chunk.ChunkIndex))
-             {
-                 GenerateFlatBaseMesh(Chunk);
-                 Chunk.bNeedsUpdate = false;  // Prevent CPU update
-             }
-         }
-     }
-     else
-         {
-             // Continue with existing CPU-based wave system
-             // Step 7: Update water surface chunks (existing code)
-             UpdateWaterSurfaceChunks();
-         }
+    }
     
     // Step 4: Move water based on flow
     ApplyWaterFlow(DeltaTime);
     
     // Step 5: Handle evaporation and absorption
     ProcessWaterEvaporation(DeltaTime);
-/*
-    // Step 6: Delegate erosion to GeologyController (THROTTLED)
-    ErosionEventTimer += DeltaTime;
-    if (ErosionEventTimer >= ErosionEventInterval && OwnerTerrain && OwnerTerrain->GetWorld())
+    
+    // Step 6: CRITICAL - Always maintain chunk list regardless of rendering mode
+    UpdateWaterSurfaceChunks();
+    
+    // Step 7: Handle GPU-specific rendering if enabled
+    if (bUseVertexDisplacement)
     {
-        ErosionEventTimer = 0.0f;
+        // Update GPU wave compute shader
+        UpdateGPUWaveParameters(DeltaTime);
+        ExecuteWaveComputeShader();
         
-        // Find GeologyController and trigger erosion events based on water flow
-        AGeologyController* GeologyController = Cast<AGeologyController>(
-            UGameplayStatics::GetActorOfClass(OwnerTerrain->GetWorld(), AGeologyController::StaticClass()));
-        if (GeologyController)
+        // FIX: Iterate water chunks properly, not by terrain chunk index
+        for (FWaterSurfaceChunk& Chunk : WaterSurfaceChunks)
         {
-            // Limit erosion checks to a sample of cells for performance
-            int32 SkipFactor = FMath::Max(1, SimulationData.WaterDepthMap.Num() / 1000); // Check at most 1000 cells
-            
-            for (int32 i = 0; i < SimulationData.WaterDepthMap.Num(); i += SkipFactor)
+            if (Chunk.bHasWater)
             {
-                float VelX = SimulationData.WaterVelocityX[i];
-                float VelY = SimulationData.WaterVelocityY[i];
-                float FlowSpeed = FMath::Sqrt(VelX * VelX + VelY * VelY);
-                if (FlowSpeed > 15.0f) // Minimum erosion velocity
+                // Initialize mesh component if needed
+                if (!Chunk.MeshComponent)
                 {
-                    int32 X = i % SimulationData.TerrainWidth;
-                    int32 Y = i / SimulationData.TerrainWidth;
-                    FVector WorldPos = OwnerTerrain->TerrainToWorldPosition(X, Y);
-                    float ErosionAmount = FlowSpeed * 0.01f * ErosionEventInterval; // Scale by time interval
-                    
-                    // Query the rock type at this location
-                    //ERockType ErodedRockType = GeologyController->GetRockTypeAtLocation(WorldPos, 0.0f);
-                    
-                    // Now call with all 3 parameters
-                   // GeologyController->OnErosionOccurred(WorldPos, ErosionAmount, ErodedRockType);
+                    InitializeGPUChunkMesh(Chunk);
+                }
+                
+                // Pass the TERRAIN chunk index, not array index
+                if (NeedsMeshRegeneration(Chunk.ChunkIndex))
+                {
+                    GenerateFlatBaseMesh(Chunk);
+                    ChunkWaterAreas.Add(Chunk.ChunkIndex, CalculateChunkWaterArea(Chunk.ChunkIndex));
                 }
             }
         }
     }
-    */
-    // Step 7: Update surface-based water if enabled (ALWAYS VISIBLE VERSION)
-    if (bEnableWaterVolumes)
-    {
-        // Use new localized mesh system instead of chunk-based
-        //UpdateWaterSurfaceChunks(); COMMENTED OUT FOR GPU INTEGRATION
-        
-        if (bEnableVerboseLogging)
-        {
-            static float LastSurfaceLogTime = 0.0f;
-            float CurrentTime = OwnerTerrain->GetWorld()->GetTimeSeconds();
-            if (CurrentTime - LastSurfaceLogTime >= 2.0f)
-            {
-                UE_LOG(LogTemp, Log, TEXT("💧 Water surface chunks updated (%d active)"), WaterSurfaceChunks.Num());
-                LastSurfaceLogTime = CurrentTime;
-            }
-        }
-    }
     
-    // Step 8: Update Niagara FX if enabled (PHASE 4)
-    if (bEnableNiagaraFX)
-    {
-        UpdateNiagaraFX(DeltaTime);
-        // Niagara FX updated (verbose logging controlled by bEnableVerboseLogging)
-    }
-    
-    // Step 9: Update shader system with volumetric water + displacement
+    // Step 8: Update shader system if enabled
     if (bUseShaderWater)
     {
-        // Shader system updating (reduced logging for performance)
-        
-        // Calculate foam data for advanced rendering
         CalculateFoamData();
-        
-        // Use new unified visual update system
         UpdateAllWaterVisuals(DeltaTime);
-        
-        // Also update parameters every frame
         UpdateWaterShaderParameters();
     }
-    // Shader system disabled (logging reduced for performance)
 }
 
 // ===== VOLUMETRIC WATER IMPLEMENTATION =====
@@ -349,99 +251,107 @@ void UWaterSystem::UpdateWaterSimulation(float DeltaTime)
  */
 void UWaterSystem::UpdateWaterSurfaceChunks()
 {
-  if (!OwnerTerrain || !SimulationData.IsValid() || !bEnableWaterVolumes)
-  {
-    return;
-  }
-  
-  // Reset frame counters
-  MeshUpdatesThisFrame = 0;
-  
-  // CLEANUP: Remove chunks where simulation no longer has water
-  for (int32 i = WaterSurfaceChunks.Num() - 1; i >= 0; i--)
-  {
-    FWaterSurfaceChunk& Chunk = WaterSurfaceChunks[i];
-    
-    // Check if simulation still authorizes this chunk
-    if (!ShouldGenerateSurfaceForChunk_AuthorityOnly(Chunk.ChunkIndex))
+    if (!OwnerTerrain || !SimulationData.IsValid() || !bEnableWaterVolumes)
     {
-      UE_LOG(LogTemp, Log, TEXT("[AUTHORITY] Removing water chunk %d - simulation no longer has water"), 
-             Chunk.ChunkIndex);
-      
-      // Clean up mesh components
-      if (Chunk.SurfaceMesh)
-      {
-        if (bEnableComponentPooling)
-        {
-          ReturnComponentToValidatedPool(Chunk.SurfaceMesh);
-        }
-        else
-        {
-          Chunk.SurfaceMesh->ClearAllMeshSections();
-          Chunk.SurfaceMesh->DestroyComponent();
-        }
-        Chunk.SurfaceMesh = nullptr;
-      }
-      
-      WaterSurfaceChunks.RemoveAt(i);
+        return;
     }
-  }
-  
-  // CREATE/UPDATE: Process all terrain chunks
-  for (int32 ChunkIndex = 0; ChunkIndex < OwnerTerrain->TerrainChunks.Num(); ChunkIndex++)
-  {
-    // Check if simulation authorizes water mesh for this chunk
-    bool bShouldHaveWater = ShouldGenerateSurfaceForChunk_AuthorityOnly(ChunkIndex);
     
-    // Find existing surface chunk
-    FWaterSurfaceChunk* SurfaceChunk = WaterSurfaceChunks.FindByPredicate(
-    [ChunkIndex](const FWaterSurfaceChunk& Chunk) { return Chunk.ChunkIndex == ChunkIndex; }
-                                       );
+    // Safety check - ensure terrain chunks exist
+    if (OwnerTerrain->TerrainChunks.Num() == 0)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("UpdateWaterSurfaceChunks: No terrain chunks available"));
+        return;
+    }
     
-    if (bShouldHaveWater)
+    // Reset frame counters
+    MeshUpdatesThisFrame = 0;
+    
+    // STEP 1: Remove chunks that no longer have water (with bounds checking)
+    for (int32 i = WaterSurfaceChunks.Num() - 1; i >= 0; i--)
     {
-      if (!SurfaceChunk && WaterSurfaceChunks.Num() < MaxVolumeChunks)
-      {
-        // Create new surface chunk - simulation authorizes it
-        FWaterSurfaceChunk NewSurfaceChunk;
-        NewSurfaceChunk.ChunkIndex = ChunkIndex;
-        NewSurfaceChunk.bNeedsUpdate = true;
-        NewSurfaceChunk.CurrentLOD = 0; // Always highest quality
+        FWaterSurfaceChunk& Chunk = WaterSurfaceChunks[i];
         
-        WaterSurfaceChunks.Add(NewSurfaceChunk);
-        SurfaceChunk = &WaterSurfaceChunks.Last();
-        
-        UE_LOG(LogTemp, Log, TEXT("[AUTHORITY] Created water chunk %d - simulation has water"), ChunkIndex);
-      }
-      
-      if (SurfaceChunk)
-      {
-        // Synchronize with simulation data
-        SynchronizeChunkWithSimulation(*SurfaceChunk);
-        
-        // Update mesh if needed (no LOD changes, just simulation changes)
-        if (SurfaceChunk->bNeedsUpdate || bWaterChangedThisFrame)
+        // Bounds check before accessing terrain chunks
+        if (!OwnerTerrain->TerrainChunks.IsValidIndex(Chunk.ChunkIndex))
         {
-          CreateWaterSurfaceMesh_AlwaysVisible(*SurfaceChunk);
-          SurfaceChunk->bNeedsUpdate = false;
-          MeshUpdatesThisFrame++;
+            UE_LOG(LogTemp, Warning, TEXT("Invalid chunk index %d, removing water chunk"), Chunk.ChunkIndex);
+            
+            // Clean up invalid chunk
+            if (Chunk.SurfaceMesh)
+            {
+                Chunk.SurfaceMesh->DestroyComponent();
+            }
+            WaterSurfaceChunks.RemoveAt(i);
+            continue;
         }
-      }
+        
+        if (!ShouldGenerateSurfaceForChunk_AuthorityOnly(Chunk.ChunkIndex))
+        {
+            // Clean up mesh components
+            if (Chunk.SurfaceMesh)
+            {
+                Chunk.SurfaceMesh->ClearAllMeshSections();
+                Chunk.SurfaceMesh->DestroyComponent();
+                Chunk.SurfaceMesh = nullptr;
+            }
+            
+            WaterSurfaceChunks.RemoveAt(i);
+        }
     }
-  }
-  
-  // Debug logging
-  static float LastDebugLogTime = 0.0f;
-  if (OwnerTerrain && OwnerTerrain->GetWorld())
-  {
-    float CurrentTime = OwnerTerrain->GetWorld()->GetTimeSeconds();
-    if (CurrentTime - LastDebugLogTime >= 5.0f)
+    
+    // STEP 2: Add new chunks where water appeared (with bounds checking)
+    int32 MaxChunks = OwnerTerrain->TerrainChunks.Num();
+    for (int32 ChunkIndex = 0; ChunkIndex < MaxChunks; ChunkIndex++)
     {
-      UE_LOG(LogTemp, Log, TEXT("[ALWAYS VISIBLE] Active water chunks: %d, Updates this frame: %d"), 
-             WaterSurfaceChunks.Num(), MeshUpdatesThisFrame);
-      LastDebugLogTime = CurrentTime;
+        // Double-check bounds
+        if (!OwnerTerrain->TerrainChunks.IsValidIndex(ChunkIndex))
+        {
+            UE_LOG(LogTemp, Error, TEXT("ChunkIndex %d out of bounds during iteration"), ChunkIndex);
+            break;
+        }
+        
+        bool bShouldHaveWater = ShouldGenerateSurfaceForChunk_AuthorityOnly(ChunkIndex);
+        
+        FWaterSurfaceChunk* ExistingChunk = WaterSurfaceChunks.FindByPredicate(
+            [ChunkIndex](const FWaterSurfaceChunk& Chunk) {
+                return Chunk.ChunkIndex == ChunkIndex;
+            });
+        
+        if (bShouldHaveWater && !ExistingChunk && WaterSurfaceChunks.Num() < MaxVolumeChunks)
+        {
+            // Create new water chunk with proper bounds checking
+            FWaterSurfaceChunk NewChunk;
+            NewChunk.ChunkIndex = ChunkIndex;
+            NewChunk.bHasWater = true;
+            NewChunk.bNeedsUpdate = true;
+            NewChunk.CurrentLOD = 0;
+            
+            // Safe calculation of grid position
+            int32 ChunksPerRow = FMath::Max(1, FMath::CeilToInt(SimulationData.TerrainWidth / (float)ChunkSize));
+            NewChunk.ChunkX = ChunkIndex % ChunksPerRow;
+            NewChunk.ChunkY = ChunkIndex / ChunksPerRow;
+            NewChunk.WorldPosition = FVector2D(
+                NewChunk.ChunkX * ChunkWorldSize,
+                NewChunk.ChunkY * ChunkWorldSize
+            );
+            
+            WaterSurfaceChunks.Add(NewChunk);
+            ExistingChunk = &WaterSurfaceChunks.Last();
+        }
+        
+        // Update existing chunks (CPU mode only)
+        if (ExistingChunk && !bUseVertexDisplacement)
+        {
+            SynchronizeChunkWithSimulation(*ExistingChunk);
+            
+            if (ExistingChunk->bNeedsUpdate || bWaterChangedThisFrame)
+            {
+                CreateWaterSurfaceMesh(*ExistingChunk);
+                ExistingChunk->bNeedsUpdate = false;
+                MeshUpdatesThisFrame++;
+            }
+        }
     }
-  }
 }
 
 
@@ -594,7 +504,7 @@ float UWaterSystem::GetChunkAverageDepthFromSimulation(int32 ChunkIndex) const
 
 /**
  * PHASE 1-2: Calculates flow direction from simulation velocity arrays
- * Provides normalized flow vector for surface animation and Niagara FX
+ * Provides normalized flow vector for surface animation
  */
 FVector2D UWaterSystem::GetChunkFlowDirectionFromSimulation(int32 ChunkIndex) const
 {
@@ -689,7 +599,7 @@ float UWaterSystem::GetChunkFlowSpeedFromSimulation(int32 ChunkIndex) const
 
 /**
  * PHASE 1-2: Determines foam state from simulation FoamMap
- * Provides physically-based foam generation for materials and Niagara FX
+ * Provides physically-based foam generation for materials
  */
 bool UWaterSystem::GetChunkFoamStateFromSimulation(int32 ChunkIndex) const
 {
@@ -731,310 +641,7 @@ bool UWaterSystem::GetChunkFoamStateFromSimulation(int32 ChunkIndex) const
     return AverageFoam > 0.3f; // Threshold for visible foam
 }
 
-// ===== PHASE 4: NIAGARA FX INTEGRATION IMPLEMENTATION =====
 
-/**
- * PHASE 4: Main Niagara FX update function
- * Called every frame to manage particle systems based on simulation state
- * Integrates with Phase 1-2 synchronized chunk data for accurate FX placement
- */
-void UWaterSystem::UpdateNiagaraFX(float DeltaTime)
-{
-    if (!OwnerTerrain || !SimulationData.IsValid() || !bEnableNiagaraFX)
-    {
-        return;
-    }
-    
-    static float NiagaraUpdateTimer = 0.0f;
-    NiagaraUpdateTimer += DeltaTime;
-    
-    // Only update Niagara FX at specified rate (performance optimization)
-    if (NiagaraUpdateTimer < NiagaraUpdateRate)
-    {
-        return;
-    }
-    NiagaraUpdateTimer = 0.0f;
-    
-    // Get camera location for distance culling
-    FVector CameraLocation = FVector::ZeroVector;
-    if (OwnerTerrain->GetWorld())
-    {
-        if (APlayerController* PC = OwnerTerrain->GetWorld()->GetFirstPlayerController())
-        {
-            if (PC->PlayerCameraManager)
-            {
-                CameraLocation = PC->PlayerCameraManager->GetCameraLocation();
-            }
-        }
-    }
-    
-    // Clean up distant FX first
-    CleanupDistantNiagaraFX(CameraLocation);
-    
-    // Update FX for active water surface chunks
-    for (const FWaterSurfaceChunk& SurfaceChunk : WaterSurfaceChunks)
-    {
-        FVector ChunkWorldPos = OwnerTerrain->GetChunkWorldPosition(SurfaceChunk.ChunkIndex);
-        float DistanceToCamera = FVector::Dist(CameraLocation, ChunkWorldPos);
-        
-        // Only spawn FX within max distance
-        if (DistanceToCamera <= MaxNiagaraDistance)
-        {
-            SpawnNiagaraFXForChunk(SurfaceChunk.ChunkIndex);
-        }
-    }
-    
-    UE_LOG(LogTemp, VeryVerbose, TEXT("[NIAGARA] Updated FX - Active components: %d"), 
-           ActiveNiagaraComponents.Num());
-}
-
-/**
- * PHASE 4: Spawns appropriate Niagara FX for a specific chunk
- * Uses synchronized simulation data to determine which effects to spawn
- */
-void UWaterSystem::SpawnNiagaraFXForChunk(int32 ChunkIndex)
-{
-    if (!OwnerTerrain || ChunkIndex < 0 || ChunkIndex >= OwnerTerrain->TerrainChunks.Num())
-    {
-        return;
-    }
-    
-    // Skip if already has active FX for this chunk
-    if (ActiveNiagaraComponents.Contains(ChunkIndex))
-    {
-        // Update existing component parameters
-        UNiagaraComponent* ExistingComp = ActiveNiagaraComponents[ChunkIndex];
-        if (ExistingComp && IsValid(ExistingComp))
-        {
-            // Find the corresponding surface chunk for parameters
-            const FWaterSurfaceChunk* SurfaceChunk = WaterSurfaceChunks.FindByPredicate(
-                [ChunkIndex](const FWaterSurfaceChunk& Chunk) { return Chunk.ChunkIndex == ChunkIndex; }
-            );
-            
-            if (SurfaceChunk)
-            {
-                UpdateNiagaraParameters(ExistingComp, *SurfaceChunk);
-            }
-        }
-        return;
-    }
-    
-    // Limit number of active components
-    if (ActiveNiagaraComponents.Num() >= MaxActiveNiagaraComponents)
-    {
-        return;
-    }
-    
-    // Get chunk data from simulation (authoritative)
-    float MaxDepth = GetChunkMaxDepthFromSimulation(ChunkIndex);
-    float FlowSpeed = GetChunkFlowSpeedFromSimulation(ChunkIndex);
-    bool bHasFoam = GetChunkFoamStateFromSimulation(ChunkIndex);
-    
-    // Determine which FX to spawn based on simulation state
-    UNiagaraSystem* SystemToSpawn = nullptr;
-    
-    if (bIsRaining && RainImpactEmitterTemplate)
-    {
-        SystemToSpawn = RainImpactEmitterTemplate;
-    }
-    else if (bHasFoam && FoamEmitterTemplate)
-    {
-        SystemToSpawn = FoamEmitterTemplate;
-    }
-    else if (FlowSpeed > 10.0f && RiverFlowEmitterTemplate)
-    {
-        SystemToSpawn = RiverFlowEmitterTemplate;
-    }
-    else if (MaxDepth > 5.0f && FlowSpeed < 2.0f && LakeMistEmitterTemplate)
-    {
-        SystemToSpawn = LakeMistEmitterTemplate;
-    }
-    
-    if (SystemToSpawn)
-    {
-        // Get pooled component
-        UNiagaraComponent* NiagaraComp = GetPooledNiagaraComponent(SystemToSpawn);
-        if (NiagaraComp)
-        {
-            // Position at chunk location
-            FVector ChunkWorldPos = OwnerTerrain->GetChunkWorldPosition(ChunkIndex);
-            NiagaraComp->SetWorldLocation(ChunkWorldPos);
-            
-            // Set parameters based on simulation data
-            const FWaterSurfaceChunk* SurfaceChunk = WaterSurfaceChunks.FindByPredicate(
-                [ChunkIndex](const FWaterSurfaceChunk& Chunk) { return Chunk.ChunkIndex == ChunkIndex; }
-            );
-            
-            if (SurfaceChunk)
-            {
-                UpdateNiagaraParameters(NiagaraComp, *SurfaceChunk);
-            }
-            
-            // Activate the system
-            NiagaraComp->Activate();
-            
-            // Track active component
-            ActiveNiagaraComponents.Add(ChunkIndex, NiagaraComp);
-            
-            UE_LOG(LogTemp, Log, TEXT("[NIAGARA] Spawned FX for chunk %d - Depth:%.2f, Flow:%.2f, Foam:%s"),
-                   ChunkIndex, MaxDepth, FlowSpeed, bHasFoam ? TEXT("YES") : TEXT("NO"));
-        }
-    }
-}
-
-/**
- * PHASE 4: Updates Niagara component parameters with simulation data
- * Provides real-time parameter updates for dynamic water effects
- */
-void UWaterSystem::UpdateNiagaraParameters(UNiagaraComponent* NiagaraComp, const FWaterSurfaceChunk& SurfaceChunk)
-{
-    if (!NiagaraComp || !IsValid(NiagaraComp))
-    {
-        return;
-    }
-    
-    // Core water parameters (from Phase 1-2 synchronized data)
-    NiagaraComp->SetVectorParameter(FName("FlowVector"), 
-        FVector(SurfaceChunk.FlowDirection.X, SurfaceChunk.FlowDirection.Y, 0.0f));
-    
-    NiagaraComp->SetFloatParameter(FName("WaterDepth"), SurfaceChunk.AverageDepth);
-    NiagaraComp->SetFloatParameter(FName("FlowSpeed"), SurfaceChunk.FlowSpeed);
-    NiagaraComp->SetFloatParameter(FName("MaxDepth"), SurfaceChunk.MaxDepth);
-    
-    // Foam and visual effects
-    float FoamIntensity = SurfaceChunk.bHasFoam ? 1.0f : 0.0f;
-    NiagaraComp->SetFloatParameter(FName("FoamIntensity"), FoamIntensity);
-    
-    // Environmental parameters
-    float RainValue = bIsRaining ? RainIntensity : 0.0f;
-    NiagaraComp->SetFloatParameter(FName("RainIntensity"), RainValue);
-    
-    // Time-based animation
-    if (OwnerTerrain && OwnerTerrain->GetWorld())
-    {
-        float GameTime = GetScaledTime();
-        NiagaraComp->SetFloatParameter(FName("GameTime"), GameTime);
-        NiagaraComp->SetFloatParameter(FName("WavePhase"), SurfaceChunk.WavePhase);
-    }
-    
-    // Texture data interfaces (if available)
-    if (WaterDepthTexture)
-    {
-        NiagaraComp->SetVariableObject(FName("WaterDepthTexture"), WaterDepthTexture);
-    }
-    
-    if (WaterDataTexture)
-    {
-        NiagaraComp->SetVariableObject(FName("WaterDataTexture"), WaterDataTexture);
-    }
-    
-    UE_LOG(LogTemp, VeryVerbose, TEXT("[NIAGARA] Updated parameters - Flow:%.2f, Depth:%.2f, Foam:%.2f"),
-           SurfaceChunk.FlowSpeed, SurfaceChunk.AverageDepth, FoamIntensity);
-}
-
-/**
- * PHASE 4: Component pooling for performance optimization
- * Reuses Niagara components to avoid constant allocation/deallocation
- */
-UNiagaraComponent* UWaterSystem::GetPooledNiagaraComponent(UNiagaraSystem* SystemTemplate)
-{
-    if (!SystemTemplate || !OwnerTerrain)
-    {
-        return nullptr;
-    }
-    
-    // Try to find a pooled component with matching system
-    for (int32 i = NiagaraComponentPool.Num() - 1; i >= 0; i--)
-    {
-        UNiagaraComponent* PooledComp = NiagaraComponentPool[i];
-        if (PooledComp && IsValid(PooledComp) && PooledComp->GetAsset() == SystemTemplate)
-        {
-            NiagaraComponentPool.RemoveAt(i);
-            return PooledComp;
-        }
-    }
-    
-    // Create new component if none available
-    UNiagaraComponent* NewComp = NewObject<UNiagaraComponent>(OwnerTerrain);
-    if (NewComp)
-    {
-        NewComp->SetAsset(SystemTemplate);
-        NewComp->SetupAttachment(OwnerTerrain->GetRootComponent());
-        NewComp->RegisterComponent();
-        
-        UE_LOG(LogTemp, Log, TEXT("[NIAGARA] Created new component for system: %s"), 
-               SystemTemplate ? *SystemTemplate->GetName() : TEXT("NULL"));
-    }
-    
-    return NewComp;
-}
-
-/**
- * PHASE 4: Returns component to pool for reuse
- */
-void UWaterSystem::ReturnNiagaraComponentToPool(UNiagaraComponent* Component)
-{
-    if (!Component || !IsValid(Component))
-    {
-        return;
-    }
-    
-    // Deactivate and reset
-    Component->Deactivate();
-    Component->SetWorldLocation(FVector::ZeroVector);
-    
-    // Add to pool if not too many
-    if (NiagaraComponentPool.Num() < MaxActiveNiagaraComponents)
-    {
-        NiagaraComponentPool.Add(Component);
-    }
-    else
-    {
-        // Destroy if pool is full
-        Component->DestroyComponent();
-    }
-}
-
-/**
- * PHASE 4: Cleans up distant Niagara FX for performance
- */
-void UWaterSystem::CleanupDistantNiagaraFX(FVector CameraLocation)
-{
-    TArray<int32> ChunksToRemove;
-    
-    for (auto& Pair : ActiveNiagaraComponents)
-    {
-        int32 ChunkIndex = Pair.Key;
-        UNiagaraComponent* NiagaraComp = Pair.Value;
-        
-        if (!NiagaraComp || !IsValid(NiagaraComp))
-        {
-            ChunksToRemove.Add(ChunkIndex);
-            continue;
-        }
-        
-        // Check distance
-        FVector ChunkWorldPos = OwnerTerrain->GetChunkWorldPosition(ChunkIndex);
-        float Distance = FVector::Dist(CameraLocation, ChunkWorldPos);
-        
-        if (Distance > MaxNiagaraDistance * 1.2f) // Hysteresis to prevent flickering
-        {
-            ReturnNiagaraComponentToPool(NiagaraComp);
-            ChunksToRemove.Add(ChunkIndex);
-        }
-    }
-    
-    // Remove cleaned up components
-    for (int32 ChunkIndex : ChunksToRemove)
-    {
-        ActiveNiagaraComponents.Remove(ChunkIndex);
-    }
-    
-    if (ChunksToRemove.Num() > 0)
-    {
-        UE_LOG(LogTemp, Log, TEXT("[NIAGARA] Cleaned up %d distant FX components"), ChunksToRemove.Num());
-    }
-}
 
 // ===== PHASE 1 & 2: FLOW DISPLACEMENT SYSTEM IMPLEMENTATION =====
 
@@ -1078,46 +685,51 @@ void UWaterSystem::CreateFlowDisplacementTexture()
 void UWaterSystem::UpdateFlowDisplacementTexture()
 {
     if (!FlowDisplacementTexture || !SimulationData.IsValid())
-    {
         return;
-    }
     
     const int32 Width = SimulationData.TerrainWidth;
     const int32 Height = SimulationData.TerrainHeight;
     
-    // Create displacement data
-    TArray<FLinearColor> TextureData;
-    TextureData.SetNum(Width * Height);
+    // Create data array using FFloat16 (UE5 format)
+    TArray<uint8> TextureData;
+    TextureData.SetNum(Width * Height * 8); // 4 channels * 2 bytes per channel
     
-    for (int32 i = 0; i < SimulationData.WaterDepthMap.Num(); i++)
+    // Fill with flow data
+    for (int32 Y = 0; Y < Height; Y++)
     {
-        float VelX = SimulationData.WaterVelocityX[i];
-        float VelY = SimulationData.WaterVelocityY[i];
-        float FlowIntensity = FMath::Sqrt(VelX * VelX + VelY * VelY);
-        
-        // Convert to displacement vectors
-        FLinearColor DisplacementData(
-            VelX * DisplacementScale,                    // Flow X
-            VelY * DisplacementScale,                    // Flow Y
-            GenerateWavePhase(i),                        // Wave offset
-            FMath::Clamp(FlowIntensity / 50.0f, 0, 1)   // Intensity
-        );
-        
-        TextureData[i] = DisplacementData;
-    }
-    
-    // Upload to GPU
-    if (FlowDisplacementTexture->GetPlatformData() && FlowDisplacementTexture->GetPlatformData()->Mips.Num() > 0)
-    {
-        FTexture2DMipMap& Mip = FlowDisplacementTexture->GetPlatformData()->Mips[0];
-        void* Data = Mip.BulkData.Lock(LOCK_READ_WRITE);
-        if (Data)
+        for (int32 X = 0; X < Width; X++)
         {
-            FMemory::Memcpy(Data, TextureData.GetData(), TextureData.Num() * sizeof(FLinearColor));
-            Mip.BulkData.Unlock();
-            FlowDisplacementTexture->UpdateResource();
+            int32 Index = Y * Width + X;
+            int32 DataIndex = Index * 8; // 8 bytes per pixel (4 float16s)
+            
+            if (Index < SimulationData.WaterVelocityX.Num())
+            {
+                float VelX = SimulationData.WaterVelocityX[Index];
+                float VelY = SimulationData.WaterVelocityY[Index];
+                float Foam = SimulationData.FoamMap[Index];
+                float Depth = SimulationData.WaterDepthMap[Index];
+                
+                // Convert to FFloat16 and write to byte array
+                FFloat16 VelX16(VelX);
+                FFloat16 VelY16(VelY);
+                FFloat16 Depth16(Depth);
+                FFloat16 Foam16(Foam);
+                
+                FMemory::Memcpy(&TextureData[DataIndex], &VelX16, sizeof(FFloat16));
+                FMemory::Memcpy(&TextureData[DataIndex + 2], &VelY16, sizeof(FFloat16));
+                FMemory::Memcpy(&TextureData[DataIndex + 4], &Depth16, sizeof(FFloat16));
+                FMemory::Memcpy(&TextureData[DataIndex + 6], &Foam16, sizeof(FFloat16));
+            }
         }
     }
+    
+    // Update texture
+    FTexture2DMipMap& Mip = FlowDisplacementTexture->GetPlatformData()->Mips[0];
+    void* Data = Mip.BulkData.Lock(LOCK_READ_WRITE);
+    FMemory::Memcpy(Data, TextureData.GetData(), TextureData.Num());
+    Mip.BulkData.Unlock();
+    
+    FlowDisplacementTexture->UpdateResource();
 }
 
 void UWaterSystem::UpdateWaterShaderForDisplacement(UMaterialInstanceDynamic* Material)
@@ -3062,7 +2674,7 @@ void UWaterSystem::ResetWaterSystem()
         SimulationData.WaterDepthMap[i] = 0.0f;
         SimulationData.WaterVelocityX[i] = 0.0f;
         SimulationData.WaterVelocityY[i] = 0.0f;
-        SimulationData.SedimentMap[i] = 0.0f;
+      //  SimulationData.SedimentMap[i] = 0.0f;
     }
     
     // Reset weather
@@ -4288,51 +3900,6 @@ void UWaterSystem::ConfigureWorldPartitionStreaming()
                 // Note: SetWorldPartitionStreamingSourcePriority may not be available
                 // Configure through other means if needed
             }
-        }
-    }
-}
-
-// ===== UE5.4 NIAGARA 5.0 INTEGRATION =====
-void UWaterSystem::UpdateNiagaraFX_UE54(float DeltaTime)
-{
-    if (!bEnableNiagaraFX || !OwnerTerrain)
-    {
-        return;
-    }
-    
-    static float UpdateTimer = 0.0f;
-    UpdateTimer += DeltaTime;
-    
-    if (UpdateTimer < NiagaraUpdateRate)
-    {
-        return;
-    }
-    UpdateTimer = 0.0f;
-    
-    for (auto& NiagaraPair : ActiveNiagaraComponents)
-    {
-        UNiagaraComponent* NiagaraComp = NiagaraPair.Value;
-        if (NiagaraComp && IsValid(NiagaraComp))
-        {
-            if (WaterDepthTexture)
-            {
-                NiagaraComp->SetVariableTexture(FName("WaterDepthTexture"), WaterDepthTexture);
-            }
-            
-            FVector CameraLocation = FVector::ZeroVector;
-            if (OwnerTerrain->GetWorld())
-            {
-                if (APlayerController* PC = OwnerTerrain->GetWorld()->GetFirstPlayerController())
-                {
-                    if (PC->PlayerCameraManager)
-                    {
-                        CameraLocation = PC->PlayerCameraManager->GetCameraLocation();
-                    }
-                }
-            }
-            
-            NiagaraComp->SetVectorParameter(FName("ViewerLocation"), CameraLocation);
-            NiagaraComp->SetFloatParameter(FName("WorldTime"), GetWorld()->GetTimeSeconds());
         }
     }
 }
@@ -6504,40 +6071,85 @@ void UWaterSystem::InitializeGPUDisplacement()
         return;
     }
     
-    // Create wave output texture if it doesn't exist
+    // IMPORTANT: Sync with master controller if available
+    if (CachedMasterController)
+    {
+        FVector2D WorldDims = CachedMasterController->GetWorldDimensions();
+        float TerrainScale = CachedMasterController->GetTerrainScale();
+        
+        UE_LOG(LogTemp, Warning, TEXT("GPU Init: World Dims=(%.1f, %.1f), Scale=%.1f"),
+               WorldDims.X, WorldDims.Y, TerrainScale);
+    }
+    
+    // Create wave output texture with UAV support
     if (!WaveOutputTexture)
     {
         WaveOutputTexture = NewObject<UTextureRenderTarget2D>(this);
+        
+        // CRITICAL: Must use InitCustomFormat with proper flags for compute shader UAV
+        WaveOutputTexture->RenderTargetFormat = RTF_RGBA32f;  // Full precision
         WaveOutputTexture->InitCustomFormat(
             SimulationData.TerrainWidth,
             SimulationData.TerrainHeight,
             PF_A32B32G32R32F,  // Full precision for wave data
-            false
+            false  // No linear gamma
         );
-        WaveOutputTexture->UpdateResourceImmediate();
         
-        UE_LOG(LogTemp, Warning, TEXT("Created Wave Output Texture: %dx%d"),
+        // CRITICAL: Force UAV flag for compute shader write access
+        WaveOutputTexture->bCanCreateUAV = true;
+        WaveOutputTexture->UpdateResourceImmediate(true);  // Force immediate update
+        
+        UE_LOG(LogTemp, Warning, TEXT("Created Wave Output Texture with UAV: %dx%d"),
                SimulationData.TerrainWidth, SimulationData.TerrainHeight);
     }
     
-    // Load the water material with vertex displacement if not set
+    // Create water depth texture
+    if (!WaterDepthTexture)
+    {
+        // This is read-only, doesn't need UAV
+        CreateWaterDepthTexture();
+    }
+    
+    // Create flow displacement texture
+    if (!FlowDisplacementTexture)
+    {
+        // For now, create a dummy texture
+        FlowDisplacementTexture = UTexture2D::CreateTransient(
+            SimulationData.TerrainWidth,
+            SimulationData.TerrainHeight,
+            PF_FloatRGBA
+        );
+        
+        if (FlowDisplacementTexture)
+        {
+            FlowDisplacementTexture->CompressionSettings = TC_HDR;
+            FlowDisplacementTexture->SRGB = false;
+            FlowDisplacementTexture->UpdateResource();
+        }
+    }
+    
+    // Load GPU water material if not set
     if (!WaterMaterialWithDisplacement)
     {
-        // Try to load from project
         WaterMaterialWithDisplacement = LoadObject<UMaterialInterface>(nullptr,
             TEXT("/Game/Materials/M_WaterSurface_GPU"));
             
         if (!WaterMaterialWithDisplacement)
         {
-            UE_LOG(LogTemp, Warning, TEXT("GPU Water Material not found - create M_WaterSurface_GPU"));
+            UE_LOG(LogTemp, Warning, TEXT("GPU Water Material not found - please create M_WaterSurface_GPU"));
+            
+            // Use default material as fallback
+            WaterMaterialWithDisplacement = VolumeMaterial;
         }
     }
     
-    UE_LOG(LogTemp, Warning, TEXT("GPU Vertex Displacement initialized"));
+    UE_LOG(LogTemp, Warning, TEXT("GPU Vertex Displacement resources initialized"));
 }
+
 
 void UWaterSystem::ToggleVertexDisplacement(bool bEnable)
 {
+    // Initialize GPU resources if enabling
     if (bEnable && !WaveOutputTexture)
     {
         InitializeGPUDisplacement();
@@ -6545,113 +6157,184 @@ void UWaterSystem::ToggleVertexDisplacement(bool bEnable)
     
     bUseVertexDisplacement = bEnable;
     
-    // Force mesh regeneration on toggle
     if (bEnable)
     {
-        // Generate flat base meshes for all water chunks
+        UE_LOG(LogTemp, Warning, TEXT("Enabling GPU Vertex Displacement"));
+        
+        // Ensure chunks exist by forcing an update
+        UpdateWaterSurfaceChunks();
+        
+        // Initialize GPU meshes for all water chunks
+        int32 ChunksInitialized = 0;
         for (FWaterSurfaceChunk& Chunk : WaterSurfaceChunks)
         {
             if (Chunk.bHasWater)
             {
+                // Generate initial flat mesh
                 GenerateFlatBaseMesh(Chunk);
+                
+                // Store initial water area for change detection
+                ChunkWaterAreas.Add(Chunk.ChunkIndex, CalculateChunkWaterArea(Chunk.ChunkIndex));
+                
+                ChunksInitialized++;
             }
         }
         
-        UE_LOG(LogTemp, Warning, TEXT("GPU Vertex Displacement ENABLED - Generated flat meshes"));
+        UE_LOG(LogTemp, Warning, TEXT("GPU Mode: Initialized %d water chunks"), ChunksInitialized);
     }
     else
     {
-        // Mark all chunks for CPU update to restore wave geometry
+        UE_LOG(LogTemp, Warning, TEXT("Disabling GPU Vertex Displacement"));
+        
+        // Clean up GPU meshes and switch to CPU mode
         for (FWaterSurfaceChunk& Chunk : WaterSurfaceChunks)
         {
+            // Clear mesh sections but keep component
+            if (Chunk.SurfaceMesh)
+            {
+                Chunk.SurfaceMesh->ClearAllMeshSections();
+            }
+            
+            // Mark for CPU mesh regeneration
             Chunk.bNeedsUpdate = true;
         }
         
-        UE_LOG(LogTemp, Warning, TEXT("GPU Vertex Displacement DISABLED - Reverting to CPU waves"));
+        // Clear GPU tracking data
+        ChunkWaterAreas.Empty();
     }
 }
 
 void UWaterSystem::ExecuteWaveComputeShader()
 {
-    if (!WaveOutputTexture || !WaterDepthTexture || !FlowDisplacementTexture)
+    // Safety checks
+    if (!WaveOutputTexture || !WaterDepthTexture)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("ExecuteWaveComputeShader: Required textures not initialized"));
+        return;
+    }
+    
+    // Check if we're in a valid state to execute
+    if (!IsInGameThread())
+    {
+        UE_LOG(LogTemp, Error, TEXT("ExecuteWaveComputeShader must be called from game thread"));
+        return;
+    }
+    
+    // Get world for timing
+    UWorld* World = GetWorld();
+    if (!World)
     {
         return;
     }
     
-    ENQUEUE_RENDER_COMMAND(WaveComputeCommand)(
-        [this](FRHICommandListImmediate& RHICmdList)
+    // Enqueue render command
+    ENQUEUE_RENDER_COMMAND(FWaveComputeCommand)(
+        [this, World](FRHICommandListImmediate& RHICmdList)
         {
-            FRDGBuilder GraphBuilder(RHICmdList);
-            
-            // Fixed texture access - use GetResource() instead of GetRenderTargetResource()
-            FRDGTextureRef RDGWaterDepth = GraphBuilder.RegisterExternalTexture(
-                CreateRenderTarget(WaterDepthTexture->GetResource()->GetTexture2DRHI(),
-                TEXT("WaterDepth")));
-            
-            FRDGTextureRef RDGFlowData = GraphBuilder.RegisterExternalTexture(
-                CreateRenderTarget(FlowDisplacementTexture->GetResource()->GetTexture2DRHI(),
-                TEXT("FlowData")));
-            
-            FRDGTextureRef RDGWaveOutput = GraphBuilder.RegisterExternalTexture(
-                CreateRenderTarget(WaveOutputTexture->GetResource()->GetTexture2DRHI(),
-                TEXT("WaveOutput")));
-            
-            const FGlobalShaderMap* GlobalShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
-            if (!GlobalShaderMap)
+            // Verify shader is compiled and available
+            TShaderMapRef<FWaveComputeCS> ComputeShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+            if (!ComputeShader.IsValid())
             {
-                GraphBuilder.Execute();
+                UE_LOG(LogTemp, Error, TEXT("Wave compute shader not found or not compiled"));
                 return;
             }
             
-            TShaderMapRef<FWaveComputeCS> ComputeShader(GlobalShaderMap);
+            // Create render graph
+            FRDGBuilder GraphBuilder(RHICmdList);
             
+            // Register external textures with render graph
+            // Wave output texture (render target)
+            TRefCountPtr<IPooledRenderTarget> PooledWaveOutput;
+            CacheRenderTarget(WaveOutputTexture->GetRenderTargetResource()->GetRenderTargetTexture(),
+                            TEXT("WaveOutput"), PooledWaveOutput);
+            FRDGTextureRef RDGWaveOutput = GraphBuilder.RegisterExternalTexture(PooledWaveOutput);
+            
+            // Water depth texture
+            TRefCountPtr<IPooledRenderTarget> PooledWaterDepth;
+            CacheRenderTarget(WaterDepthTexture->GetResource()->GetTexture2DRHI(),
+                            TEXT("WaterDepth"), PooledWaterDepth);
+            FRDGTextureRef RDGWaterDepth = GraphBuilder.RegisterExternalTexture(PooledWaterDepth);
+            
+            // Flow data texture (create dummy if not available)
+            FRDGTextureRef RDGFlowData;
+            if (FlowDisplacementTexture)
+            {
+                TRefCountPtr<IPooledRenderTarget> PooledFlowData;
+                CacheRenderTarget(FlowDisplacementTexture->GetResource()->GetTexture2DRHI(),
+                                TEXT("FlowData"), PooledFlowData);
+                RDGFlowData = GraphBuilder.RegisterExternalTexture(PooledFlowData);
+            }
+            else
+            {
+                // Create dummy flow texture
+                FRDGTextureDesc FlowDesc = FRDGTextureDesc::Create2D(
+                    FIntPoint(SimulationData.TerrainWidth, SimulationData.TerrainHeight),
+                    PF_FloatRGBA,
+                    FClearValueBinding::None,
+                    TexCreate_ShaderResource | TexCreate_UAV);
+                RDGFlowData = GraphBuilder.CreateTexture(FlowDesc, TEXT("DummyFlowData"));
+            }
+            
+            // Allocate shader parameters
             FWaveComputeCS::FParameters* PassParameters =
                 GraphBuilder.AllocParameters<FWaveComputeCS::FParameters>();
             
+            // Set input textures
             PassParameters->WaterDepthTexture = GraphBuilder.CreateSRV(
                 FRDGTextureSRVDesc::Create(RDGWaterDepth));
             PassParameters->FlowDataTexture = GraphBuilder.CreateSRV(
                 FRDGTextureSRVDesc::Create(RDGFlowData));
+            
+            // Set output texture
             PassParameters->WaveOutputTexture = GraphBuilder.CreateUAV(
                 FRDGTextureUAVDesc(RDGWaveOutput));
             
-            // Fixed: Use MaterialParams instead of undefined variables
-            PassParameters->Time = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+            // Set simulation parameters
+            PassParameters->Time = World->GetTimeSeconds();
             PassParameters->WindParams = FVector4f(
                 MaterialParams.WindDirection.X,
                 MaterialParams.WindDirection.Y,
                 MaterialParams.WindStrength,
-                0.0f);
+                0.0f
+            );
             PassParameters->WaveParams = FVector4f(
-                MaterialParams.WaveScale,
-                MaterialParams.WaveSpeed,
-                1.0f,
-                1.0f);
+                GPUWaveScale,
+                GPUWaveSpeed,
+                1.0f,  // Damping
+                1.0f   // Terrain scale
+            );
             PassParameters->TerrainParams = FVector4f(
-                (float)SimulationData.TerrainWidth,
-                (float)SimulationData.TerrainHeight,
+                static_cast<float>(SimulationData.TerrainWidth),
+                static_cast<float>(SimulationData.TerrainHeight),
                 0.0f,
-                0.0f);
+                0.0f
+            );
             PassParameters->TextureSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp>::GetRHI();
             
-            int32 GroupCountX = FMath::DivideAndRoundUp(SimulationData.TerrainWidth, 8);
-            int32 GroupCountY = FMath::DivideAndRoundUp(SimulationData.TerrainHeight, 8);
+            // Calculate dispatch dimensions (8x8 thread groups)
+            FIntVector GroupCount(
+                FMath::DivideAndRoundUp(SimulationData.TerrainWidth, 8),
+                FMath::DivideAndRoundUp(SimulationData.TerrainHeight, 8),
+                1
+            );
             
+            // Add compute pass to graph
             GraphBuilder.AddPass(
                 RDG_EVENT_NAME("WaveCompute"),
                 PassParameters,
-                ERDGPassFlags::Compute,
-                [PassParameters, ComputeShader, GroupCountX, GroupCountY](FRHIComputeCommandList& RHICmdList)
+                ERDGPassFlags::Compute | ERDGPassFlags::NeverCull,
+                [PassParameters, ComputeShader, GroupCount](FRHIComputeCommandList& RHICmdList)
                 {
                     FComputeShaderUtils::Dispatch(
                         RHICmdList,
                         ComputeShader,
                         *PassParameters,
-                        FIntVector(GroupCountX, GroupCountY, 1)
+                        GroupCount
                     );
                 }
             );
             
+            // Execute the graph
             GraphBuilder.Execute();
         }
     );
@@ -6696,23 +6379,37 @@ bool UWaterSystem::NeedsMeshRegeneration(int32 ChunkIndex) const
 {
     if (!bUseVertexDisplacement)
     {
-        // Use existing logic when GPU displacement is off
         return true;
     }
     
-    // With GPU displacement, only regenerate if water area changed significantly
-    const FWaterSurfaceChunk& Chunk = WaterSurfaceChunks[ChunkIndex];
+    // Find the water chunk for this terrain chunk
+    const FWaterSurfaceChunk* WaterChunk = WaterSurfaceChunks.FindByPredicate(
+        [ChunkIndex](const FWaterSurfaceChunk& Chunk) {
+            return Chunk.ChunkIndex == ChunkIndex;
+        });
     
-    float CurrentArea = 0.0f;
-    int32 StartX = Chunk.ChunkX * ChunkSize;
-    int32 StartY = Chunk.ChunkY * ChunkSize;
-    
-    // Calculate current water area in chunk
-    for (int32 Y = 0; Y < ChunkSize; Y++)
+    if (!WaterChunk)
     {
-        for (int32 X = 0; X < ChunkSize; X++)
+        return false;
+    }
+    
+    // Get terrain chunk dimensions
+    const FTerrainChunk& TerrainChunk = OwnerTerrain->TerrainChunks[ChunkIndex];
+    const int32 TerrainChunkSize = OwnerTerrain->ChunkSize;
+    const int32 ChunkOverlap = OwnerTerrain->ChunkOverlap;
+    
+    int32 ChunkStartX = TerrainChunk.ChunkX * (TerrainChunkSize - ChunkOverlap);
+    int32 ChunkStartY = TerrainChunk.ChunkY * (TerrainChunkSize - ChunkOverlap);
+    int32 ChunkEndX = FMath::Min(ChunkStartX + TerrainChunkSize, OwnerTerrain->TerrainWidth);
+    int32 ChunkEndY = FMath::Min(ChunkStartY + TerrainChunkSize, OwnerTerrain->TerrainHeight);
+    
+    // Calculate current water coverage
+    float CurrentArea = 0.0f;
+    for (int32 Y = ChunkStartY; Y < ChunkEndY; Y++)
+    {
+        for (int32 X = ChunkStartX; X < ChunkEndX; X++)
         {
-            float Depth = GetWaterDepthSafe(StartX + X, StartY + Y);
+            float Depth = GetWaterDepthSafe(X, Y);
             if (Depth > MinWaterDepth)
             {
                 CurrentArea += 1.0f;
@@ -6722,9 +6419,8 @@ bool UWaterSystem::NeedsMeshRegeneration(int32 ChunkIndex) const
     
     // Check if area changed significantly
     const float* LastArea = ChunkWaterAreas.Find(ChunkIndex);
-    if (!LastArea || FMath::Abs(CurrentArea - *LastArea) > MeshRegenerationThreshold)
+    if (!LastArea || FMath::Abs(CurrentArea - *LastArea) > 1.0f) // More sensitive threshold
     {
-        // Update stored area
         const_cast<UWaterSystem*>(this)->ChunkWaterAreas.Add(ChunkIndex, CurrentArea);
         return true;
     }
@@ -6734,9 +6430,29 @@ bool UWaterSystem::NeedsMeshRegeneration(int32 ChunkIndex) const
 
 void UWaterSystem::GenerateFlatBaseMesh(FWaterSurfaceChunk& Chunk)
 {
-    // This generates a flat mesh - waves are added by vertex shader
-    if (!Chunk.MeshComponent)
+    const FString FuncName = TEXT("GenerateFlatBaseMesh");
+    
+    // Validate terrain chunk index
+    if (Chunk.ChunkIndex < 0 || !OwnerTerrain ||
+        Chunk.ChunkIndex >= OwnerTerrain->TerrainChunks.Num())
+    {
+        UE_LOG(LogTemp, Error, TEXT("GenerateFlatBaseMesh: Invalid chunk index %d"), Chunk.ChunkIndex);
         return;
+    }
+    
+    // Safety checks
+    if (!Chunk.SurfaceMesh)
+    {
+        InitializeGPUChunkMesh(Chunk);
+        if (!Chunk.SurfaceMesh)
+        {
+            UE_LOG(LogTemp, Error, TEXT("Failed to create mesh component for chunk %d"), Chunk.ChunkIndex);
+            return;
+        }
+    }
+    
+    // Get terrain chunk for coordinate mapping
+    const FTerrainChunk& TerrainChunk = OwnerTerrain->TerrainChunks[Chunk.ChunkIndex];
     
     TArray<FVector> Vertices;
     TArray<int32> Triangles;
@@ -6744,78 +6460,528 @@ void UWaterSystem::GenerateFlatBaseMesh(FWaterSurfaceChunk& Chunk)
     TArray<FVector2D> UVs;
     TArray<FColor> VertexColors;
     
-    const int32 Resolution = Chunk.SurfaceResolution;
-    const float CellSize = ChunkWorldSize / (Resolution - 1);
+    // CRITICAL: Use actual terrain chunk dimensions
+    const int32 TerrainChunkSize = OwnerTerrain->ChunkSize; // Should be 33
+    const float TerrainScale = OwnerTerrain->TerrainScale;   // Should be 100.0f
+    const int32 ChunkOverlap = OwnerTerrain->ChunkOverlap;  // Should be 1
     
-    // Generate flat grid
-    for (int32 Y = 0; Y < Resolution; Y++)
+    // Calculate chunk's starting position in terrain grid
+    int32 ChunkStartX = TerrainChunk.ChunkX * (TerrainChunkSize - ChunkOverlap);
+    int32 ChunkStartY = TerrainChunk.ChunkY * (TerrainChunkSize - ChunkOverlap);
+    int32 ChunkEndX = FMath::Min(ChunkStartX + TerrainChunkSize, OwnerTerrain->TerrainWidth);
+    int32 ChunkEndY = FMath::Min(ChunkStartY + TerrainChunkSize, OwnerTerrain->TerrainHeight);
+    
+    // First pass: Check if chunk has any water and find bounds
+    bool bHasAnyWater = false;
+    int32 MinWaterX = ChunkEndX;
+    int32 MaxWaterX = ChunkStartX;
+    int32 MinWaterY = ChunkEndY;
+    int32 MaxWaterY = ChunkStartY;
+    
+    for (int32 Y = ChunkStartY; Y < ChunkEndY; Y++)
     {
-        for (int32 X = 0; X < Resolution; X++)
+        for (int32 X = ChunkStartX; X < ChunkEndX; X++)
         {
-            float LocalX = X * CellSize;
-            float LocalY = Y * CellSize;
-            
-            // Get world position
-            FVector2D WorldPos = Chunk.WorldPosition + FVector2D(LocalX, LocalY);
-            
-            // Sample water depth
-            float WaterDepth = GetInterpolatedWaterDepthSeamless(WorldPos);
-            
-            // Get terrain height
-            float TerrainHeight = OwnerTerrain->GetHeightAtPosition(
-                FVector(WorldPos.X, WorldPos.Y, 0));
-            
-            // FLAT surface at water level (no waves in mesh)
-            float SurfaceHeight = TerrainHeight + WaterDepth;
-            
-            // Add vertex
-            Vertices.Add(FVector(LocalX, LocalY, SurfaceHeight));
-            
-            // Flat normals (will be modified by shader)
-            Normals.Add(FVector(0, 0, 1));
-            
-            // UVs for texture sampling
-            UVs.Add(FVector2D((float)X / (Resolution - 1), (float)Y / (Resolution - 1)));
-            
-            // Vertex colors encode water properties
-            uint8 Alpha = WaterDepth > MinWaterDepth ? 255 : 0;
-            VertexColors.Add(FColor(
-                FMath::Clamp(WaterDepth * 25.0f, 0.0f, 255.0f),  // Depth
-                0,  // Reserved
-                0,  // Reserved
-                Alpha
-            ));
+            float WaterDepth = GetWaterDepthSafe(X, Y);
+            if (WaterDepth > MinWaterDepth)
+            {
+                bHasAnyWater = true;
+                MinWaterX = FMath::Min(MinWaterX, X);
+                MaxWaterX = FMath::Max(MaxWaterX, X);
+                MinWaterY = FMath::Min(MinWaterY, Y);
+                MaxWaterY = FMath::Max(MaxWaterY, Y);
+            }
         }
     }
     
-    // Generate triangles (same as before)
-    for (int32 Y = 0; Y < Resolution - 1; Y++)
+    // If no water in chunk, clear mesh and return
+    if (!bHasAnyWater)
     {
-        for (int32 X = 0; X < Resolution - 1; X++)
+        Chunk.SurfaceMesh->ClearAllMeshSections();
+        Chunk.SurfaceMesh->SetVisibility(false);
+        UE_LOG(LogTemp, Verbose, TEXT("Chunk %d has no water, skipping mesh generation"), Chunk.ChunkIndex);
+        return;
+    }
+    
+    // Expand bounds slightly for smooth edges
+    MinWaterX = FMath::Max(ChunkStartX, MinWaterX - 1);
+    MaxWaterX = FMath::Min(ChunkEndX - 1, MaxWaterX + 1);
+    MinWaterY = FMath::Max(ChunkStartY, MinWaterY - 1);
+    MaxWaterY = FMath::Min(ChunkEndY - 1, MaxWaterY + 1);
+    
+    // Calculate actual mesh dimensions
+    int32 MeshWidth = MaxWaterX - MinWaterX + 1;
+    int32 MeshHeight = MaxWaterY - MinWaterY + 1;
+    
+    // Create vertex map to track which vertices exist
+    TMap<FIntPoint, int32> VertexIndexMap;
+    
+    // Generate vertices ONLY where water exists
+    for (int32 Y = MinWaterY; Y <= MaxWaterY; Y++)
+    {
+        for (int32 X = MinWaterX; X <= MaxWaterX; X++)
         {
-            int32 TopLeft = Y * Resolution + X;
-            int32 TopRight = TopLeft + 1;
-            int32 BottomLeft = (Y + 1) * Resolution + X;
-            int32 BottomRight = BottomLeft + 1;
+            float WaterDepth = GetWaterDepthSafe(X, Y);
             
-            Triangles.Add(TopLeft);
-            Triangles.Add(BottomLeft);
-            Triangles.Add(TopRight);
+            // Include vertices at water edges for smooth transitions
+            bool bIncludeVertex = (WaterDepth > 0.0f) ||
+                                  (HasWaterNeighbor(X, Y) && WaterDepth >= 0.0f);
             
-            Triangles.Add(TopRight);
-            Triangles.Add(BottomLeft);
-            Triangles.Add(BottomRight);
+            if (bIncludeVertex)
+            {
+                // Get terrain height at this position
+                float TerrainHeight = OwnerTerrain->GetHeightSafe(X, Y);
+                
+                // Calculate water surface height
+                float WaterSurfaceHeight = TerrainHeight + FMath::Max(0.0f, WaterDepth);
+                
+                // Calculate position relative to chunk origin
+                float LocalX = (X - ChunkStartX) * TerrainScale;
+                float LocalY = (Y - ChunkStartY) * TerrainScale;
+                
+                // Store vertex index for triangle generation
+                FIntPoint GridPos(X - MinWaterX, Y - MinWaterY);
+                VertexIndexMap.Add(GridPos, Vertices.Num());
+                
+                // Add vertex
+                Vertices.Add(FVector(LocalX, LocalY, WaterSurfaceHeight));
+                Normals.Add(FVector(0, 0, 1));
+                
+                // UV based on position within water area
+                float U = (float)(X - MinWaterX) / FMath::Max(1, MeshWidth - 1);
+                float V = (float)(Y - MinWaterY) / FMath::Max(1, MeshHeight - 1);
+                UVs.Add(FVector2D(U, V));
+                
+                // Vertex color for water depth visualization
+                uint8 Alpha = WaterDepth > MinWaterDepth ? 255 :
+                             (WaterDepth > 0 ? 128 : 0);
+                uint8 DepthColor = FMath::Clamp((int32)(WaterDepth * 50.0f), 0, 255);
+                VertexColors.Add(FColor(0, DepthColor, 255, Alpha));
+            }
         }
     }
     
-    // Create mesh section
-    Chunk.MeshComponent->CreateMeshSection(
-        0, Vertices, Triangles, Normals, UVs,
-        VertexColors, TArray<FProcMeshTangent>(), false
-    );
+    // Generate triangles only where we have vertices
+    for (int32 Y = 0; Y < MeshHeight - 1; Y++)
+    {
+        for (int32 X = 0; X < MeshWidth - 1; X++)
+        {
+            FIntPoint TopLeft(X, Y);
+            FIntPoint TopRight(X + 1, Y);
+            FIntPoint BottomLeft(X, Y + 1);
+            FIntPoint BottomRight(X + 1, Y + 1);
+            
+            // Check if all four vertices exist
+            int32* TL = VertexIndexMap.Find(TopLeft);
+            int32* TR = VertexIndexMap.Find(TopRight);
+            int32* BL = VertexIndexMap.Find(BottomLeft);
+            int32* BR = VertexIndexMap.Find(BottomRight);
+            
+            // Only create triangles where all vertices exist
+            if (TL && TR && BL && BR)
+            {
+                // First triangle
+                Triangles.Add(*TL);
+                Triangles.Add(*BL);
+                Triangles.Add(*TR);
+                
+                // Second triangle
+                Triangles.Add(*TR);
+                Triangles.Add(*BL);
+                Triangles.Add(*BR);
+            }
+            else if (TL && TR && BL)
+            {
+                // Only top-left triangle
+                Triangles.Add(*TL);
+                Triangles.Add(*BL);
+                Triangles.Add(*TR);
+            }
+            else if (TR && BL && BR)
+            {
+                // Only bottom-right triangle
+                Triangles.Add(*TR);
+                Triangles.Add(*BL);
+                Triangles.Add(*BR);
+            }
+        }
+    }
     
-    UE_LOG(LogTemp, VeryVerbose, TEXT("Generated flat base mesh for chunk %d,%d"),
-           Chunk.ChunkX, Chunk.ChunkY);
+    // Create mesh section only if we have valid data
+    if (Vertices.Num() > 0 && Triangles.Num() > 0)
+    {
+        Chunk.SurfaceMesh->ClearAllMeshSections();
+        Chunk.SurfaceMesh->CreateMeshSection(
+            0, Vertices, Triangles, Normals, UVs,
+            VertexColors, TArray<FProcMeshTangent>(), false
+        );
+        
+        Chunk.SurfaceMesh->SetVisibility(true);
+        
+        // Apply GPU water material
+        UMaterialInterface* MaterialToUse = WaterMaterialWithDisplacement ?
+            WaterMaterialWithDisplacement : VolumeMaterial;
+            
+        if (MaterialToUse)
+        {
+            UMaterialInstanceDynamic* DynMat = UMaterialInstanceDynamic::Create(
+                MaterialToUse, this);
+            
+            if (DynMat)
+            {
+                // Set texture parameters
+                if (WaveOutputTexture)
+                {
+                    DynMat->SetTextureParameterValue(FName("WaveHeightTexture"), WaveOutputTexture);
+                    DynMat->SetTextureParameterValue(FName("DisplacementTexture"), WaveOutputTexture);
+                }
+                
+                if (WaterDepthTexture)
+                {
+                    DynMat->SetTextureParameterValue(FName("WaterDepthTexture"), WaterDepthTexture);
+                }
+                
+                // Set scalar parameters
+                DynMat->SetScalarParameterValue(FName("Time"), AccumulatedScaledTime);
+                DynMat->SetScalarParameterValue(FName("WaveScale"), GPUWaveScale);
+                DynMat->SetScalarParameterValue(FName("WaveSpeed"), GPUWaveSpeed);
+                
+                Chunk.SurfaceMesh->SetMaterial(0, DynMat);
+            }
+        }
+        
+        UE_LOG(LogTemp, Verbose, TEXT("Generated GPU mesh for chunk %d: %d verts, %d tris, water bounds [%d,%d]-[%d,%d]"),
+               Chunk.ChunkIndex, Vertices.Num(), Triangles.Num() / 3,
+               MinWaterX, MinWaterY, MaxWaterX, MaxWaterY);
+    }
+    else
+    {
+        Chunk.SurfaceMesh->ClearAllMeshSections();
+        Chunk.SurfaceMesh->SetVisibility(false);
+        UE_LOG(LogTemp, Warning, TEXT("No valid mesh generated for chunk %d"), Chunk.ChunkIndex);
+    }
+}
+
+bool UWaterSystem::HasWaterNeighbor(int32 X, int32 Y) const
+{
+    // Check 8 neighbors for water
+    for (int32 dy = -1; dy <= 1; dy++)
+    {
+        for (int32 dx = -1; dx <= 1; dx++)
+        {
+            if (dx == 0 && dy == 0) continue; // Skip self
+            
+            float NeighborDepth = GetWaterDepthSafe(X + dx, Y + dy);
+            if (NeighborDepth > MinWaterDepth)
+            {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 
+void UWaterSystem::DebugGPUChunkPositions()
+{
+    if (!OwnerTerrain)
+    {
+        UE_LOG(LogTemp, Error, TEXT("DebugGPUChunkPositions: No terrain"));
+        return;
+    }
+    
+    UE_LOG(LogTemp, Warning, TEXT("=== GPU CHUNK POSITIONS DEBUG ==="));
+    UE_LOG(LogTemp, Warning, TEXT("Terrain Actor Location: (%.1f, %.1f, %.1f)"),
+           OwnerTerrain->GetActorLocation().X,
+           OwnerTerrain->GetActorLocation().Y,
+           OwnerTerrain->GetActorLocation().Z);
+    
+    for (int32 i = 0; i < FMath::Min(5, WaterSurfaceChunks.Num()); i++)
+    {
+        const FWaterSurfaceChunk& Chunk = WaterSurfaceChunks[i];
+        if (Chunk.SurfaceMesh)
+        {
+            FVector MeshLocation = Chunk.SurfaceMesh->GetComponentLocation();
+            FVector ChunkWorldPos = OwnerTerrain->GetChunkWorldPosition(Chunk.ChunkIndex);
+            
+            UE_LOG(LogTemp, Warning, TEXT("Chunk %d:"), i);
+            UE_LOG(LogTemp, Warning, TEXT("  - Chunk Index: %d"), Chunk.ChunkIndex);
+            UE_LOG(LogTemp, Warning, TEXT("  - Chunk Grid: (%d, %d)"), Chunk.ChunkX, Chunk.ChunkY);
+            UE_LOG(LogTemp, Warning, TEXT("  - Expected World Pos: (%.1f, %.1f, %.1f)"),
+                   ChunkWorldPos.X, ChunkWorldPos.Y, ChunkWorldPos.Z);
+            UE_LOG(LogTemp, Warning, TEXT("  - Actual Mesh Pos: (%.1f, %.1f, %.1f)"),
+                   MeshLocation.X, MeshLocation.Y, MeshLocation.Z);
+            UE_LOG(LogTemp, Warning, TEXT("  - Has Water: %s"), Chunk.bHasWater ? TEXT("YES") : TEXT("NO"));
+        }
+    }
+    
+    UE_LOG(LogTemp, Warning, TEXT("================================="));
+}
+
+
+
+void UWaterSystem::DebugGPUPipeline()
+{
+    UE_LOG(LogTemp, Warning, TEXT("========== GPU PIPELINE DEBUG =========="));
+    
+    // 1. Check GPU mode state
+    UE_LOG(LogTemp, Warning, TEXT("GPU Mode Enabled: %s"),
+        bUseVertexDisplacement ? TEXT("YES") : TEXT("NO"));
+    
+    // 2. Check textures
+    UE_LOG(LogTemp, Warning, TEXT("WaveOutputTexture: %s"),
+        WaveOutputTexture ? TEXT("EXISTS") : TEXT("NULL"));
+    UE_LOG(LogTemp, Warning, TEXT("WaterDepthTexture: %s"),
+        WaterDepthTexture ? TEXT("EXISTS") : TEXT("NULL"));
+    UE_LOG(LogTemp, Warning, TEXT("FlowDisplacementTexture: %s"),
+        FlowDisplacementTexture ? TEXT("EXISTS") : TEXT("NULL"));
+    
+    if (WaveOutputTexture)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("  - Size: %dx%d"),
+            WaveOutputTexture->SizeX, WaveOutputTexture->SizeY);
+        UE_LOG(LogTemp, Warning, TEXT("  - Format: %s"),
+            *WaveOutputTexture->GetDesc());
+    }
+    
+    // 3. Check material
+    UE_LOG(LogTemp, Warning, TEXT("GPU Material: %s"),
+        WaterMaterialWithDisplacement ? *WaterMaterialWithDisplacement->GetName() : TEXT("NULL"));
+    
+    // 4. Check chunks
+    int32 TotalChunks = WaterSurfaceChunks.Num();
+    int32 ChunksWithWater = 0;
+    int32 ChunksWithMeshes = 0;
+    int32 VisibleChunks = 0;
+    
+    for (const auto& Chunk : WaterSurfaceChunks)
+    {
+        if (Chunk.bHasWater) ChunksWithWater++;
+        if (Chunk.MeshComponent)
+        {
+            ChunksWithMeshes++;
+            if (Chunk.MeshComponent->IsVisible()) VisibleChunks++;
+            
+            // Check material on mesh
+            if (Chunk.MeshComponent->GetMaterial(0))
+            {
+                UE_LOG(LogTemp, VeryVerbose, TEXT("Chunk %d,%d has material: %s"),
+                    Chunk.ChunkX, Chunk.ChunkY,
+                    *Chunk.MeshComponent->GetMaterial(0)->GetName());
+            }
+        }
+    }
+    
+    UE_LOG(LogTemp, Warning, TEXT("Chunks: Total=%d, WithWater=%d, WithMeshes=%d, Visible=%d"),
+        TotalChunks, ChunksWithWater, ChunksWithMeshes, VisibleChunks);
+    
+    // 5. Check if ExecuteWaveComputeShader is being called
+    static int32 LastFrameNumber = -1;
+    int32 CurrentFrame = GFrameCounter;
+    
+    if (LastFrameNumber != CurrentFrame)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("Frame %d: GPU shader should be executing"), CurrentFrame);
+        LastFrameNumber = CurrentFrame;
+    }
+    
+    // 6. Display on screen
+    if (GEngine)
+    {
+        GEngine->AddOnScreenDebugMessage(20, 5.0f, FColor::Cyan,
+            TEXT("=== GPU PIPELINE STATUS ==="));
+        GEngine->AddOnScreenDebugMessage(21, 5.0f,
+            bUseVertexDisplacement ? FColor::Green : FColor::Red,
+            FString::Printf(TEXT("GPU Mode: %s"),
+                bUseVertexDisplacement ? TEXT("ON") : TEXT("OFF")));
+        GEngine->AddOnScreenDebugMessage(22, 5.0f,
+            WaveOutputTexture ? FColor::Green : FColor::Red,
+            FString::Printf(TEXT("Wave Texture: %s"),
+                WaveOutputTexture ? TEXT("OK") : TEXT("MISSING")));
+        GEngine->AddOnScreenDebugMessage(23, 5.0f, FColor::Yellow,
+            FString::Printf(TEXT("Visible Meshes: %d/%d"),
+                VisibleChunks, ChunksWithWater));
+    }
+}
+
+void UWaterSystem::ValidateWaveTexture()
+{
+    if (!WaveOutputTexture)
+    {
+        UE_LOG(LogTemp, Error, TEXT("WaveOutputTexture is NULL!"));
+        return;
+    }
+    
+    // Try to read back texture data (expensive, only for debug!)
+    ENQUEUE_RENDER_COMMAND(ReadWaveTexture)(
+        [this](FRHICommandListImmediate& RHICmdList)
+        {
+            // Use FRHITexture instead of FRHITexture2D (UE5.1+)
+            FRHITexture* Texture = WaveOutputTexture->GetResource()->GetTexture2DRHI();
+            if (!Texture) return;
+            
+            uint32 Width = Texture->GetSizeX();
+            uint32 Height = Texture->GetSizeY();
+            
+            UE_LOG(LogTemp, Warning, TEXT("Wave Texture validated: %dx%d"), Width, Height);
+            
+            // Note: Actually reading pixels requires more complex code
+            // This just validates the texture exists on GPU
+        }
+    );
+}
+
+void UWaterSystem::ForceGPUMeshRegeneration()
+{
+    UE_LOG(LogTemp, Warning, TEXT("FORCING GPU MESH REGENERATION"));
+    
+    if (!bUseVertexDisplacement)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("GPU mode not enabled, switching to GPU mode first"));
+        ToggleVertexDisplacement(true);
+    }
+    
+    // Force regenerate ALL chunks
+    for (auto& Chunk : WaterSurfaceChunks)
+    {
+        // Clear existing mesh
+        if (Chunk.MeshComponent)
+        {
+            Chunk.MeshComponent->ClearAllMeshSections();
+        }
+        
+        // Force has water check
+        float MaxDepth = 0.0f;
+        int32 StartX = Chunk.ChunkX * ChunkSize;
+        int32 StartY = Chunk.ChunkY * ChunkSize;
+        
+        for (int32 Y = 0; Y < ChunkSize; Y++)
+        {
+            for (int32 X = 0; X < ChunkSize; X++)
+            {
+                float Depth = GetWaterDepthSafe(StartX + X, StartY + Y);
+                MaxDepth = FMath::Max(MaxDepth, Depth);
+            }
+        }
+        
+        Chunk.bHasWater = (MaxDepth > MinWaterDepth);
+        
+        if (Chunk.bHasWater)
+        {
+            UE_LOG(LogTemp, Warning, TEXT("Regenerating chunk %d,%d with max depth %.2f"),
+                Chunk.ChunkX, Chunk.ChunkY, MaxDepth);
+            
+            // Generate flat mesh for GPU
+            GenerateFlatBaseMesh(Chunk);
+            
+            // Apply GPU material
+            if (WaterMaterialWithDisplacement && Chunk.MeshComponent)
+            {
+                UMaterialInstanceDynamic* DynMat = UMaterialInstanceDynamic::Create(
+                    WaterMaterialWithDisplacement, this);
+                    
+                // Set the wave texture parameter
+                if (WaveOutputTexture)
+                {
+                    DynMat->SetTextureParameterValue(FName("WaveOutputTexture"), WaveOutputTexture);
+                }
+                
+                Chunk.MeshComponent->SetMaterial(0, DynMat);
+                Chunk.MeshComponent->SetVisibility(true);
+            }
+        }
+    }
+    
+    UE_LOG(LogTemp, Warning, TEXT("Regeneration complete"));
+}
+
+FString UWaterSystem::GetSystemStateString() const
+{
+    FString State;
+    State += FString::Printf(TEXT("Mode: %s\n"),
+        bUseVertexDisplacement ? TEXT("GPU") : TEXT("CPU"));
+    State += FString::Printf(TEXT("Chunks: %d\n"), WaterSurfaceChunks.Num());
+    State += FString::Printf(TEXT("Update Distance: %.0f\n"), VolumeUpdateDistance);
+    State += FString::Printf(TEXT("Min Depth: %.3f\n"), MinWaterDepth);
+    State += FString::Printf(TEXT("Material: %s\n"),
+        WaterMaterialWithDisplacement ? TEXT("Set") : TEXT("Missing"));
+    return State;
+}
+
+
+void UWaterSystem::InitializeGPUChunkMesh(FWaterSurfaceChunk& Chunk)
+{
+    const FString FuncName = TEXT("InitializeGPUChunkMesh");
+    
+    if (Chunk.SurfaceMesh)
+        return; // Already initialized
+    
+    // Validate terrain chunk index
+    if (Chunk.ChunkIndex < 0 || !OwnerTerrain ||
+        Chunk.ChunkIndex >= OwnerTerrain->TerrainChunks.Num())
+    {
+        UE_LOG(LogTemp, Error, TEXT("InitializeGPUChunkMesh: Invalid chunk index %d"), Chunk.ChunkIndex);
+        return;
+    }
+    
+    // Create procedural mesh component
+    FString ComponentName = FString::Printf(TEXT("GPUWaterSurface_%d_%d"),
+                                           Chunk.ChunkX, Chunk.ChunkY);
+    Chunk.SurfaceMesh = NewObject<UProceduralMeshComponent>(OwnerTerrain, *ComponentName);
+    
+    if (!Chunk.SurfaceMesh)
+    {
+        UE_LOG(LogTemp, Error, TEXT("Failed to create GPU mesh component for chunk %d"),
+               Chunk.ChunkIndex);
+        return;
+    }
+    
+    // Set up component
+    Chunk.SurfaceMesh->SetupAttachment(OwnerTerrain->GetRootComponent());
+    Chunk.SurfaceMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+    Chunk.SurfaceMesh->SetCastShadow(false);
+    Chunk.SurfaceMesh->bUseAsyncCooking = true;
+    Chunk.SurfaceMesh->RegisterComponent();
+    
+    // Position mesh at chunk's world location
+    FVector ChunkWorldPos = OwnerTerrain->GetChunkWorldPosition(Chunk.ChunkIndex);
+    Chunk.SurfaceMesh->SetWorldLocation(ChunkWorldPos);
+    
+    UE_LOG(LogTemp, Verbose, TEXT("InitializeGPUChunkMesh: Created mesh for chunk %d at (%.1f,%.1f,%.1f)"),
+           Chunk.ChunkIndex, ChunkWorldPos.X, ChunkWorldPos.Y, ChunkWorldPos.Z);
+}
+
+
+
+float UWaterSystem::CalculateChunkWaterArea(int32 TerrainChunkIndex) const
+{
+    // Find the water chunk for this terrain chunk
+    const FWaterSurfaceChunk* WaterChunk = WaterSurfaceChunks.FindByPredicate(
+        [TerrainChunkIndex](const FWaterSurfaceChunk& Chunk) {
+            return Chunk.ChunkIndex == TerrainChunkIndex;
+        });
+    
+    if (!WaterChunk)
+    {
+        return 0.0f;
+    }
+    
+    float TotalArea = 0.0f;
+    int32 StartX = WaterChunk->ChunkX * ChunkSize;
+    int32 StartY = WaterChunk->ChunkY * ChunkSize;
+    
+    // Calculate water area
+    for (int32 Y = 0; Y < ChunkSize; Y++)
+    {
+        for (int32 X = 0; X < ChunkSize; X++)
+        {
+            float Depth = GetWaterDepthSafe(StartX + X, StartY + Y);
+            if (Depth > MinWaterDepth)
+            {
+                TotalArea += 1.0f;
+            }
+        }
+    }
+    
+    return TotalArea;
+}

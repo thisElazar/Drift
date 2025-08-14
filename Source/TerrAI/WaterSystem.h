@@ -8,9 +8,7 @@
  * 
  * Key Features:
  * - Pressure-based flow simulation with edge drainage
- * - Real-time texture updates for material shaders  
- * - Weather system with procedural rain
- * - Erosion simulation for terrain modification
+ * - Real-time texture updates for material shaders
  * - Scientific accuracy with 60+ FPS performance
  */
 #pragma once
@@ -168,7 +166,7 @@ struct FWaterSimulationData
     TArray<float> WaterDepthMap;      // Water depth in world units (0-1000+)
     TArray<float> WaterVelocityX;     // Flow velocity East/West (-100 to +100)
     TArray<float> WaterVelocityY;     // Flow velocity North/South (-100 to +100)
-    TArray<float> SedimentMap;        // Suspended sediment for erosion (0-10)
+    //TArray<float> SedimentMap;        // Suspended sediment for erosion (0-10)
     TArray<float> FoamMap;            // Foam intensity for rendering (0-1)
 
     // System state
@@ -192,7 +190,7 @@ struct FWaterSimulationData
         WaterDepthMap.SetNum(TotalSize);
         WaterVelocityX.SetNum(TotalSize);
         WaterVelocityY.SetNum(TotalSize);
-        SedimentMap.SetNum(TotalSize);
+       // SedimentMap.SetNum(TotalSize);
         FoamMap.SetNum(TotalSize);
 
         // Initialize all to zero
@@ -201,7 +199,7 @@ struct FWaterSimulationData
             WaterDepthMap[i] = 0.0f;
             WaterVelocityX[i] = 0.0f;
             WaterVelocityY[i] = 0.0f;
-            SedimentMap[i] = 0.0f;
+           // SedimentMap[i] = 0.0f;
             FoamMap[i] = 0.0f;
         }
 
@@ -647,35 +645,6 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Surface Water")
     UMaterialInterface* VolumeMaterial = nullptr;          // Dedicated surface water material (legacy name)
     
-    // ===== PHASE 4: NIAGARA FX INTEGRATION =====
-    
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Niagara FX")
-    bool bEnableNiagaraFX = true;
-    
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Niagara FX")
-    UNiagaraSystem* RiverFlowEmitterTemplate = nullptr;
-    
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Niagara FX")
-    UNiagaraSystem* FoamEmitterTemplate = nullptr;
-    
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Niagara FX")
-    UNiagaraSystem* LakeMistEmitterTemplate = nullptr;
-    
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Niagara FX")
-    UNiagaraSystem* RainImpactEmitterTemplate = nullptr;
-    
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Niagara FX")
-    float NiagaraUpdateRate = 0.1f; // Update FX every 100ms
-    
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Niagara FX")
-    float MaxNiagaraDistance = 3000.0f; // Max distance for FX spawning
-    
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Niagara FX")
-    int32 MaxActiveNiagaraComponents = 32; // Performance limit
-    
-    // Runtime Niagara component pooling
-    TMap<int32, UNiagaraComponent*> ActiveNiagaraComponents;
-    TArray<UNiagaraComponent*> NiagaraComponentPool;
     
     // ===== ADVANCED SHADER SYSTEM PROPERTIES =====
 
@@ -791,9 +760,7 @@ public:
     
     // UE5.4 World Partition Support
     void ConfigureWorldPartitionStreaming();
-    
-    // UE5.4 Niagara 5.0 Integration
-    void UpdateNiagaraFX_UE54(float DeltaTime);
+
     
     // UE5.4 Performance Profiling
     void ProfileWaterSystemPerformance();
@@ -891,25 +858,6 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Water Simulation Authority")
     bool GetChunkFoamStateFromSimulation(int32 ChunkIndex) const;
     
-    // ===== PHASE 4: NIAGARA FX FUNCTIONS =====
-    
-    UFUNCTION(BlueprintCallable, Category = "Niagara FX")
-    void UpdateNiagaraFX(float DeltaTime);
-    
-    UFUNCTION(BlueprintCallable, Category = "Niagara FX")
-    void SpawnNiagaraFXForChunk(int32 ChunkIndex);
-    
-    void UpdateNiagaraParameters(UNiagaraComponent* NiagaraComp, const FWaterSurfaceChunk& SurfaceChunk);
-    
-    UFUNCTION(BlueprintCallable, Category = "Niagara FX")
-    UNiagaraComponent* GetPooledNiagaraComponent(UNiagaraSystem* SystemTemplate);
-    
-    UFUNCTION(BlueprintCallable, Category = "Niagara FX")
-    void ReturnNiagaraComponentToPool(UNiagaraComponent* Component);
-    
-    UFUNCTION(BlueprintCallable, Category = "Niagara FX")
-    void CleanupDistantNiagaraFX(FVector CameraLocation);
-
     // ==============================================
     // ENHANCED LOD & POOLING SYSTEM FUNCTIONS
     // ==============================================
@@ -1069,20 +1017,32 @@ public:
        UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Physics|Smoothing")
        bool bUseBicubicInterpolation = true;
     
-    // Removed SetWaveTuningParameters - use physics-based controls instead
-
-private:
-    
-    void ApplyEdgePreservingFilter(TArray<float>& Buffer, int32 Width, int32 Height);
-    
-    // Additional smoothing functions
-    void SmoothWaterDepthMap();
-    void ApplySpatialSmoothing();
+    UFUNCTION(BlueprintCallable, Category = "Debug")
+     void DebugGPUChunkPositions();
     
     float AccumulatedScaledTime = 0.0f;
       
       // Get properly scaled time for wave animations
       float GetScaledTime() const;
+    
+
+private:
+    
+    void ApplyEdgePreservingFilter(TArray<float>& Buffer, int32 Width, int32 Height);
+    
+    bool HasWaterNeighbor(int32 X, int32 Y) const;
+    
+    void ApplyGPUMaterialToChunk(FWaterSurfaceChunk& Chunk);
+    
+    void UpdateCPUWaterSurfaceChunk(FWaterSurfaceChunk& Chunk);
+
+    // void CreateWaterSurfaceMesh(FWaterSurfaceChunk& Chunk);
+    
+    // Additional smoothing functions
+    void SmoothWaterDepthMap();
+    void ApplySpatialSmoothing();
+    
+
     
     
     // ===== INTERNAL STATE =====
@@ -1098,10 +1058,7 @@ private:
     // Performance tracking
     TSet<int32> ChunksWithWater;
     float TotalWaterAmount = 0.0f;
-    
-    // Erosion throttling for performance
-    float ErosionEventTimer = 0.0f;
-    float ErosionEventInterval = 0.5f; // Only check erosion every 0.5 seconds
+
     
     // ===== INTERNAL FUNCTIONS =====
     
@@ -1112,8 +1069,6 @@ private:
     void UpdateWeatherSystem(float DeltaTime);
     void ApplyRain(float DeltaTime);
     
-    // Erosion simulation
-    void UpdateErosion(float DeltaTime);
     
     // Helper functions
     float GetWaterDepthSafe(int32 X, int32 Y) const;
@@ -1256,8 +1211,25 @@ private:
     // Chunk system constants
         static constexpr int32 ChunkSize = 33;  // ADD THIS
         static constexpr float ChunkWorldSize = 3200.0f;  // ADD THIS (33 * 100 units)
+  
+public:
+    UFUNCTION(BlueprintCallable, Category = "Debug")
+    void DebugGPUPipeline();
     
+    UFUNCTION(BlueprintCallable, Category = "Debug")
+    void ValidateWaveTexture();
     
+    UFUNCTION(BlueprintCallable, Category = "Debug")
+    void ForceGPUMeshRegeneration();
+    
+    UFUNCTION(BlueprintCallable, Category = "Debug")
+    FString GetSystemStateString() const;
+    
+private:
+    // GPU mesh initialization
+    void InitializeGPUChunkMesh(FWaterSurfaceChunk& Chunk);
+   // void UpdateFlowDisplacementTexture();
+    float CalculateChunkWaterArea(int32 ChunkIndex) const;
 };
 
 

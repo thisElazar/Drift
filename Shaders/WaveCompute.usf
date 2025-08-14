@@ -1,0 +1,183 @@
+// WaveCompute.usf
+// GPU-based wave computation for vertex displacement water system
+// This runs in a compute shader to generate wave height data
+
+#include "/Engine/Public/Platform.ush"
+#include "/Engine/Private/Common.ush"
+
+// ===== SHADER PARAMETERS =====
+// Input textures
+Texture2D<float> WaterDepthTexture;
+Texture2D<float4> FlowDataTexture;
+
+// Output texture
+RWTexture2D<float4> WaveOutputTexture;
+
+// Simulation parameters
+float Time;
+float4 WindParams;  // xy = direction, z = strength, w = unused
+float4 WaveParams;  // x = wave scale, y = wave speed, z = dampening, w = terrain scale
+float4 TerrainParams;  // xy = terrain dimensions, zw = unused
+
+// Sampler for texture reads
+SamplerState TextureSampler;
+
+// ===== HELPER FUNCTIONS =====
+
+// Calculate wind-driven waves (simplified Gerstner waves)
+float CalculateWindWaves(float2 WorldPos, float WaterDepth, float WindStrength, float2 WindDirection, float Time)
+{
+    float WaveHeight = 0.0f;
+    
+    // Multiple octaves for more realistic waves
+    float frequency = 0.01f;
+    float amplitude = WindStrength * 0.5f;
+    
+    for (int i = 0; i < 3; i++)
+    {
+        float2 direction = normalize(WindDirection + float2(i * 0.1f, i * 0.05f));
+        float phase = dot(WorldPos, direction) * frequency + Time * WaveParams.y;
+        WaveHeight += sin(phase) * amplitude;
+        
+        // Increase frequency and decrease amplitude for each octave
+        frequency *= 2.2f;
+        amplitude *= 0.5f;
+    }
+    
+    // Attenuate by water depth
+    float depthAttenuation = saturate(WaterDepth / 5.0f);
+    return WaveHeight * depthAttenuation * WaveParams.x;
+}
+
+// Calculate flow-driven waves
+float CalculateFlowWaves(float2 WorldPos, float WaterDepth, float2 FlowVector, float FlowSpeed, float Time)
+{
+    if (FlowSpeed < 0.01f)
+        return 0.0f;
+    
+    float WaveHeight = 0.0f;
+    
+    // Flow creates waves perpendicular to flow direction
+    float2 flowDir = normalize(FlowVector + float2(0.001f, 0.001f));
+    float2 waveDir = float2(-flowDir.y, flowDir.x); // Perpendicular
+    
+    // Wave frequency based on flow speed
+    float frequency = 0.02f * (1.0f + FlowSpeed * 0.1f);
+    float amplitude = FlowSpeed * 0.2f;
+    
+    // Create standing waves
+    float phase = dot(WorldPos, waveDir) * frequency + Time * FlowSpeed * 0.5f;
+    WaveHeight = sin(phase) * amplitude;
+    
+    // Add some turbulence
+    float turbulence = sin(WorldPos.x * 0.03f + Time) * cos(WorldPos.y * 0.04f - Time * 0.7f);
+    WaveHeight += turbulence * amplitude * 0.3f;
+    
+    return WaveHeight * WaveParams.x;
+}
+
+// Calculate collision/obstacle waves
+float CalculateCollisionWaves(float2 WorldPos, float2 FlowVector, float WaterDepth, float Time)
+{
+    // Simple ripple effect for collisions
+    float WaveHeight = 0.0f;
+    
+    // Create circular ripples at obstacle points
+    float rippleFreq = 0.05f;
+    float rippleSpeed = 2.0f;
+    
+    // Simulate ripples from flow hitting obstacles
+    float flowMagnitude = length(FlowVector);
+    if (flowMagnitude > 0.1f)
+    {
+        // Create interference pattern
+        float ripple1 = sin(length(WorldPos) * rippleFreq - Time * rippleSpeed);
+        float ripple2 = cos(length(WorldPos + float2(100, 100)) * rippleFreq * 1.3f - Time * rippleSpeed * 0.8f);
+        
+        WaveHeight = (ripple1 + ripple2 * 0.5f) * flowMagnitude * 0.15f;
+    }
+    
+    return WaveHeight * WaveParams.x;
+}
+
+// ===== MAIN COMPUTE FUNCTION =====
+[numthreads(8, 8, 1)]
+void WaveComputeCS(uint3 id : SV_DispatchThreadID)
+{
+    // Get texture dimensions
+    uint2 TextureDims;
+    WaveOutputTexture.GetDimensions(TextureDims.x, TextureDims.y);
+    
+    // Bounds check
+    if (id.x >= TextureDims.x || id.y >= TextureDims.y)
+        return;
+    
+    // Calculate UV coordinates
+    float2 UV = float2(id.xy) / float2(TextureDims);
+    
+    // Sample input data using Load instead of SampleLevel for compute shaders
+    uint2 PixelCoord = id.xy;
+    float WaterDepth = WaterDepthTexture.Load(uint3(PixelCoord, 0)).r;
+    float4 FlowData = FlowDataTexture.Load(uint3(PixelCoord, 0));
+    
+    // Early out for no water
+    if (WaterDepth < 0.01f)
+    {
+        WaveOutputTexture[id.xy] = float4(0, 0, 0, 0);
+        return;
+    }
+    
+    // Convert to world position
+    float2 WorldPos = UV * TerrainParams.xy * WaveParams.w;
+    
+    // Extract flow parameters
+    float2 FlowVector = FlowData.xy;
+    float FlowSpeed = length(FlowVector);
+    float FoamIntensity = FlowData.w;
+    
+    // Wind parameters
+    float2 WindDirection = normalize(WindParams.xy + float2(0.001f, 0.001f)); // Avoid zero
+    float WindStrength = WindParams.z;
+    
+    // ===== WAVE CALCULATION =====
+    float WaveHeight = 0.0f;
+    float WaveDisplacement = 0.0f;
+    
+    // 1. Wind-driven waves
+    if (WindStrength > 0.1f)
+    {
+        WaveHeight += CalculateWindWaves(WorldPos, WaterDepth, WindStrength, WindDirection, Time);
+    }
+    
+    // 2. Flow-driven waves
+    if (FlowSpeed > 0.1f)
+    {
+        WaveHeight += CalculateFlowWaves(WorldPos, WaterDepth, FlowVector, FlowSpeed, Time);
+    }
+    
+    // 3. Collision waves
+    float CollisionWave = CalculateCollisionWaves(WorldPos, FlowVector, WaterDepth, Time);
+    WaveHeight += CollisionWave;
+    
+    // 4. Apply depth-based dampening
+    float DepthFactor = saturate(WaterDepth / 5.0f);
+    WaveHeight *= DepthFactor;
+    
+    // 5. Add base noise for realism
+    float baseNoise = sin(WorldPos.x * 0.1f + Time * 0.5f) * cos(WorldPos.y * 0.15f - Time * 0.3f) * 0.1f;
+    WaveHeight += baseNoise * WaveParams.x;
+    
+    // 6. Calculate wave normal (for displacement)
+    float2 gradient = float2(
+        sin(WorldPos.x * 0.02f + Time) * 0.1f,
+        cos(WorldPos.y * 0.02f + Time) * 0.1f
+    );
+    
+    // Output: R=height, G=depth for blending, B=flow speed, A=foam
+    WaveOutputTexture[id.xy] = float4(
+        WaveHeight,
+        WaterDepth,
+        FlowSpeed,
+        FoamIntensity + abs(CollisionWave) * 0.5f  // Add foam from collisions
+    );
+}

@@ -1,6 +1,6 @@
-// TerrAI.Build.cs - Fixed build configuration with shader support
+// TerrAI.Build.cs - Complete build configuration with shader support
 using UnrealBuildTool;
-using System.IO;  // Add this for Path class
+using System.IO;
 
 public class TerrAI : ModuleRules
 {
@@ -9,14 +9,14 @@ public class TerrAI : ModuleRules
         PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 
         // ========== SHADER DIRECTORY SETUP ==========
-        // Map the /Project/ shader directory to your project's Shaders folder
+        // Map the project's Shaders folder for custom shaders
         string ProjectShaderDir = Path.Combine(ModuleDirectory, "..", "..", "Shaders");
         if (Directory.Exists(ProjectShaderDir))
         {
             PublicIncludePaths.Add(Path.GetFullPath(ProjectShaderDir));
         }
 
-        // Core dependencies (always needed)
+        // ========== CORE DEPENDENCIES ==========
         PublicDependencyModuleNames.AddRange(new string[] {
             "Core",
             "CoreUObject",
@@ -28,37 +28,49 @@ public class TerrAI : ModuleRules
             "NiagaraCore"
         });
 
-        // Rendering dependencies for shader support
+        // ========== RENDERING DEPENDENCIES FOR SHADERS ==========
         PublicDependencyModuleNames.AddRange(new string[] {
-            "Renderer",        // Add this for shader support
+            "Renderer",
             "RenderCore",
             "RHI",
-            "RHICore",
-            "Projects"         // Add this for shader mapping
-        });
-
-        // Private dependencies (internal use only)
-        PrivateDependencyModuleNames.AddRange(new string[] {
+            "Projects",
             "Slate",
-            "SlateCore",
-            "UMG"
+            "SlateCore"
         });
 
-        // Editor-only dependencies (only include if building for editor)
+        // ========== PRIVATE DEPENDENCIES ==========
+        PrivateDependencyModuleNames.AddRange(new string[] {
+            "UMG",
+            "ToolMenus"
+        });
+
+        // ========== EDITOR-ONLY DEPENDENCIES ==========
         if (Target.bBuildEditor)
         {
             PrivateDependencyModuleNames.AddRange(new string[] {
-                "ToolMenus",
-                "EditorStyle",
-                "EditorWidgets",
                 "UnrealEd",
-                "Landscape"
+                "Landscape",
+                "EditorSubsystem"
             });
         }
 
-        // Enable optimizations
+        // ========== OPTIMIZATION SETTINGS ==========
         bUseUnity = true;
         MinFilesUsingPrecompiledHeaderOverride = 1;
+        bEnableExceptions = false;
         
+        // ========== PREPROCESSOR DEFINITIONS ==========
+        PublicDefinitions.Add("WITH_TERRAI_SHADERS=1");
+        
+        // Add shader directory to includes
+        PublicIncludePaths.AddRange(new string[] {
+            Path.Combine(ModuleDirectory, "Public"),
+            Path.Combine(ModuleDirectory, "Public/Shaders")
+        });
+        
+        PrivateIncludePaths.AddRange(new string[] {
+            Path.Combine(ModuleDirectory, "Private"),
+            Path.Combine(ModuleDirectory, "Private/Shaders")
+        });
     }
 }

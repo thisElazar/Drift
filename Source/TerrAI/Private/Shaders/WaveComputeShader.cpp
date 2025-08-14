@@ -1,6 +1,8 @@
-// WaveComputeShader.cpp - Updated for UE5
+// WaveComputeShader.cpp - Wave Compute Shader Implementation
 #include "Shaders/WaveComputeShader.h"
-#include "ShaderCore.h"
+#include "ShaderCompilerCore.h"
 #include "RenderGraphUtils.h"
 
+// Register the shader with the engine
+// This links the C++ class to the HLSL shader file
 IMPLEMENT_GLOBAL_SHADER(FWaveComputeCS, "/Project/WaveCompute.usf", "WaveComputeCS", SF_Compute);
