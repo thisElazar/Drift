@@ -4,6 +4,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "MasterController.h"
+#include "Shaders/TerrainComputeShader.h"
 #include "DynamicTerrain.generated.h"
 
 // Forward declarations to reduce header dependencies
@@ -26,6 +27,16 @@ enum class ETerrainWorldSize : uint8
     Large    UMETA(DisplayName = "Large (1025x1025)"),
     Massive  UMETA(DisplayName = "Massive (2049x2049)")
 };
+
+
+UENUM(BlueprintType)
+enum class ETerrainComputeMode : uint8
+{
+    CPU     UMETA(DisplayName = "CPU"),
+    GPU     UMETA(DisplayName = "GPU"),
+    Switching UMETA(DisplayName = "Switching") // Transition state
+};
+
 
 // Scalable world configuration
 USTRUCT(BlueprintType)
@@ -121,6 +132,8 @@ public:
     
 protected:
     virtual void BeginPlay() override;
+    void ValidateChunkBoundary(int32 ChunkIndex);
+  
     
 public:
     virtual void Tick(float DeltaTime) override;
@@ -509,7 +522,30 @@ private:
     mutable FString CachedDebugStringBuffer;
     
   
+    FVector4f PendingBrushParams;
+       bool bHasPendingBrush = false;
     
+    // GPU-only mode flags
+        bool bEnableGPUErosion = false;
+        
+        // Helper methods
+        void TransferHeightmapToGPU();
+        void TransferHeightmapFromGPU();
+    void ForceGPUChunkVisualUpdate(const TArray<int32>& ChunkIndices);
+      void UpdateGPUChunkMaterial(FTerrainChunk& Chunk);
+        void UpdateGPUShaderParameters(float DeltaTime);
+        void DispatchErosionComputeShader(float DeltaTime);
+    
+    // GPU sync state
+    float GPUSyncTimer = 0.0f;
+    bool bGPUDataDirty = false;
+    
+    // Helper method
+    void SyncGPUChunkVisuals();
+    
+    // Thread safety for material creation
+    FCriticalSection MaterialCreationMutex;
+    void UpdateGPUChunkMaterialParams(UMaterialInstanceDynamic* DynMaterial, const FTerrainChunk& Chunk);
     
     
     
@@ -532,6 +568,128 @@ public:
         
         return X >= 0 && X < TerrainWidth && Y >= 0 && Y < TerrainHeight;
     }
+
+        // ===== GPU TERRAIN SYSTEM =====
+        
+        UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Terrain")
+        bool bUseGPUTerrain = false;
+
+        UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Terrain")
+        bool bEnableOrographicEffects = true;
+        
+        // GPU Resources
+        UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GPU Terrain|Resources")
+        UTextureRenderTarget2D* HeightRenderTexture = nullptr;
+        
+        UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GPU Terrain|Resources")
+        UTextureRenderTarget2D* ErosionRenderTexture = nullptr;
+        
+        UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GPU Terrain|Resources")
+        UTextureRenderTarget2D* HardnessRenderTexture = nullptr;
+        
+        UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GPU Terrain|Resources")
+        UTextureRenderTarget2D* NormalRenderTexture = nullptr;
+        
+        // GPU Parameters
+        UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Terrain|Erosion",
+                  meta = (ClampMin = "0.0", ClampMax = "1.0"))
+        float GPUErosionRate = 0.1f;
+        
+        UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Terrain|Erosion",
+                  meta = (ClampMin = "0.0", ClampMax = "1.0"))
+        float GPUDepositionRate = 0.05f;
+        
+        UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Terrain|Orographic",
+                  meta = (ClampMin = "0.0", ClampMax = "10.0"))
+        float OrographicLiftStrength = 2.0f;
+        
+        UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Terrain|Orographic",
+                  meta = (ClampMin = "0.0", ClampMax = "1.0"))
+        float MoistureCondensationThreshold = 0.7f;
+        
+        // GPU Functions
+        UFUNCTION(BlueprintCallable, Category = "GPU Terrain")
+        void InitializeGPUTerrain();
+        
+        UFUNCTION(BlueprintCallable, Category = "GPU Terrain")
+        void ExecuteTerrainComputeShader(float DeltaTime);
+        
+        UFUNCTION(BlueprintCallable, Category = "GPU Terrain")
+        void SyncGPUToCPU();
+        
+        UFUNCTION(BlueprintCallable, Category = "GPU Terrain")
+        void SyncCPUToGPU();
+        
+        UFUNCTION(BlueprintCallable, Category = "GPU Terrain")
+        void ToggleGPUTerrain(bool bEnable);
+        
+        UFUNCTION(BlueprintCallable, Category = "GPU Terrain")
+        void UpdateGPUBrush(FVector WorldPosition, float Radius, float Strength, bool bRaise);
+        
+        UFUNCTION(BlueprintPure, Category = "GPU Terrain")
+        bool IsGPUTerrainEnabled() const { return bUseGPUTerrain && bGPUInitialized; }
     
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GPU Terrain")
+      ETerrainComputeMode CurrentComputeMode = ETerrainComputeMode::CPU;
+      
+      UFUNCTION(BlueprintCallable, Category = "GPU Terrain")
+      void SetComputeMode(ETerrainComputeMode NewMode);
+
+        
+        // Integration with other systems
+        void ConnectToGPUWaterSystem(class UWaterSystem* WaterSys);
+        void ConnectToGPUAtmosphere(class UAtmosphericSystem* AtmoSys);
+        
+    protected:
+        // GPU Implementation details
+        bool bGPUInitialized = false;
+        //bool bGPUDataDirty = false;
+        float GPUUpdateAccumulator = 0.0f;
+        const float GPUUpdateInterval = 0.033f; // 30Hz update rate
+        
+        // Texture dimensions (power of 2 for GPU efficiency)
+        int32 GPUTextureWidth = 512;
+        int32 GPUTextureHeight = 512;
+        
+        // Cached GPU connections
+        UPROPERTY()
+        class UWaterSystem* ConnectedWaterSystem = nullptr;
+        
+        UPROPERTY()
+        class UAtmosphericSystem* ConnectedAtmosphere = nullptr;
+        
+        // Internal GPU functions
+        void CreateGPUResources();
+        void ReleaseGPUResources();
+        void UpdateGPUTextures();
+        void ProcessGPUErosion(float DeltaTime);
+        void ProcessOrographicEffects(float DeltaTime);
+        void ApplyGPUModifications();
+        
+        // Readback management
+        FRenderCommandFence GPUReadbackFence;
+        TArray<float> GPUHeightReadbackBuffer;
+        bool bPendingGPUReadback = false;
+        
+    
+    // Add to DynamicTerrain.h
+
+    // Add to public section:
+    public:
+        // Precipitation input for enhanced erosion
+        UFUNCTION(BlueprintCallable, Category = "GPU Terrain")
+        void SetPrecipitationTexture(UTextureRenderTarget2D* PrecipitationTex);
+        
+        // Get terrain scale for atmosphere calculations
+        UFUNCTION(BlueprintPure, Category = "Terrain")
+        float GetTerrainScale() const { return TerrainScale; }
+    
+    
+
+    // Add to protected section (if not already present):
+    protected:
+        // Cached precipitation for erosion
+        UPROPERTY()
+        UTextureRenderTarget2D* CachedPrecipitationTexture = nullptr;
     
 };

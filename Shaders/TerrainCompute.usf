@@ -1,0 +1,188 @@
+// TerrainCompute.usf - Fixed for UAV access
+#include "/Engine/Public/Platform.ush"
+
+// Thread group size
+#define THREADGROUP_SIZE_X 8
+#define THREADGROUP_SIZE_Y 8
+
+// Shader resources
+RWTexture2D<float> HeightTexture;
+Texture2D<float> WaterDepthTexture;
+Texture2D<float2> FlowVelocityTexture;
+Texture2D<float> MoistureTexture;
+Texture2D<float2> WindFieldTexture;
+Texture2D<float> HardnessTexture;
+RWTexture2D<float> ErosionOutputTexture;
+
+SamplerState TextureSampler;
+
+// Shader parameters
+float4 TerrainParams;      // xy = dimensions, z = scale, w = time
+float4 ErosionParams;      // x = rate, y = deposition, z = capacity, w = hardness mult
+float4 OrographicParams;   // x = lift rate, y = moisture threshold, z = precip rate
+float DeltaTime;
+uint SimulationMode;       // Bit flags: 1=erosion, 2=orographic
+float4 BrushParams;        // xy = position, z = radius, w = strength
+uint BrushActive;
+
+// Helper function to sample neighboring heights using UAV
+float SampleHeightUAV(int2 Coord)
+{
+    // Clamp to texture bounds
+    int2 ClampedCoord = clamp(Coord, int2(0, 0), int2(TerrainParams.xy) - int2(1, 1));
+    return HeightTexture[ClampedCoord].r;
+}
+
+// Hydraulic erosion calculation
+float CalculateErosion(float2 UV, float Height, float WaterDepth, float2 FlowVel, float Hardness)
+{
+    if (WaterDepth < 0.01)
+        return 0.0;
+    
+    float FlowSpeed = length(FlowVel);
+    float StreamPower = WaterDepth * FlowSpeed;
+    float ErosionRate = ErosionParams.x * StreamPower / (1.0 + Hardness * ErosionParams.w);
+    
+    // Get current pixel position
+    int2 PixelCoord = int2(UV * TerrainParams.xy);
+    
+    // Sample neighboring heights using direct UAV access
+    float HeightL = SampleHeightUAV(PixelCoord + int2(-1, 0));
+    float HeightR = SampleHeightUAV(PixelCoord + int2(1, 0));
+    float HeightT = SampleHeightUAV(PixelCoord + int2(0, -1));
+    float HeightB = SampleHeightUAV(PixelCoord + int2(0, 1));
+    
+    float2 Gradient = float2(HeightR - HeightL, HeightB - HeightT) / (2.0 * TerrainParams.z);
+    float Slope = length(Gradient);
+    
+    ErosionRate *= (1.0 + Slope * 2.0);
+    
+    float Capacity = ErosionParams.z * FlowSpeed * WaterDepth;
+    float Deposition = 0.0;
+    if (FlowSpeed < 0.5)
+    {
+        Deposition = ErosionParams.y * (1.0 - FlowSpeed / 0.5) * WaterDepth;
+    }
+    
+    return ErosionRate - Deposition;
+}
+
+// Orographic effects
+float2 CalculateOrographicEffects(float2 UV, float Height)
+{
+    float2 Wind = WindFieldTexture.SampleLevel(TextureSampler, UV, 0).xy;
+    float WindSpeed = length(Wind);
+    
+    if (WindSpeed < 0.1)
+        return float2(0, 0);
+    
+    float2 WindDir = normalize(Wind);
+    
+    // Get current pixel position
+    int2 PixelCoord = int2(UV * TerrainParams.xy);
+    
+    // Sample neighboring heights
+    float HeightL = SampleHeightUAV(PixelCoord + int2(-1, 0));
+    float HeightR = SampleHeightUAV(PixelCoord + int2(1, 0));
+    float HeightT = SampleHeightUAV(PixelCoord + int2(0, -1));
+    float HeightB = SampleHeightUAV(PixelCoord + int2(0, 1));
+    
+    float2 TerrainGradient = float2(HeightR - HeightL, HeightB - HeightT) / (2.0 * TerrainParams.z);
+    
+    float VerticalVelocity = dot(WindDir, TerrainGradient) * WindSpeed * OrographicParams.x;
+    
+    float Precipitation = 0.0;
+    if (VerticalVelocity > 0.0)
+    {
+        float Moisture = MoistureTexture.SampleLevel(TextureSampler, UV, 0).r;
+        if (Moisture > OrographicParams.y)
+        {
+            Precipitation = VerticalVelocity * (Moisture - OrographicParams.y) * OrographicParams.z;
+        }
+    }
+    
+    return float2(VerticalVelocity, Precipitation);
+}
+
+// Main compute shader
+[numthreads(THREADGROUP_SIZE_X, THREADGROUP_SIZE_Y, 1)]
+void TerrainComputeCS(uint3 ThreadId : SV_DispatchThreadID)
+{
+    float2 TexelCoord = float2(ThreadId.xy);
+    float2 UV = (TexelCoord + 0.5) / TerrainParams.xy;
+    
+    if (any(ThreadId.xy >= uint2(TerrainParams.xy)))
+        return;
+    
+    // Read current height directly from UAV
+    float Height = HeightTexture[ThreadId.xy].r;
+    float OriginalHeight = Height;
+    
+    // Apply brush modifications
+    if (BrushActive > 0)
+    {
+        float2 WorldPos = TexelCoord * TerrainParams.z;
+        float2 BrushPos = BrushParams.xy;
+        float BrushRadius = BrushParams.z;
+        float BrushStrength = BrushParams.w;
+        
+        float Distance = length(WorldPos - BrushPos);
+        if (Distance <= BrushRadius)
+        {
+            float Falloff = 1.0 - (Distance / BrushRadius);
+            Falloff = smoothstep(0.0, 1.0, Falloff);
+            float HeightChange = BrushStrength * Falloff * DeltaTime;
+            Height = Height + HeightChange;
+        }
+    }
+    
+    // Apply erosion
+    float ErosionAmount = 0.0;
+    if ((SimulationMode & 1) != 0)
+    {
+        float WaterDepth = WaterDepthTexture.SampleLevel(TextureSampler, UV, 0).r;
+        float2 FlowVel = FlowVelocityTexture.SampleLevel(TextureSampler, UV, 0).xy;
+        float Hardness = HardnessTexture.SampleLevel(TextureSampler, UV, 0).r;
+        
+        ErosionAmount = CalculateErosion(UV, Height, WaterDepth, FlowVel, Hardness);
+        Height -= ErosionAmount * DeltaTime;
+    }
+    
+    // Apply orographic effects
+    float Precipitation = 0.0;
+    if ((SimulationMode & 2) != 0)
+    {
+        float2 OrographicResult = CalculateOrographicEffects(UV, Height);
+        Precipitation = OrographicResult.y;
+        
+        if (Precipitation > 0.0)
+        {
+            ErosionAmount += Precipitation * 0.01;
+            Height -= Precipitation * 0.01 * DeltaTime;
+        }
+    }
+    
+    // Clamp and write results
+    Height = clamp(Height, -1000.0, 10000.0);
+    HeightTexture[ThreadId.xy] = Height;
+    
+    // Always write erosion output (shader assumes it's bound)
+    ErosionOutputTexture[ThreadId.xy] = ErosionAmount;
+}
+
+// Orographic compute shader entry point
+[numthreads(THREADGROUP_SIZE_X, THREADGROUP_SIZE_Y, 1)]
+void OrographicComputeCS(uint3 ThreadId : SV_DispatchThreadID)
+{
+    // For now, just pass through - implement full orographic compute later
+    float2 UV = (float2(ThreadId.xy) + 0.5) / TerrainParams.xy;
+    
+    if (any(ThreadId.xy >= uint2(TerrainParams.xy)))
+        return;
+    
+    // Basic implementation - can expand later
+    float Height = HeightTexture[ThreadId.xy].r;
+    float2 OrographicResult = CalculateOrographicEffects(UV, Height);
+    
+    // Could write to precipitation texture here if needed
+}

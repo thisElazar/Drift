@@ -4,6 +4,7 @@
 #include "WaterController.h"
 #include "DynamicTerrain.h"
 #include "WaterSystem.h"
+#include "Engine/TextureRenderTarget2D.h"
 #include "MasterController.h"
 #include "Engine/World.h"
 #include "Components/StaticMeshComponent.h"
@@ -753,30 +754,79 @@ void AWaterController::ToggleGPUWater()
 
 void AWaterController::UpdateGPUWaveParameters()
 {
+    if (!WaterSystem) return;
+    
+    // Update existing parameters
+    WaterSystem->GPUWaveScale = GPUWaveScale;
+    WaterSystem->GPUWaveSpeed = GPUWaveSpeed;
+    WaterSystem->GPUWaveAnimationSpeed = GPUWaveAnimationSpeed;
+    
+    // NEW: Update advanced parameters
+    WaterSystem->GPUWaveDamping = GPUWaveDamping;
+    WaterSystem->GPUMaxWaveHeightRatio = GPUMaxWaveHeightRatio;
+    WaterSystem->GPUSafeWaveHeightRatio = GPUSafeWaveHeightRatio;
+    
+    UE_LOG(LogTemp, Warning, TEXT("GPU Wave Parameters Updated - Scale:%.2f Damping:%.2f MaxRatio:%.2f"),
+           GPUWaveScale, GPUWaveDamping, GPUMaxWaveHeightRatio);
+}
+
+void AWaterController::ResetGPUWaveSystem()
+{
     if (!WaterSystem)
     {
+        UE_LOG(LogTemp, Warning, TEXT("ResetGPUWaveSystem: No WaterSystem"));
         return;
     }
     
-    // Update basic parameters
-    WaterSystem->GPUWaveScale = GPUWaveScale;
-    WaterSystem->GPUWaveSpeed = GPUWaveSpeed;
+    // Reset to safe defaults
+    GPUWaveScale = 0.5f;
+    GPUWaveSpeed = 1.0f;
+    GPUWaveDamping = 0.9f;
+    GPUMaxWaveHeightRatio = 0.3f;
+    GPUSafeWaveHeightRatio = 0.125f;
     
-    // Update material parameters directly (removed IsValid check)
-    WaterSystem->MaterialParams.WaveScale = GPUWaveScale;
-    WaterSystem->MaterialParams.WaveSpeed = GPUWaveSpeed;
-    WaterSystem->MaterialParams.WindDirection = WindDirection;
-    WaterSystem->MaterialParams.WindStrength = WindStrength;
+    // Apply to water system
+    UpdateGPUWaveParameters();
     
-    // If GPU mode is active, update the wave parameters
-    if (bUseGPUVertexDisplacement && WaterSystem->bUseVertexDisplacement)
+    // Call water system's reset
+    WaterSystem->ResetGPUWaveSystem();
+    
+    UE_LOG(LogTemp, Warning, TEXT("GPU Wave System reset to safe defaults"));
+}
+
+bool AWaterController::ValidateGPUParameters()
+{
+    bool bValid = true;
+    
+    // Validate damping
+    if (GPUWaveDamping < 0.0f || GPUWaveDamping > 1.0f)
     {
-        WaterSystem->UpdateGPUWaveParameters(0.0f); // Pass 0 for immediate update
+        GPUWaveDamping = FMath::Clamp(GPUWaveDamping, 0.0f, 1.0f);
+        bValid = false;
     }
     
-    UE_LOG(LogTemp, Verbose, TEXT("UpdateGPUWaveParameters: Scale=%.2f Speed=%.2f Wind=(%.2f,%.2f) Strength=%.2f"),
-           GPUWaveScale, GPUWaveSpeed, WindDirection.X, WindDirection.Y, WindStrength);
+    // Validate wave ratios
+    if (GPUMaxWaveHeightRatio > 0.5f)
+    {
+        GPUMaxWaveHeightRatio = 0.3f;
+        bValid = false;
+    }
+    
+    if (GPUSafeWaveHeightRatio > GPUMaxWaveHeightRatio)
+    {
+        GPUSafeWaveHeightRatio = GPUMaxWaveHeightRatio * 0.5f;
+        bValid = false;
+    }
+    
+    if (!bValid)
+    {
+        UpdateGPUWaveParameters();
+        UE_LOG(LogTemp, Warning, TEXT("GPU Parameters validated and corrected"));
+    }
+    
+    return bValid;
 }
+
 
 void AWaterController::InitializeGPUWaterSystem()
 {
@@ -925,32 +975,62 @@ void AWaterController::SetupDynamicMaterialParameters(UMaterialInstanceDynamic* 
     }
 }
 
+void AWaterController::SetPrecipitationInput(UTextureRenderTarget2D* PrecipitationTexture)
+{
+    if (!WaterSystem || !PrecipitationTexture) return;
+    
+    // Store precipitation texture for water accumulation
+    CurrentPrecipitationTexture = PrecipitationTexture;
+    
+    // Update water system with precipitation data
+    ENQUEUE_RENDER_COMMAND(UpdateWaterPrecipitation)(
+        [this, PrecipitationTexture](FRHICommandListImmediate& RHICmdList)
+        {
+            // Water accumulation from precipitation
+            // This will be used in the water flow compute shader
+            WaterSystem->SetPrecipitationInput(PrecipitationTexture);
+        });
+    
+    UE_LOG(LogTemp, Verbose, TEXT("WaterController: Precipitation input updated"));
+}
+
+float AWaterController::GetAverageFlowIntensity() const
+{
+    if (!WaterSystem) return 0.0f;
+    
+    // Simple metric: count chunks with water and return as intensity
+    int32 WaterChunks = 0;
+    int32 TotalChunks = WaterSystem->WaterSurfaceChunks.Num();
+    
+    if (TotalChunks == 0) return 0.0f;
+    
+    for (const FWaterSurfaceChunk& Chunk : WaterSystem->WaterSurfaceChunks)
+    {
+        if (Chunk.bHasWater)
+        {
+            WaterChunks++;
+        }
+    }
+    
+    // Return percentage of chunks with water as flow intensity (0-1 range)
+    return (float)WaterChunks / (float)TotalChunks;
+}
+
 #if WITH_EDITOR
 void AWaterController::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
     Super::PostEditChangeProperty(PropertyChangedEvent);
     
-    if (!PropertyChangedEvent.Property)
-        return;
+    FName PropertyName = PropertyChangedEvent.Property ?
+                        PropertyChangedEvent.Property->GetFName() : NAME_None;
     
-    FName PropertyName = PropertyChangedEvent.Property->GetFName();
-    
-    // Handle GPU water property changes
-    if (PropertyName == GET_MEMBER_NAME_CHECKED(AWaterController, bUseGPUVertexDisplacement))
+    // Handle GPU wave parameter changes
+    if (PropertyName == GET_MEMBER_NAME_CHECKED(AWaterController, GPUWaveDamping) ||
+        PropertyName == GET_MEMBER_NAME_CHECKED(AWaterController, GPUMaxWaveHeightRatio) ||
+        PropertyName == GET_MEMBER_NAME_CHECKED(AWaterController, GPUSafeWaveHeightRatio))
     {
-        if (bUseGPUVertexDisplacement)
-            EnableGPUWater();
-        else
-            DisableGPUWater();
-    }
-    else if (PropertyName == GET_MEMBER_NAME_CHECKED(AWaterController, GPUWaterMaterial) ||
-             PropertyName == GET_MEMBER_NAME_CHECKED(AWaterController, GPUWaveScale) ||
-             PropertyName == GET_MEMBER_NAME_CHECKED(AWaterController, GPUWaveSpeed) ||
-             PropertyName == GET_MEMBER_NAME_CHECKED(AWaterController, WindDirection) ||
-             PropertyName == GET_MEMBER_NAME_CHECKED(AWaterController, WindStrength))
-    {
+        ValidateGPUParameters();
         UpdateGPUWaveParameters();
     }
 }
 #endif
-

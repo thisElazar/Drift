@@ -2,6 +2,8 @@
 #include "Shaders/WaveComputeShader.h"
 #include "ShaderCompilerCore.h"
 #include "RenderGraphUtils.h"
+#include "ShaderCore.h"
+
 
 // Register the shader with the engine
 // This links the C++ class to the HLSL shader file

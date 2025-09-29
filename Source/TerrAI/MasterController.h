@@ -366,6 +366,33 @@ struct TERRAI_API FWorldScalingConfig
     }
 };
 
+USTRUCT(BlueprintType)
+struct FWaterDistribution
+{
+    GENERATED_BODY()
+    
+    UPROPERTY(BlueprintReadOnly)
+    float SurfaceWater = 0.0f;
+    
+    UPROPERTY(BlueprintReadOnly)
+    float AtmosphericWater = 0.0f;
+    
+    UPROPERTY(BlueprintReadOnly)
+    float Groundwater = 0.0f;
+    
+    UPROPERTY(BlueprintReadOnly)
+    float TotalWater = 0.0f;
+    
+    UPROPERTY(BlueprintReadOnly)
+    float SurfacePercent = 0.0f;
+    
+    UPROPERTY(BlueprintReadOnly)
+    float AtmosphericPercent = 0.0f;
+    
+    UPROPERTY(BlueprintReadOnly)
+    float GroundwaterPercent = 0.0f;
+};
+
 
 /**
  * AMasterWorldController - Central orchestrator for all world systems
@@ -379,6 +406,12 @@ class TERRAI_API AMasterWorldController : public AActor
 
 public:
     AMasterWorldController();
+    
+    
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Water Budget")
+    float TotalGroundwater = 0.0f;
+  
+    
 protected:
     // ===== ACTOR LIFECYCLE =====
     virtual void BeginPlay() override;
@@ -386,24 +419,7 @@ protected:
     virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
     
     // ===== WATER BUDGET TRACKING =====
-    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Water Budget")
-    float TotalAtmosphericWater = 0.0f;
-    
-    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Water Budget")
-    float TotalSurfaceWater = 0.0f;
-    
-    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Water Budget")
-    float TotalGroundwater = 0.0f;
-    
-    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Water Budget")
-    float InitialTotalWater = -1.0f;
-    
-    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Water Budget")
-    float UserAddedWater = 0.0f;
-    
-    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Water Budget")
-    float UserRemovedWater = 0.0f;
-    
+
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Budget")
     float WaterBudgetUpdateInterval = 1.0f;
     
@@ -421,20 +437,12 @@ public:
     UFUNCTION(BlueprintPure, Category = "Water Budget")
     FString GetWaterBudgetDebugString() const;
     
-    UFUNCTION(BlueprintPure, Category = "Water Budget")
-    float GetTotalWaterVolume() const;
-    
-    UFUNCTION(BlueprintCallable, Category = "Water Budget")
-    void TrackUserWaterAddition(float VolumeAdded);
-    
-    UFUNCTION(BlueprintCallable, Category = "Water Budget")
-    void TrackUserWaterRemoval(float VolumeRemoved);
+
     
     UFUNCTION(BlueprintCallable, Category = "Water Budget")
     void ResetWaterBudget();
     
-    UFUNCTION(BlueprintPure, Category = "Water Budget")
-    bool ValidateWaterBudgetIntegrity() const;
+   
     
     UFUNCTION(Exec, Category = "Water Debug", CallInEditor)
     void CheckWaterBudget();
@@ -442,6 +450,25 @@ public:
     // ===== DEBUG SETTINGS =====
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Budget")
     bool bShowWaterBudgetDebug = false;
+    
+    // Surface ↔ Atmosphere transfers
+        UFUNCTION(BlueprintCallable, Category = "Water Authority")
+        void TransferSurfaceToAtmosphere(FVector WorldLocation, float Volume);
+        
+        UFUNCTION(BlueprintCallable, Category = "Water Authority")
+        void TransferAtmosphereToSurface(FVector WorldLocation, float Volume);
+        
+        // Note: TransferSurfaceToGroundwater and TransferGroundwaterToSurface already exist
+        // We'll just update their implementations
+        
+        // Bulk transfer functions for performance
+        UFUNCTION(BlueprintCallable, Category = "Water Authority")
+        void TransferSurfaceToAtmosphereBulk(const TArray<FVector>& Locations, const TArray<float>& Volumes);
+        
+        UFUNCTION(BlueprintCallable, Category = "Water Authority")
+        void TransferAtmosphereToSurfaceBulk(const TArray<FVector>& Locations, const TArray<float>& Volumes);
+        
+    
     
     // ===== INITIALIZATION PHASES =====
     void InitializeTemporalManager();
@@ -458,13 +485,23 @@ public:
     // ===== ERROR HANDLING =====
     void HandleSystemInitializationError(const FString& SystemName, const FString& ErrorMessage);
     bool AttemptSystemRecovery(const FString& SystemName);
-
-private:
+    
     // ===== WORLD SCALING STATE =====
     
     // Current world scaling configuration
     FWorldScalingConfig WorldScalingConfig;
     FWorldCoordinateSystem WorldCoordinateSystem;
+    
+
+private:
+    
+    // Performance throttling
+    float LastBudgetUpdateTime = 0.0f;
+    static constexpr float MinBudgetUpdateInterval = 0.1f; // 10Hz max
+    float LastConservationCheckTime = 0.0f;
+    static constexpr float ConservationCheckInterval = 5.0f; // Every 5 seconds
+
+
     
     // Registered scalable systems
     TArray<UObject*> RegisteredScalableSystems;
@@ -798,8 +835,6 @@ public:
      UFUNCTION(BlueprintCallable, Category = "Water Authority")
      void TransferGroundwaterToSurface(FVector WorldLocation, float DischargeVolume);
     
-    UFUNCTION(BlueprintCallable, Category = "Water Authority")
-    void TransferPrecipitationToSurface(FVector WorldLocation, float PrecipitationVolume);
     
      // Helper function
      float GetWaterCellArea() const;
@@ -808,7 +843,7 @@ public:
      void SetInitialGroundwater(float VolumeM3);
      bool CanGroundwaterEmerge(float RequestedVolume) const;
      float GetGroundwaterVolume() const { return TotalGroundwater; }
-     bool RemoveGroundwater(float VolumeM3);  // For edge drainage
+    
     
     // ===== FUNCTIONS =====
     UFUNCTION(BlueprintCallable, Category = "World Management")
@@ -913,14 +948,6 @@ public:
     UFUNCTION(BlueprintPure, Category = "Water Authority")
     float GetGeologyCellWaterVolume(float WaterDepth, float Porosity = 0.3f) const;
     
-    // ===== INTER-SYSTEM TRANSFER FUNCTIONS =====
-    
-
-    UFUNCTION(BlueprintCallable, Category = "Water Authority")
-    float TransferEvaporationToAtmosphere(
-        float EvaporationDepth,
-        FVector2D WaterGridPos,
-        FVector2D& OutAtmosphericGridPos) const;
     
     // ===== GRID CONVERSIONS =====
     
@@ -943,6 +970,19 @@ public:
     
     UFUNCTION(BlueprintPure, Category = "Water Authority")
     FVector2D WorldToWaterGrid(FVector WorldPos) const;
+    
+    // New grid-based water queries
+     UFUNCTION(BlueprintPure, Category = "Water Budget")
+     float GetTotalSurfaceWater() const;
+     
+     UFUNCTION(BlueprintPure, Category = "Water Budget")
+     float GetTotalAtmosphericWater() const;
+     
+     UFUNCTION(BlueprintPure, Category = "Water Budget")
+     float GetTotalWaterVolume() const;
+     
+     UFUNCTION(BlueprintPure, Category = "Water Budget")
+     FWaterDistribution GetWaterDistribution() const;
 
     
 private:
@@ -975,9 +1015,16 @@ private:
     // Sequential system initialization (no retry logic)
     void InitializeSystemControllersSequentially();
     
-
-        float LastBudgetUpdateTime = 0.0f;
-        static constexpr float MinBudgetUpdateInterval = 0.1f; // 10Hz max
+    // Cache management
+    mutable float CachedSurfaceWater = -1.0f;
+    mutable float CachedAtmosphericWater = -1.0f;
+    mutable float LastCacheUpdateTime = 0.0f;
+    static constexpr float CacheValidityDuration = 0.1f; // 100ms cache
+    
+    // Internal calculation functions
+    float CalculateSurfaceWaterFromGrid() const;
+    float CalculateAtmosphericWaterFromGrid() const;
+    void UpdateWaterCache() const;
 
     
 public:

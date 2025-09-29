@@ -19,6 +19,7 @@
 
 class UWaterSystem;
 class ADynamicTerrain;
+class UTextureRenderTarget2D;
 
 UENUM(BlueprintType)
 enum class EWaterVisualMode : uint8
@@ -230,16 +231,6 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Classification")
     float PondDepthThreshold = 1.0f;
     
-    // River parameters removed - using physics-based wave generation
-    
-    // Rapids parameters removed - using physics-based wave generation
-    
-    // Puddle parameters removed - using physics-based wave generation
-    
-    // Pond parameters removed - using physics-based wave generation
-    
-    // Lake parameters removed - using physics-based wave generation
-    
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Collision")
     float CollisionFlowThreshold = 3.0f;
     
@@ -255,7 +246,27 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wave Tuning|Collision")
     float CollisionTimeScale = 12.0f;
     
-    // Global clamp parameters removed - handled by physics-based system
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Water|Advanced",
+              meta = (ClampMin = "0.0", ClampMax = "1.0"))
+    float GPUWaveDamping = 0.9f;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Water|Advanced",
+              meta = (ClampMin = "0.05", ClampMax = "0.5"))
+    float GPUMaxWaveHeightRatio = 0.3f;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Water|Advanced",
+              meta = (ClampMin = "0.05", ClampMax = "0.2"))
+    float GPUSafeWaveHeightRatio = 0.125f;
+    
+    // New Blueprint callable functions
+    UFUNCTION(BlueprintCallable, Category = "GPU Water|Debug", CallInEditor)
+    void ResetGPUWaveSystem();
+    
+    UFUNCTION(BlueprintCallable, Category = "GPU Water|Debug")
+    bool ValidateGPUParameters();
+    
+    UPROPERTY()
+    UWaterSystem* WaterSystem = nullptr;
     
 protected:
     virtual void BeginPlay() override;
@@ -265,8 +276,7 @@ private:
     UPROPERTY()
     ADynamicTerrain* TargetTerrain = nullptr;
     
-    UPROPERTY()
-    UWaterSystem* WaterSystem = nullptr;
+ 
     
     UPROPERTY()
     class AMasterWorldController* MasterController = nullptr;
@@ -307,6 +317,10 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Water|Wind", meta = (DisplayPriority = 6))
     float WindStrength = 1.0f;
     
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Water",
+              meta = (ClampMin = "0.1", ClampMax = "3.0"))
+    float GPUWaveAnimationSpeed = 1.0f;
+    
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Water|Debug")
     bool bShowGPUStats = false;
     
@@ -341,6 +355,21 @@ public:
     
     UFUNCTION(BlueprintCallable, Category = "Debug")
     void DebugGPUWater();
+    
+public:
+    // Precipitation input from atmosphere
+    UFUNCTION(BlueprintCallable, Category = "Water GPU")
+    void SetPrecipitationInput(UTextureRenderTarget2D* PrecipitationTexture);
+    
+    // Flow intensity for erosion feedback
+    UFUNCTION(BlueprintPure, Category = "Water Flow")
+    float GetAverageFlowIntensity() const;
+
+// Add to protected section:
+protected:
+    // Cached precipitation texture
+    UPROPERTY()
+    UTextureRenderTarget2D* CurrentPrecipitationTexture = nullptr;
     
 protected:
     // Override PostEditChangeProperty to handle changes in editor

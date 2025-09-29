@@ -26,12 +26,18 @@
 #include "Async/ParallelFor.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "ShaderCompilerCore.h"
+#include "RenderGraphUtils.h"
+#include "ShaderParameterUtils.h"
 #include "Kismet/GameplayStatics.h"
 #include "MasterController.h"
 #include "WaterController.h"  // CRITICAL: Add WaterController include
+#include "GeologyController.h"
 #include "TemporalManager.h"
 
 using namespace TerrAIConstants;  // Use named constants
+
+
 
 ADynamicTerrain::ADynamicTerrain()
 {
@@ -42,7 +48,7 @@ ADynamicTerrain::ADynamicTerrain()
     RootComponent = TerrainRoot;
     
     // Set default material to prevent teal flash
-    DefaultTerrainMaterial = LoadObject<UMaterialInterface>(nullptr, 
+    DefaultTerrainMaterial = LoadObject<UMaterialInterface>(nullptr,
         TEXT("/Engine/BasicShapes/BasicShapeMaterial"));
     
     // If that fails, will use wireframe as fallback in InitializeChunks
@@ -109,17 +115,17 @@ float ADynamicTerrain::GetCachedFrameTime() const
 
 /**
  * Terrain initialization sequence with dependency management
- * 
+ *
  * CRITICAL INITIALIZATION ORDER:
  * Phase 1: Basic data structures (no dependencies)
  * Phase 2: MasterController integration (authority-based configuration)
  * Phase 3: System initialization (requires configured dimensions)
- * 
+ *
  * Dependencies:
  * - Called automatically by UE5 ActorSystem
  * - Must complete before any terrain modification calls
  * - MasterController may not be available initially (graceful degradation)
- * 
+ *
  * Error Handling:
  * - Falls back to standalone mode if MasterController unavailable
  * - All systems designed to work with or without authority
@@ -133,6 +139,16 @@ void ADynamicTerrain::BeginPlay()
     // PHASE 2: Initialize basic data structures
     InitializeTerrainData();
     
+    if (bUseGPUTerrain)
+      {
+          InitializeGPUTerrain();
+          UE_LOG(LogTemp, Warning, TEXT("GPU Terrain Init requested"));
+      }
+      else
+      {
+          UE_LOG(LogTemp, Warning, TEXT("GPU Terrain disabled (bUseGPUTerrain = false)"));
+      }
+    
 }
 
 void ADynamicTerrain::Tick(float DeltaTime)
@@ -142,28 +158,66 @@ void ADynamicTerrain::Tick(float DeltaTime)
     // Reset frame counters
     TotalChunkUpdatesThisFrame = 0;
     
-    // Update frustum culling
+    // Update frustum culling (needed for both modes)
     if (bEnableFrustumCulling)
     {
         UpdateFrustumCulling(DeltaTime);
     }
     
-    // Process pending chunk updates
-    ProcessPendingChunkUpdates();
+    // Process based on compute mode
+    switch (CurrentComputeMode)
+    {
+        case ETerrainComputeMode::CPU:
+            // Normal CPU processing
+            ProcessPendingChunkUpdates();
+            break;
+            
+        case ETerrainComputeMode::GPU:
+            // Execute GPU compute shader for terrain modifications
+            if (bHasPendingBrush || bEnableGPUErosion)
+            {
+                ExecuteTerrainComputeShader(DeltaTime);
+            }
+            
+            // CRITICAL: Still process water chunk updates in GPU mode
+            ProcessPendingWaterChunkUpdates();
+            
+            // Update GPU chunk visuals if needed
+            if (bGPUDataDirty)
+            {
+                GPUSyncTimer += DeltaTime;
+                if (GPUSyncTimer >= 0.1f) // Sync every 100ms max
+                {
+                    SyncGPUChunkVisuals();
+                    GPUSyncTimer = 0.0f;
+                    bGPUDataDirty = false;
+                }
+            }
+            break;
+            
+        case ETerrainComputeMode::Switching:
+            // Wait for transition to complete
+            break;
+    }
     
-    // Update water system
+    // CRITICAL: Update water system regardless of terrain compute mode
     if (WaterSystem && WaterSystem->IsSystemReady())
     {
-    WaterSystem->UpdateWaterSimulation(DeltaTime);
+        WaterSystem->UpdateWaterSimulation(DeltaTime);
+        
+        // Process any water-specific chunk updates
+        if (PendingWaterChunkUpdates.Num() > 0)
+        {
+            ProcessPendingWaterChunkUpdates();
+        }
     }
     
-    // Update atmospheric system
-    /*Removed for Master Controller/Temporal Manager
-    if (AtmosphericSystem)
+    // Update atmospheric system (if not handled by TemporalManager)
+    /*if (AtmosphericSystem)
     {
         AtmosphericSystem->UpdateAtmosphericSimulation(DeltaTime);
-    }
-    */
+    }*/
+    
     // Update performance statistics
     if (bShowPerformanceStats)
     {
@@ -309,6 +363,12 @@ void ADynamicTerrain::GenerateSimpleTerrain()
  */
 void ADynamicTerrain::ModifyTerrain(FVector WorldPosition, float Radius, float Strength, bool bRaise)
 {
+    
+    /*if (CurrentComputeMode == ETerrainComputeMode::GPU) {
+        UpdateGPUBrush(WorldPosition, Radius, Strength, bRaise);
+        return; // Skip CPU path
+    }
+     */
     // PERFORMANCE: Throttle to 20 modifications/second
     float CurrentTime = GetCachedFrameTime();
     if (CurrentTime - LastModificationTime < ModificationCooldown)
@@ -326,6 +386,11 @@ void ADynamicTerrain::ModifyTerrain(FVector WorldPosition, float Radius, float S
     float ScaledRadius = CachedMasterController->GetBrushScaleMultiplier() * (Radius / TerrainScale);
     
     ModifyTerrainAtIndex(X, Y, ScaledRadius, Strength, bRaise);
+    
+    if (bUseGPUTerrain)
+        {
+            SyncCPUToGPU();
+        }
 }
 
 void ADynamicTerrain::ModifyTerrainAtIndex(int32 X, int32 Y, float Radius, float Strength, bool bRaise)
@@ -432,53 +497,11 @@ void ADynamicTerrain::ModifyTerrainAtIndex(int32 X, int32 Y, float Radius, float
         }
     }
     
-    // NEW: Water table emergence check
-        if (!bRaise && CachedMasterController && CachedMasterController->GeologyController)
-        {
-            AGeologyController* Geology = CachedMasterController->GeologyController;
-            float WaterTableElev = Geology->GlobalWaterTableElevation;
-            
-            // Collect all modified points
-            TArray<FVector> ModifiedPoints;
-            
-            for (int32 OffsetY = -IntRadius; OffsetY <= IntRadius; OffsetY++)
-            {
-                for (int32 OffsetX = -IntRadius; OffsetX <= IntRadius; OffsetX++)
-                {
-                    int32 CurrentX = X + OffsetX;
-                    int32 CurrentY = Y + OffsetY;
-                    
-                    if (CurrentX >= 0 && CurrentX < TerrainWidth &&
-                        CurrentY >= 0 && CurrentY < TerrainHeight)
-                    {
-                        float Distance = FMath::Sqrt((float)(OffsetX * OffsetX + OffsetY * OffsetY));
-                        if (Distance <= Radius)
-                        {
-                            int32 Index = CurrentY * TerrainWidth + CurrentX;
-                            float TerrainHeight = HeightMap[Index];
-                            
-                            if (TerrainHeight < WaterTableElev)
-                            {
-                                FVector WorldPos = TerrainToWorldPosition(CurrentX, CurrentY);
-                                ModifiedPoints.Add(WorldPos);
-                            }
-                        }
-                    }
-                }
-            }
-            
-            // Batch water emergence
-            if (ModifiedPoints.Num() > 0 && WaterSystem)
-            {
-                Geology->EmergenceWaterAtPoints(ModifiedPoints, WaterSystem);
-            }
-        }
     
     // NEW: Force water system to sync with terrain changes
     if (WaterSystem)
     {
         WaterSystem->ForceTerrainSync();
-        //WaterSystem->bEnableWaterSimulation = true;
         UE_LOG(LogTemp, Warning, TEXT("WaterSystem Synced and Restarted"));
     }
 }
@@ -566,7 +589,7 @@ void ADynamicTerrain::InitializeChunks()
         UE_LOG(LogTemp, Error, TEXT("Failed to create %d chunks"), FailedChunkCount);
     }
     
-    UE_LOG(LogTemp, Warning, TEXT("✅ Created %d chunks with validated materials"), TerrainChunks.Num());
+    UE_LOG(LogTemp, Warning, TEXT("âœ… Created %d chunks with validated materials"), TerrainChunks.Num());
 }
 
 void ADynamicTerrain::GenerateChunkMesh(int32 ChunkX, int32 ChunkY)
@@ -592,7 +615,7 @@ void ADynamicTerrain::GenerateChunkMesh(int32 ChunkX, int32 ChunkY)
     int32 EndY = FMath::Min(StartY + ChunkSize, TerrainHeight);
     
     // BOUNDARY VALIDATION: Ensure chunks actually overlap with neighbors
-    if (ChunkX > 0) 
+    if (ChunkX > 0)
     {
         int32 PrevChunkEndX = (ChunkX - 1) * (ChunkSize - ChunkOverlap) + ChunkSize;
         if (StartX >= PrevChunkEndX)
@@ -718,14 +741,14 @@ void ADynamicTerrain::GenerateChunkMesh(int32 ChunkX, int32 ChunkY)
             // Replace base material with enhanced version
             Chunk.MeshComponent->SetMaterial(0, DynMaterial);
             
-            // Throttled logging to prevent spam
+           /* // Throttled logging to prevent spam
             static float LastWaterShaderLogTime = 0.0f;
             float CurrentTime = GetCachedFrameTime();
             if (CurrentTime - LastWaterShaderLogTime >= 2.0f)
             {
                 UE_LOG(LogTemp, VeryVerbose, TEXT("Applied water shader to chunk materials"));
                 LastWaterShaderLogTime = CurrentTime;
-            }
+            }*/
         }
     }
     
@@ -837,7 +860,7 @@ void ADynamicTerrain::BatchUpdateWaterChunks(const TArray<int32>& ChunkIndices)
     
     for (int32 ChunkIndex : ChunkIndices)
     {
-        if (ProcessedThisFrame >= MaxWaterUpdatesPerFrame) 
+        if (ProcessedThisFrame >= MaxWaterUpdatesPerFrame)
         {
             // Queue remaining for next frame
             PendingWaterChunkUpdates.Add(ChunkIndex);
@@ -909,17 +932,17 @@ void ADynamicTerrain::ProcessPendingWaterChunkUpdates()
 
 /**
  * Priority-based chunk update processing with adaptive throttling
- * 
+ *
  * Algorithm:
  * 1. Process high-priority chunks first (editing areas, near camera)
  * 2. Adaptive throttling based on queue pressure (2-12 updates/frame)
  * 3. Separate water-only update pipeline for precipitation
- * 
+ *
  * Performance:
  * - Normal: 2 chunks/frame
- * - High pressure: 6-8 chunks/frame  
+ * - High pressure: 6-8 chunks/frame
  * - Emergency: 12 chunks/frame
- * 
+ *
  * Dependencies:
  * - Called from Tick() after frustum culling
  * - Requires PriorityChunkQueue and PendingChunkUpdates to be populated
@@ -1014,7 +1037,7 @@ void ADynamicTerrain::ProcessPendingChunkUpdates()
     // Performance warning for large queues
     if (TotalUpdatesNeeded > 100)
     {
-        UE_LOG(LogTemp, Warning, TEXT("TerrAI: Large update queue, priority: %d, legacy pending: %d"), 
+        UE_LOG(LogTemp, Warning, TEXT("TerrAI: Large update queue, priority: %d, legacy pending: %d"),
                PriorityChunkQueue.Num(), PendingChunkUpdates.Num());
     }
 }
@@ -1275,7 +1298,7 @@ void ADynamicTerrain::SetActiveMaterial(UMaterialInterface* Material)
         }
     }
     
-    UE_LOG(LogTemp, Log, TEXT("✅ Material applied to %d chunks, %d enhanced with water shaders"), 
+    UE_LOG(LogTemp, Log, TEXT("âœ… Material applied to %d chunks, %d enhanced with water shaders"),
            MaterialsApplied, WaterShadersApplied);
 }
 
@@ -1306,18 +1329,18 @@ void ADynamicTerrain::UpdatePerformanceStats(float DeltaTime)
             CachedDebugStringBuffer = FString::Printf(TEXT("FPS: %.1f"), CurrentFPS);
             GEngine->AddOnScreenDebugMessage(10, 0.5f, FColor::Green, CachedDebugStringBuffer);
             
-            CachedDebugStringBuffer = FString::Printf(TEXT("Terrain: %dx%d (%d chunks)"), TerrainWidth, TerrainHeight, TerrainChunks.Num());
-            GEngine->AddOnScreenDebugMessage(11, 0.5f, FColor::Yellow, CachedDebugStringBuffer);
+            //CachedDebugStringBuffer = FString::Printf(TEXT("Terrain: %dx%d (%d chunks)"), TerrainWidth, TerrainHeight, TerrainChunks.Num());
+            //GEngine->AddOnScreenDebugMessage(11, 0.5f, FColor::Yellow, CachedDebugStringBuffer);
             
-            CachedDebugStringBuffer = FString::Printf(TEXT("Updated %d chunks this frame, water pending: %d"), 
+            CachedDebugStringBuffer = FString::Printf(TEXT("Updated %d chunks this frame, water pending: %d"),
                 TotalChunkUpdatesThisFrame, PendingWaterChunkUpdates.Num());
             GEngine->AddOnScreenDebugMessage(12, 0.5f, FColor::Cyan, CachedDebugStringBuffer);
             
-            CachedDebugStringBuffer = FString::Printf(TEXT("Frustum Culling: %d/%d chunks visible"), CurrentVisibleChunks, TerrainChunks.Num());
-            GEngine->AddOnScreenDebugMessage(14, 0.5f, FColor::Magenta, CachedDebugStringBuffer);
+            //CachedDebugStringBuffer = FString::Printf(TEXT("Frustum Culling: %d/%d chunks visible"), CurrentVisibleChunks, TerrainChunks.Num());
+           // GEngine->AddOnScreenDebugMessage(14, 0.5f, FColor::Magenta, CachedDebugStringBuffer);
             
-            CachedDebugStringBuffer = FString::Printf(TEXT("Chunk Size: %dx%d, Scale: %.1f"), ChunkSize, ChunkSize, TerrainScale);
-            GEngine->AddOnScreenDebugMessage(13, 0.5f, FColor::Orange, CachedDebugStringBuffer);
+           // CachedDebugStringBuffer = FString::Printf(TEXT("Chunk Size: %dx%d, Scale: %.1f"), ChunkSize, ChunkSize, TerrainScale);
+           // GEngine->AddOnScreenDebugMessage(13, 0.5f, FColor::Orange, CachedDebugStringBuffer);
             
             // Show water system statistics
             if (WaterSystem && WaterSystem->bShowWaterStats)
@@ -1385,7 +1408,7 @@ float ADynamicTerrain::GetTemperatureAt(FVector WorldPosition) const
     {
         return AtmosphericSystem->GetTemperatureAt(WorldPosition);
     }
-    return 288.15f; // 15°C default
+    return 288.15f; // 15Â°C default
 }
 
 float ADynamicTerrain::GetPrecipitationAt(FVector WorldPosition) const
@@ -1408,21 +1431,21 @@ FVector ADynamicTerrain::GetWindAt(FVector WorldPosition) const
 
 /**
  * Frustum culling optimization system for terrain chunks
- * 
+ *
  * Algorithm:
  * 1. Update visibility state every 0.1 seconds (10Hz)
  * 2. Test each chunk's world bounds against camera view frustum
  * 3. Toggle mesh component visibility based on results
- * 
+ *
  * Performance Benefits:
  * - 30-40% rendering performance improvement for large terrains
  * - Automatic scaling with terrain size
  * - Minimal CPU overhead (bounds testing only)
- * 
+ *
  * References:
- * - Akenine-Möller, T. et al. (2018). "Real-Time Rendering" 4th Ed., Ch. 19
+ * - Akenine-MÃ¶ller, T. et al. (2018). "Real-Time Rendering" 4th Ed., Ch. 19
  * - Ulrich, T. (2000). "Rendering massive terrains using chunked level of detail control"
- * 
+ *
  * @param DeltaTime - Frame time for update timer
  */
 void ADynamicTerrain::UpdateFrustumCulling(float DeltaTime)
@@ -1684,19 +1707,19 @@ void ADynamicTerrain::ResetTerrainFully()
 
 /**
  * Clean terrain generation for startup - ensures deterministic state
- * 
+ *
  * Purpose:
  * - Creates fresh terrain without any existing state
  * - Initializes all subsystems in correct dependency order
  * - Provides known-good baseline for scientific simulations
- * 
+ *
  * Initialization Sequence:
  * 1. Clear all existing data structures
  * 2. Generate procedural heightmap
  * 3. Initialize chunk mesh system
  * 4. Connect water physics simulation
  * 5. Initialize atmospheric simulation
- * 
+ *
  * Called By:
  * - BeginPlay() during normal startup
  * - ResetTerrainFully() for runtime resets
@@ -1832,7 +1855,7 @@ TArray<int32> ADynamicTerrain::GetNeighboringChunks(int32 ChunkIndex, bool bIncl
         int32 NeighborX = ChunkX + Offset.X;
         int32 NeighborY = ChunkY + Offset.Y;
         
-        if (NeighborX >= 0 && NeighborX < ChunksX && 
+        if (NeighborX >= 0 && NeighborX < ChunksX &&
             NeighborY >= 0 && NeighborY < ChunksY)
         {
             int32 NeighborIndex = NeighborY * ChunksX + NeighborX;
@@ -1934,7 +1957,7 @@ bool ADynamicTerrain::ValidateChunkBoundaryIntegrity(int32 ChunkIndex) const
         int32 BoundaryX = (ChunkX + 1) * (ChunkSize - ChunkOverlap);
         if (BoundaryX < TerrainWidth)
         {
-            for (int32 Y = ChunkY * (ChunkSize - ChunkOverlap); 
+            for (int32 Y = ChunkY * (ChunkSize - ChunkOverlap);
                  Y < FMath::Min((ChunkY + 1) * (ChunkSize - ChunkOverlap) + ChunkOverlap, TerrainHeight); Y++)
             {
                 float LeftHeight = GetHeightSafe(BoundaryX - 1, Y);
@@ -1954,7 +1977,7 @@ bool ADynamicTerrain::ValidateChunkBoundaryIntegrity(int32 ChunkIndex) const
         int32 BoundaryY = (ChunkY + 1) * (ChunkSize - ChunkOverlap);
         if (BoundaryY < TerrainHeight)
         {
-            for (int32 X = ChunkX * (ChunkSize - ChunkOverlap); 
+            for (int32 X = ChunkX * (ChunkSize - ChunkOverlap);
                  X < FMath::Min((ChunkX + 1) * (ChunkSize - ChunkOverlap) + ChunkOverlap, TerrainWidth); X++)
             {
                 float TopHeight = GetHeightSafe(X, BoundaryY - 1);
@@ -1982,22 +2005,28 @@ void ADynamicTerrain::RepairBoundaryTear(int32 ChunkA, int32 ChunkB, bool bIsVer
     TArray<int32> RepairGroup = {ChunkA, ChunkB};
     ForceUpdateChunkGroup(RepairGroup);
     
-    UE_LOG(LogTemp, VeryVerbose, TEXT("BOUNDARY REPAIR: Fixed tear between chunks %d and %d (%s boundary)"), 
+    UE_LOG(LogTemp, VeryVerbose, TEXT("BOUNDARY REPAIR: Fixed tear between chunks %d and %d (%s boundary)"),
            ChunkA, ChunkB, bIsVerticalBoundary ? TEXT("vertical") : TEXT("horizontal"));
 }
 
 void ADynamicTerrain::ForceUpdateChunkGroup(const TArray<int32>& ChunkIndices)
 {
-    // Bypass queue system for immediate boundary repair
     for (int32 ChunkIndex : ChunkIndices)
     {
         if (TerrainChunks.IsValidIndex(ChunkIndex))
         {
-            const FTerrainChunk& Chunk = TerrainChunks[ChunkIndex];
+            FTerrainChunk& Chunk = TerrainChunks[ChunkIndex];
+            
+            // Regenerate mesh geometry
             GenerateChunkMesh(Chunk.ChunkX, Chunk.ChunkY);
+            
+            // CRITICAL: Also update GPU material binding for GPU mode
+            if (CurrentComputeMode == ETerrainComputeMode::GPU && bGPUInitialized)
+            {
+                UpdateGPUChunkMaterial(Chunk);
+            }
         }
     }
-    
 }
 
 bool ADynamicTerrain::ValidateChunkCoordinateConsistency() const
@@ -2018,7 +2047,7 @@ bool ADynamicTerrain::ValidateChunkCoordinateConsistency() const
                 
                 if (FMath::Abs(TestX - BackX) > ChunkSize || FMath::Abs(TestY - BackY) > ChunkSize)
                 {
-                    UE_LOG(LogTemp, Error, TEXT("COORDINATE INCONSISTENCY: (%d,%d) -> Chunk %d -> (%d,%d)"), 
+                    UE_LOG(LogTemp, Error, TEXT("COORDINATE INCONSISTENCY: (%d,%d) -> Chunk %d -> (%d,%d)"),
                            TestX, TestY, ChunkIndex, BackX, BackY);
                     bConsistent = false;
                 }
@@ -2321,7 +2350,7 @@ void ADynamicTerrain::ApplyWorldConfiguration(const FWorldSizeConfig& Config)
     ChunksX = Config.ChunksX;
     ChunksY = Config.ChunksY;
     
-    UE_LOG(LogTemp, Warning, TEXT("Applied world config: %dx%d terrain, %dx%d chunks"), 
+    UE_LOG(LogTemp, Warning, TEXT("Applied world config: %dx%d terrain, %dx%d chunks"),
            TerrainWidth, TerrainHeight, ChunksX, ChunksY);
     
     // Trigger full reset with new configuration
@@ -2342,7 +2371,7 @@ void ADynamicTerrain::SetCustomWorldSize(int32 Width, int32 Height, int32 Custom
 {
     FWorldSizeConfig CustomConfig = CreateCustomWorldConfig(Width, Height, CustomChunkSize);
     ApplyWorldConfiguration(CustomConfig);
-    UE_LOG(LogTemp, Warning, TEXT("Applied custom world size: %dx%d with %dx%d chunks"), 
+    UE_LOG(LogTemp, Warning, TEXT("Applied custom world size: %dx%d with %dx%d chunks"),
            Width, Height, CustomConfig.ChunksX, CustomConfig.ChunksY);
 }
 
@@ -2372,4 +2401,850 @@ FWorldSizeConfig ADynamicTerrain::CreateCustomWorldConfig(int32 Width, int32 Hei
     return Config;
 }
 
+// GPU Terrain System
 
+void ADynamicTerrain::SetComputeMode(ETerrainComputeMode NewMode)
+{
+    if (NewMode == CurrentComputeMode) return;
+    
+    if (NewMode == ETerrainComputeMode::GPU)
+    {
+        if (!bGPUInitialized)
+        {
+            InitializeGPUTerrain();
+        }
+        TransferHeightmapToGPU();
+        CurrentComputeMode = ETerrainComputeMode::GPU;
+        UE_LOG(LogTemp, Warning, TEXT("Switched to GPU mode"));
+    }
+    else
+    {
+        if (bGPUInitialized)
+        {
+            TransferHeightmapFromGPU();
+        }
+        CurrentComputeMode = ETerrainComputeMode::CPU;
+        
+        for (int32 i = 0; i < TerrainChunks.Num(); i++)
+        {
+            PendingChunkUpdates.Add(i);
+        }
+        UE_LOG(LogTemp, Warning, TEXT("Switched to CPU mode"));
+    }
+}
+
+void ADynamicTerrain::InitializeGPUTerrain()
+{
+    if (bGPUInitialized)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("InitializeGPUTerrain Called"));
+        return;
+    }
+    
+    // DON'T round to power of 2 - use exact dimensions
+    GPUTextureWidth = TerrainWidth;   // 513
+    GPUTextureHeight = TerrainHeight; // 513
+    
+    UE_LOG(LogTemp, Warning, TEXT("Initializing GPU Terrain: %dx%d (from %dx%d)"),
+           GPUTextureWidth, GPUTextureHeight, TerrainWidth, TerrainHeight);
+    
+    CreateGPUResources();
+    
+    // Verify resources were created
+    if (!HeightRenderTexture)
+    {
+        UE_LOG(LogTemp, Error, TEXT("Failed to create HeightRenderTexture!"));
+        bGPUInitialized = false;
+        return;
+    }
+    
+    // Initial CPU to GPU sync
+    SyncCPUToGPU();
+    
+    bGPUInitialized = true;
+    UE_LOG(LogTemp, Warning, TEXT("GPU Terrain initialized successfully"));
+}
+
+void ADynamicTerrain::CreateGPUResources()
+{
+    // Release any existing resources
+    ReleaseGPUResources();
+    
+    // Create height render texture with UAV support
+    HeightRenderTexture = NewObject<UTextureRenderTarget2D>(this);
+    HeightRenderTexture->InitCustomFormat(
+        GPUTextureWidth,
+        GPUTextureHeight,
+        PF_R32_FLOAT,
+        false
+    );
+    HeightRenderTexture->AddressX = TA_Clamp;
+    HeightRenderTexture->AddressY = TA_Clamp;
+    HeightRenderTexture->bCanCreateUAV = true;  // Enable UAV
+    HeightRenderTexture->UpdateResourceImmediate();
+    
+    // Create erosion render texture with UAV support
+    ErosionRenderTexture = NewObject<UTextureRenderTarget2D>(this);
+    ErosionRenderTexture->InitCustomFormat(
+        GPUTextureWidth,
+        GPUTextureHeight,
+        PF_R32_FLOAT,
+        false
+    );
+    ErosionRenderTexture->AddressX = TA_Clamp;
+    ErosionRenderTexture->AddressY = TA_Clamp;
+    ErosionRenderTexture->bCanCreateUAV = true;  // Enable UAV
+    ErosionRenderTexture->UpdateResourceImmediate();
+    
+    // Create hardness render texture with UAV support
+    HardnessRenderTexture = NewObject<UTextureRenderTarget2D>(this);
+    HardnessRenderTexture->InitCustomFormat(
+        GPUTextureWidth,
+        GPUTextureHeight,
+        PF_R8G8B8A8,
+        false
+    );
+    HardnessRenderTexture->AddressX = TA_Clamp;
+    HardnessRenderTexture->AddressY = TA_Clamp;
+    HardnessRenderTexture->bCanCreateUAV = true;  // Enable UAV
+    HardnessRenderTexture->UpdateResourceImmediate();
+    
+    // Create normal render texture with UAV support
+    NormalRenderTexture = NewObject<UTextureRenderTarget2D>(this);
+    NormalRenderTexture->InitCustomFormat(
+        GPUTextureWidth,
+        GPUTextureHeight,
+        PF_FloatRGBA,
+        false
+    );
+    NormalRenderTexture->AddressX = TA_Clamp;
+    NormalRenderTexture->AddressY = TA_Clamp;
+    NormalRenderTexture->bCanCreateUAV = true;  // Enable UAV
+    NormalRenderTexture->UpdateResourceImmediate();
+    
+    UE_LOG(LogTemp, Warning, TEXT("GPU Resources created with UAV support: %dx%d textures"),
+           GPUTextureWidth, GPUTextureHeight);
+}
+
+void ADynamicTerrain::ReleaseGPUResources()
+{
+    if (HeightRenderTexture)
+    {
+        HeightRenderTexture->ReleaseResource();
+        HeightRenderTexture = nullptr;
+    }
+    
+    if (ErosionRenderTexture)
+    {
+        ErosionRenderTexture->ReleaseResource();
+        ErosionRenderTexture = nullptr;
+    }
+    
+    if (HardnessRenderTexture)
+    {
+        HardnessRenderTexture->ReleaseResource();
+        HardnessRenderTexture = nullptr;
+    }
+    
+    if (NormalRenderTexture)
+    {
+        NormalRenderTexture->ReleaseResource();
+        NormalRenderTexture = nullptr;
+    }
+    
+    UE_LOG(LogTemp, Log, TEXT("GPU Resources released"));
+}
+
+
+// 1. CPUâ†’GPU Transfer (one-time on mode switch)
+void ADynamicTerrain::TransferHeightmapToGPU()
+{
+    if (!HeightRenderTexture) return;
+    
+    TArray<FFloat16> GPUData;
+    GPUData.SetNum(TerrainWidth * TerrainHeight);
+    
+    for (int32 i = 0; i < HeightMap.Num(); i++)
+    {
+        GPUData[i] = FFloat16(HeightMap[i]);
+    }
+    
+    ENQUEUE_RENDER_COMMAND(UploadHeightmapToGPU)(
+        [this, GPUData](FRHICommandListImmediate& RHICmdList)
+        {
+            FTextureRenderTargetResource* Resource = HeightRenderTexture->GetRenderTargetResource();
+            if (!Resource) return;
+            
+            FRHITexture* Texture = Resource->GetRenderTargetTexture();
+            if (!Texture) return;
+            
+            uint32 Stride = sizeof(FFloat16);
+            FUpdateTextureRegion2D Region(0, 0, 0, 0, TerrainWidth, TerrainHeight);
+            
+            RHICmdList.UpdateTexture2D(
+                Texture,
+                0,
+                Region,
+                Stride * TerrainWidth,
+                (uint8*)GPUData.GetData()
+            );
+        });
+    
+    FlushRenderingCommands();
+}
+
+// 2. GPUâ†’CPU Transfer (one-time on mode switch)
+void ADynamicTerrain::TransferHeightmapFromGPU()
+{
+    if (!HeightRenderTexture) return;
+    
+    TArray<FFloat16Color> ReadbackData;
+    ReadbackData.SetNum(TerrainWidth * TerrainHeight);
+    
+    // Use proper UE5.5 render target readback
+    FTextureRenderTargetResource* Resource = HeightRenderTexture->GetRenderTargetResource();
+    if (!Resource) return;
+    
+    FReadSurfaceDataFlags ReadFlags(RCM_UNorm, CubeFace_MAX);
+    Resource->ReadFloat16Pixels(ReadbackData);
+    
+    // Update CPU heightmap
+    for (int32 i = 0; i < FMath::Min(ReadbackData.Num(), HeightMap.Num()); i++)
+    {
+        HeightMap[i] = ReadbackData[i].R.GetFloat();
+    }
+    
+    ValidateAndRepairChunkBoundaries();
+}
+
+
+
+
+void ADynamicTerrain::ExecuteTerrainComputeShader(float DeltaTime)
+    {
+        if (!bGPUInitialized || !HeightRenderTexture) {
+            UE_LOG(LogTemp, Error, TEXT("GPU NOT READY: Init=%d, Texture=%s"),
+                   bGPUInitialized, HeightRenderTexture ? TEXT("Valid") : TEXT("Null"));
+            return;
+        }
+    
+    // Throttle execution to improve performance
+    static float LastExecutionTime = 0.0f;
+    float CurrentTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+    if (!bHasPendingBrush && CurrentTime - LastExecutionTime < 0.033f) return; // 30 FPS for ambient updates
+    LastExecutionTime = CurrentTime;
+        
+       // UE_LOG(LogTemp, Warning, TEXT("GPU COMPUTE EXECUTING: Brush=%d"), bHasPendingBrush);
+    
+    // Skip accumulator for brush operations - execute immediately
+    if (!bHasPendingBrush)
+    {
+        GPUUpdateAccumulator += DeltaTime;
+        if (GPUUpdateAccumulator < GPUUpdateInterval) return;
+    }
+    
+    GPUUpdateAccumulator = 0.0f;
+    
+    ENQUEUE_RENDER_COMMAND(TerrainComputeCommand)(
+        [this, DeltaTime](FRHICommandListImmediate& RHICmdList)
+        {
+            TShaderMapRef<FTerrainComputeCS> ComputeShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+            if (!ComputeShader.IsValid()) return;
+            
+            FRDGBuilder GraphBuilder(RHICmdList);
+            
+            FTextureRenderTargetResource* Resource = HeightRenderTexture->GetRenderTargetResource();
+            TRefCountPtr<IPooledRenderTarget> PooledHeightTexture = CreateRenderTarget(
+                Resource->GetRenderTargetTexture(), TEXT("HeightTexture"));
+            FRDGTextureRef HeightTextureRDG = GraphBuilder.RegisterExternalTexture(PooledHeightTexture);
+            
+            FTerrainComputeCS::FParameters* PassParameters =
+                GraphBuilder.AllocParameters<FTerrainComputeCS::FParameters>();
+            
+            PassParameters->HeightTexture = GraphBuilder.CreateUAV(HeightTextureRDG);
+            PassParameters->TerrainParams = FVector4f(TerrainWidth, TerrainHeight, TerrainScale, 0);
+            
+            // Create and CLEAR dummy textures
+            FRDGTextureDesc DummyDesc = FRDGTextureDesc::Create2D(
+                FIntPoint(GPUTextureWidth, GPUTextureHeight),
+                PF_R32_FLOAT,
+                FClearValueBinding::Black,
+                TexCreate_ShaderResource | TexCreate_UAV | TexCreate_RenderTargetable  // Add this flag
+            );
+
+            FRDGTextureRef DummyTexture = GraphBuilder.CreateTexture(DummyDesc, TEXT("DummyWater"));
+            AddClearRenderTargetPass(GraphBuilder, DummyTexture);
+
+            // Now use for SRVs
+            PassParameters->WaterDepthTexture = GraphBuilder.CreateSRV(DummyTexture);
+            PassParameters->FlowVelocityTexture = GraphBuilder.CreateSRV(DummyTexture);
+            PassParameters->MoistureTexture = GraphBuilder.CreateSRV(DummyTexture);
+            PassParameters->WindFieldTexture = GraphBuilder.CreateSRV(DummyTexture);
+            PassParameters->HardnessTexture = GraphBuilder.CreateSRV(DummyTexture);
+
+            FRDGTextureRef ErosionTexture = GraphBuilder.CreateTexture(DummyDesc, TEXT("ErosionOutput"));
+            AddClearRenderTargetPass(GraphBuilder, ErosionTexture);
+            PassParameters->ErosionOutputTexture = GraphBuilder.CreateUAV(ErosionTexture);
+            PassParameters->TextureSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+            
+            PassParameters->DeltaTime = DeltaTime;
+            PassParameters->SimulationMode = 0; // Height only
+            PassParameters->ErosionParams = FVector4f(0,0,0,0);
+            PassParameters->OrographicParams = FVector4f(0,0,0,0);
+            
+            if (bHasPendingBrush)
+            {
+                PassParameters->BrushParams = PendingBrushParams;
+                PassParameters->BrushActive = 1;
+                bHasPendingBrush = false;
+            }
+            else
+            {
+                PassParameters->BrushActive = 0;
+            }
+            
+            // Dispatch compute
+            FComputeShaderUtils::AddPass(
+                GraphBuilder,
+                RDG_EVENT_NAME("TerrainCompute"),
+                ComputeShader,
+                PassParameters,
+                FIntVector(
+                    FMath::DivideAndRoundUp(GPUTextureWidth, 8),
+                    FMath::DivideAndRoundUp(GPUTextureHeight, 8),
+                    1
+                )
+            );
+            
+            GraphBuilder.Execute();
+        });
+    
+    // Immediate flush for brush operations
+    if (PendingBrushParams.W != 0)
+    {
+        FlushRenderingCommands();
+    }
+}
+
+void ADynamicTerrain::SyncCPUToGPU()
+{
+    if (!HeightRenderTexture || HeightMap.Num() == 0)
+        return;
+    
+    TArray<float> GPUHeightData;
+    GPUHeightData.SetNum(GPUTextureWidth * GPUTextureHeight);
+    
+    for (int32 Y = 0; Y < TerrainHeight; Y++)
+    {
+        for (int32 X = 0; X < TerrainWidth; X++)
+        {
+            int32 CPUIndex = Y * TerrainWidth + X;
+            int32 GPUIndex = Y * GPUTextureWidth + X;
+            
+            if (CPUIndex < HeightMap.Num())
+            {
+                GPUHeightData[GPUIndex] = HeightMap[CPUIndex];
+            }
+        }
+    }
+    
+    ENQUEUE_RENDER_COMMAND(UploadHeightToGPU)(
+        [this, GPUHeightData](FRHICommandListImmediate& RHICmdList)
+        {
+            FTextureRHIRef TextureRHI = HeightRenderTexture->GetRenderTargetResource()->GetRenderTargetTexture();
+            
+            // Use UpdateTexture2D for upload
+            uint32 Stride = GPUTextureWidth * sizeof(float);
+            uint8* TextureData = (uint8*)GPUHeightData.GetData();
+            
+            FUpdateTextureRegion2D Region(0, 0, 0, 0, GPUTextureWidth, GPUTextureHeight);
+            RHIUpdateTexture2D(TextureRHI, 0, Region, Stride, TextureData);
+        });
+    
+    UE_LOG(LogTemp, Log, TEXT("Synced CPU heightmap to GPU"));
+}
+
+void ADynamicTerrain::SyncGPUToCPU()
+{
+    if (!HeightRenderTexture || bPendingGPUReadback)
+        return;
+    
+    ENQUEUE_RENDER_COMMAND(ReadbackHeightFromGPU)(
+        [this](FRHICommandListImmediate& RHICmdList)
+        {
+            FTextureRHIRef TextureRHI = HeightRenderTexture->GetRenderTargetResource()->GetRenderTargetTexture();
+            
+            // Create a surface to read back data
+            FIntRect Rect(0, 0, GPUTextureWidth, GPUTextureHeight);
+            TArray<FFloat16Color> SurfaceData;
+            
+            RHICmdList.ReadSurfaceFloatData(TextureRHI, Rect, SurfaceData, ECubeFace::CubeFace_PosX, 0, 0);
+            
+            // Convert to float array
+            GPUHeightReadbackBuffer.SetNum(TerrainWidth * TerrainHeight);
+            for (int32 Y = 0; Y < TerrainHeight; Y++)
+            {
+                for (int32 X = 0; X < TerrainWidth; X++)
+                {
+                    int32 SrcIndex = Y * GPUTextureWidth + X;
+                    int32 DstIndex = Y * TerrainWidth + X;
+                    if (SrcIndex < SurfaceData.Num())
+                    {
+                        GPUHeightReadbackBuffer[DstIndex] = SurfaceData[SrcIndex].R.GetFloat();
+                    }
+                }
+            }
+        });
+    
+    if (GPUHeightReadbackBuffer.Num() == HeightMap.Num())
+    {
+        HeightMap = GPUHeightReadbackBuffer;
+        for (int32 i = 0; i < TerrainChunks.Num(); i++)
+        {
+            PendingChunkUpdates.Add(i);
+        }
+    }
+    
+    bGPUDataDirty = false;
+    
+    if (GPUHeightReadbackBuffer.Num() == HeightMap.Num())
+       {
+           HeightMap = GPUHeightReadbackBuffer;
+           
+           // Fix chunk tears using existing validation
+           ValidateAndRepairChunkBoundaries();
+           
+           // Mark chunks for update
+           for (int32 i = 0; i < TerrainChunks.Num(); i++)
+           {
+               PendingChunkUpdates.Add(i);
+           }
+       }
+    
+    UE_LOG(LogTemp, Log, TEXT("Synced GPU heightmap to CPU"));
+}
+
+void ADynamicTerrain::UpdateGPUShaderParameters(float DeltaTime)
+{
+    if (!HeightRenderTexture) return;
+    
+    float Time = GetWorld()->GetTimeSeconds();
+    
+    for (FTerrainChunk& Chunk : TerrainChunks)
+    {
+        if (Chunk.MeshComponent)
+        {
+            UMaterialInstanceDynamic* DynMaterial = Cast<UMaterialInstanceDynamic>(
+                Chunk.MeshComponent->GetMaterial(0)
+            );
+            
+            if (DynMaterial)
+            {
+                DynMaterial->SetScalarParameterValue(FName("Time"), Time);
+                DynMaterial->SetTextureParameterValue(
+                    FName("HeightmapTexture"),
+                    HeightRenderTexture
+                );
+            }
+        }
+    }
+}
+
+void ADynamicTerrain::UpdateGPUBrush(FVector WorldPosition, float Radius, float Strength, bool bRaise)
+{
+    UE_LOG(LogTemp, Warning, TEXT("UpdateGPUBrush CALLED: Pos=%s, Radius=%.1f"),
+               *WorldPosition.ToString(), Radius);
+    if (CurrentComputeMode != ETerrainComputeMode::GPU || !bGPUInitialized) return;
+    
+    FVector2D TerrainPos = FVector2D(
+        WorldPosition.X / TerrainScale,
+        WorldPosition.Y / TerrainScale
+    );
+    
+    // Match CPU's strength scaling for large brushes
+    float AdjustedStrength = Strength;
+    if (Radius > 1000.0f)
+    {
+        AdjustedStrength *= (Radius / 500.0f);
+    }
+    
+    PendingBrushParams = FVector4f(
+        TerrainPos.X,
+        TerrainPos.Y,
+        Radius / TerrainScale,
+        bRaise ? AdjustedStrength : -AdjustedStrength
+    );
+    bHasPendingBrush = true;
+    
+    // Execute compute shader immediately
+    ExecuteTerrainComputeShader(0.0f);
+    
+    // ALWAYS sync GPU to CPU for terrain modifications
+    SyncGPUToCPU();
+    
+    // Find all affected chunks
+    TSet<int32> AffectedChunks;
+    int32 RadiusInIndices = FMath::CeilToInt(Radius / TerrainScale);
+    int32 CenterX = FMath::RoundToInt(TerrainPos.X);
+    int32 CenterY = FMath::RoundToInt(TerrainPos.Y);
+    
+    for (int32 Y = CenterY - RadiusInIndices; Y <= CenterY + RadiusInIndices; Y++)
+    {
+        for (int32 X = CenterX - RadiusInIndices; X <= CenterX + RadiusInIndices; X++)
+        {
+            if (X >= 0 && X < TerrainWidth && Y >= 0 && Y < TerrainHeight)
+            {
+                float Distance = FVector2D::Distance(FVector2D(X, Y), TerrainPos);
+                if (Distance <= RadiusInIndices)
+                {
+                    int32 ChunkIndex = GetChunkIndexFromCoordinates(X, Y);
+                    if (ChunkIndex >= 0)
+                    {
+                        AffectedChunks.Add(ChunkIndex);
+                    }
+                }
+            }
+        }
+    }
+    
+    // Update chunks based on size
+    if (AffectedChunks.Num() > 15 || Radius > 2000.0f)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("GPU: Large brush - updating %d chunks"), AffectedChunks.Num());
+        ForceUpdateChunkGroup(AffectedChunks.Array());
+    }
+    else
+    {
+        // Update chunks individually for small brushes
+        for (int32 ChunkIndex : AffectedChunks)
+        {
+            UpdateChunk(ChunkIndex);
+        }
+    }
+}
+
+void ADynamicTerrain::ForceGPUChunkVisualUpdate(const TArray<int32>& ChunkIndices)
+{
+    if (!HeightRenderTexture) return;
+    
+    // Diagnostic: Log what we're updating
+    UE_LOG(LogTemp, Warning, TEXT("GPU: ForceUpdate called for %d chunks"), ChunkIndices.Num());
+    
+    // Wait for compute shader to complete
+    FlushRenderingCommands();
+    
+    // Expand to include all neighbors
+    TSet<int32> AllChunks;
+    for (int32 ChunkIndex : ChunkIndices)
+    {
+        if (!TerrainChunks.IsValidIndex(ChunkIndex)) continue;
+        
+        const FTerrainChunk& Chunk = TerrainChunks[ChunkIndex];
+        
+        // Add a 2-chunk radius around each affected chunk for large brushes
+        int32 Radius = (ChunkIndices.Num() > 15) ? 2 : 1;
+        
+        for (int32 dy = -Radius; dy <= Radius; dy++)
+        {
+            for (int32 dx = -Radius; dx <= Radius; dx++)
+            {
+                int32 NX = Chunk.ChunkX + dx;
+                int32 NY = Chunk.ChunkY + dy;
+                if (NX >= 0 && NX < ChunksX && NY >= 0 && NY < ChunksY)
+                {
+                    AllChunks.Add(NY * ChunksX + NX);
+                }
+            }
+        }
+    }
+    
+    UE_LOG(LogTemp, Warning, TEXT("GPU: Updating %d total chunks (including neighbors)"), AllChunks.Num());
+    
+    // Update all chunks
+    int32 UpdatedCount = 0;
+    for (int32 ChunkIndex : AllChunks)
+    {
+        if (TerrainChunks.IsValidIndex(ChunkIndex))
+        {
+            FTerrainChunk& Chunk = TerrainChunks[ChunkIndex];
+            if (Chunk.MeshComponent)
+            {
+                // Get or create material
+                UMaterialInstanceDynamic* DynMaterial = Cast<UMaterialInstanceDynamic>(
+                    Chunk.MeshComponent->GetMaterial(0));
+                    
+                if (!DynMaterial)
+                {
+                    if (CurrentActiveMaterial)
+                    {
+                        DynMaterial = UMaterialInstanceDynamic::Create(CurrentActiveMaterial, this);
+                        Chunk.MeshComponent->SetMaterial(0, DynMaterial);
+                        UE_LOG(LogTemp, Warning, TEXT("Created new material for chunk %d"), ChunkIndex);
+                    }
+                    else
+                    {
+                        UE_LOG(LogTemp, Error, TEXT("No active material for chunk %d!"), ChunkIndex);
+                        continue;
+                    }
+                }
+                
+                // Update material with current height texture
+                DynMaterial->SetTextureParameterValue(FName("HeightmapTexture"), HeightRenderTexture);
+                
+                // Force a unique time value to ensure shader updates
+                float UniqueTime = GetWorld()->GetTimeSeconds() + ChunkIndex * 0.001f;
+                DynMaterial->SetScalarParameterValue(FName("ForceUpdateTime"), UniqueTime);
+                
+                // Set UV parameters
+                int32 TerrainStartX = Chunk.ChunkX * (ChunkSize - ChunkOverlap);
+                int32 TerrainStartY = Chunk.ChunkY * (ChunkSize - ChunkOverlap);
+                
+                DynMaterial->SetVectorParameterValue(
+                    FName("ChunkUVTransform"),
+                    FLinearColor(
+                        (float)TerrainStartX / TerrainWidth,
+                        (float)TerrainStartY / TerrainHeight,
+                        (float)ChunkSize / TerrainWidth,
+                        (float)ChunkSize / TerrainHeight
+                    )
+                );
+                
+                // Force mesh to update
+                Chunk.MeshComponent->MarkRenderStateDirty();
+                Chunk.MeshComponent->UpdateBounds();
+                
+                UpdatedCount++;
+            }
+        }
+    }
+    
+    UE_LOG(LogTemp, Warning, TEXT("GPU: Successfully updated %d chunks"), UpdatedCount);
+}
+
+// Helper function to update material parameters (thread-safe)
+void ADynamicTerrain::UpdateGPUChunkMaterialParams(UMaterialInstanceDynamic* DynMaterial,
+                                                   const FTerrainChunk& Chunk)
+{
+    if (!DynMaterial || !HeightRenderTexture) return;
+    
+    if (DynMaterial)
+    {
+        DynMaterial->SetTextureParameterValue(FName("HeightmapTexture"), HeightRenderTexture);
+        UE_LOG(LogTemp, Warning, TEXT("Bound HeightTexture to chunk %d"), Chunk.ChunkX);
+    }
+    
+    // Bind height texture
+    DynMaterial->SetTextureParameterValue(FName("HeightmapTexture"), HeightRenderTexture);
+    
+    // CRITICAL: Correct UV mapping that matches CPU chunk layout exactly
+    int32 TerrainStartX = Chunk.ChunkX * (ChunkSize - ChunkOverlap);
+    int32 TerrainStartY = Chunk.ChunkY * (ChunkSize - ChunkOverlap);
+    
+    // Include the overlap in the UV range to prevent gaps
+    float UVStartX = (float)TerrainStartX / (float)TerrainWidth;
+    float UVStartY = (float)TerrainStartY / (float)TerrainHeight;
+    float UVScaleX = (float)ChunkSize / (float)TerrainWidth;
+    float UVScaleY = (float)ChunkSize / (float)TerrainHeight;
+    
+    DynMaterial->SetVectorParameterValue(
+        FName("ChunkUVTransform"),
+        FLinearColor(UVStartX, UVStartY, UVScaleX, UVScaleY)
+    );
+    
+    DynMaterial->SetVectorParameterValue(
+        FName("TerrainParams"),
+        FLinearColor(TerrainWidth, TerrainHeight, TerrainScale, MaxTerrainHeight)
+    );
+    
+    DynMaterial->SetScalarParameterValue(FName("ChunkSize"), ChunkSize);
+    DynMaterial->SetScalarParameterValue(FName("ChunkOverlap"), ChunkOverlap);
+    
+    // Force immediate update
+    DynMaterial->SetScalarParameterValue(FName("UpdateTime"), GetWorld()->GetTimeSeconds());
+    
+    // Water integration if needed
+    if (WaterSystem && WaterSystem->bUseShaderWater)
+    {
+        WaterSystem->ApplyVolumetricWaterToMaterial(DynMaterial);
+    }
+}
+
+void ADynamicTerrain::UpdateGPUChunkMaterial(FTerrainChunk& Chunk)
+{
+    UMaterialInstanceDynamic* DynMaterial = Cast<UMaterialInstanceDynamic>(
+        Chunk.MeshComponent->GetMaterial(0)
+    );
+    
+    if (!DynMaterial && CurrentActiveMaterial)
+    {
+        DynMaterial = UMaterialInstanceDynamic::Create(CurrentActiveMaterial, this);
+        Chunk.MeshComponent->SetMaterial(0, DynMaterial);
+    }
+    
+    if (DynMaterial)
+    {
+        // Bind height texture
+        DynMaterial->SetTextureParameterValue(FName("HeightmapTexture"), HeightRenderTexture);
+        
+        // CRITICAL FIX: Correct UV calculation accounting for overlap
+        // The chunk covers terrain indices from StartX to StartX + ChunkSize
+        int32 TerrainStartX = Chunk.ChunkX * (ChunkSize - ChunkOverlap);
+        int32 TerrainStartY = Chunk.ChunkY * (ChunkSize - ChunkOverlap);
+        
+        // UV coordinates map directly to heightmap texture coordinates
+        float UVStartX = (float)TerrainStartX / (float)TerrainWidth;
+        float UVStartY = (float)TerrainStartY / (float)TerrainHeight;
+        
+        // The chunk samples ChunkSize vertices, not (ChunkSize - ChunkOverlap)
+        float UVScaleX = (float)ChunkSize / (float)TerrainWidth;
+        float UVScaleY = (float)ChunkSize / (float)TerrainHeight;
+        
+        DynMaterial->SetVectorParameterValue(
+            FName("ChunkUVTransform"),
+            FLinearColor(UVStartX, UVStartY, UVScaleX, UVScaleY)
+        );
+        
+        // Pass terrain dimensions for vertex displacement
+        DynMaterial->SetVectorParameterValue(
+            FName("TerrainParams"),
+            FLinearColor(TerrainWidth, TerrainHeight, TerrainScale, MaxTerrainHeight)
+        );
+        
+        // Additional parameters for proper vertex displacement
+        DynMaterial->SetScalarParameterValue(FName("ChunkSize"), ChunkSize);
+        DynMaterial->SetScalarParameterValue(FName("ChunkOverlap"), ChunkOverlap);
+        
+        // Water integration
+        if (WaterSystem && WaterSystem->bUseShaderWater)
+        {
+            WaterSystem->ApplyVolumetricWaterToMaterial(DynMaterial);
+        }
+    }
+}
+
+void ADynamicTerrain::ToggleGPUTerrain(bool bEnable)
+{
+    if (bEnable && !bGPUInitialized)
+    {
+        InitializeGPUTerrain();
+    }
+    
+    bUseGPUTerrain = bEnable && bGPUInitialized;
+    
+    UE_LOG(LogTemp, Warning, TEXT("GPU Terrain %s"), bUseGPUTerrain ? TEXT("Enabled") : TEXT("Disabled"));
+}
+
+void ADynamicTerrain::ConnectToGPUAtmosphere(UAtmosphericSystem* AtmoSys)
+{
+    ConnectedAtmosphere = AtmoSys;
+    
+    if (ConnectedAtmosphere)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("Connected terrain to atmospheric system"));
+    }
+}
+
+void ADynamicTerrain::ConnectToGPUWaterSystem(UWaterSystem* WaterSys)
+{
+    ConnectedWaterSystem = WaterSys;
+    
+    if (ConnectedWaterSystem)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("Connected terrain to water system"));
+    }
+}
+
+void ADynamicTerrain::SyncGPUChunkVisuals()
+{
+    if (!HeightRenderTexture) return;
+    
+    for (FTerrainChunk& Chunk : TerrainChunks)
+    {
+        if (Chunk.MeshComponent && Chunk.bIsVisible)
+        {
+            UMaterialInstanceDynamic* DynMaterial = Cast<UMaterialInstanceDynamic>(
+                Chunk.MeshComponent->GetMaterial(0)
+            );
+            
+            if (!DynMaterial && CurrentActiveMaterial)
+            {
+                DynMaterial = UMaterialInstanceDynamic::Create(CurrentActiveMaterial, this);
+                Chunk.MeshComponent->SetMaterial(0, DynMaterial);
+            }
+            
+            if (DynMaterial)
+            {
+                DynMaterial->SetTextureParameterValue(
+                    FName("HeightmapTexture"),
+                    HeightRenderTexture
+                );
+                
+                // FIX: Match CPU's exact coordinate mapping
+                int32 TerrainStartX = Chunk.ChunkX * (ChunkSize - ChunkOverlap);
+                int32 TerrainStartY = Chunk.ChunkY * (ChunkSize - ChunkOverlap);
+                
+                // Each vertex i maps to terrain coordinate (TerrainStartX + i)
+                // So UV = (TerrainStartX + i) / TerrainWidth
+                DynMaterial->SetVectorParameterValue(
+                    FName("ChunkUVTransform"),
+                    FLinearColor(
+                        (float)TerrainStartX / TerrainWidth,    // UV start X
+                        (float)TerrainStartY / TerrainHeight,   // UV start Y
+                        1.0f / TerrainWidth,                    // UV step per vertex X
+                        1.0f / TerrainHeight                    // UV step per vertex Y
+                    )
+                );
+                
+                DynMaterial->SetScalarParameterValue(FName("ChunkSize"), ChunkSize);
+                
+                if (WaterSystem && WaterSystem->bUseShaderWater)
+                {
+                    WaterSystem->ApplyVolumetricWaterToMaterial(DynMaterial);
+                }
+            }
+        }
+    }
+}
+
+void ADynamicTerrain::SetPrecipitationTexture(UTextureRenderTarget2D* PrecipitationTex)
+{
+    // Store precipitation texture for erosion calculations
+    CachedPrecipitationTexture = PrecipitationTex;
+    
+    if (CachedPrecipitationTexture)
+    {
+        UE_LOG(LogTemp, Verbose, TEXT("DynamicTerrain: Precipitation texture set for enhanced erosion"));
+        
+        // Could trigger enhanced erosion here if needed
+        // For now, just cache it for the next erosion compute pass
+    }
+}
+
+void ADynamicTerrain::ValidateChunkBoundary(int32 ChunkIndex)
+{
+    if (!TerrainChunks.IsValidIndex(ChunkIndex)) return;
+    
+    FTerrainChunk& Chunk = TerrainChunks[ChunkIndex];
+    int32 ChunkX = Chunk.ChunkX;
+    int32 ChunkY = Chunk.ChunkY;
+    
+    // Check boundaries with adjacent chunks
+    if (ChunkX > 0) // Left boundary
+    {
+        int32 LeftChunkIndex = ChunkY * ChunksX + (ChunkX - 1);
+        if (TerrainChunks.IsValidIndex(LeftChunkIndex))
+        {
+            // Force material update on boundary vertices
+            UpdateGPUChunkMaterial(TerrainChunks[LeftChunkIndex]);
+        }
+    }
+    
+    if (ChunkY > 0) // Top boundary
+    {
+        int32 TopChunkIndex = (ChunkY - 1) * ChunksX + ChunkX;
+        if (TerrainChunks.IsValidIndex(TopChunkIndex))
+        {
+            UpdateGPUChunkMaterial(TerrainChunks[TopChunkIndex]);
+        }
+    }
+}

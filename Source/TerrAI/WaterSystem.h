@@ -5,7 +5,7 @@
  * Purpose: Real-time water simulation with GPU shader integration
  * Performance: Optimized for 256+ terrain chunks, throttled debug logging
  * Dependencies: DynamicTerrain, UE5.4 material system, PF_R8 textures
- * 
+ *
  * Key Features:
  * - Pressure-based flow simulation with edge drainage
  * - Real-time texture updates for material shaders
@@ -14,7 +14,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "UObject/NoExportTypes.h" 
+#include "UObject/NoExportTypes.h"
 #include "Engine/Texture2D.h"
 #include "Materials/MaterialParameterCollection.h"
 #include "Materials/MaterialParameterCollectionInstance.h"
@@ -218,7 +218,7 @@ struct FWaterSimulationData
  * Creates smooth water surfaces with proper optical depth representation
  * Replaces box-based volumes for natural pooling and flowing water
  * Integrates Beer-Lambert law for scientifically accurate light absorption
- * 
+ *
  * PHASE 1-2 ENHANCEMENT: All data synchronized from simulation authority
  */
 USTRUCT()
@@ -490,7 +490,7 @@ public:
     
     // ===== WATER AUTHORITY & QUALITY SETTINGS =====
     
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Authority", 
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Authority",
               meta = (ToolTip = "Minimum water depth required for mesh creation"))
     float MinMeshDepth = 0.3f;
 
@@ -636,7 +636,7 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Water Utilities")
     float GetExactWaterDepthAtWorld(FVector2D WorldPos) const;
     
-    UFUNCTION(BlueprintCallable, Category = "Water Utilities") 
+    UFUNCTION(BlueprintCallable, Category = "Water Utilities")
     FVector2D GetFlowVectorAtWorld(FVector2D WorldPos) const;
     
     UFUNCTION(BlueprintCallable, Category = "Water Utilities")
@@ -946,7 +946,7 @@ private:
     
     // Enhanced validation functions for phantom water elimination
     bool CheckForContiguousWater(int32 ChunkIndex) const;
-    int32 FloodFillWaterArea(int32 StartX, int32 StartY, int32 MinX, int32 MinY, 
+    int32 FloodFillWaterArea(int32 StartX, int32 StartY, int32 MinX, int32 MinY,
                             int32 MaxX, int32 MaxY, TSet<int32>& VisitedCells) const;
 
     
@@ -1024,7 +1024,10 @@ public:
       
       // Get properly scaled time for wave animations
       float GetScaledTime() const;
-    
+        
+        // Height calculation helper (can be exposed to Blueprint without the struct)
+        UFUNCTION(BlueprintCallable, Category = "GPU Vertex Displacement")
+        float GetConsistentWaterSurfaceHeight(int32 GridX, int32 GridY);
 
 private:
     
@@ -1035,9 +1038,10 @@ private:
     void ApplyGPUMaterialToChunk(FWaterSurfaceChunk& Chunk);
     
     void UpdateCPUWaterSurfaceChunk(FWaterSurfaceChunk& Chunk);
-
-    // void CreateWaterSurfaceMesh(FWaterSurfaceChunk& Chunk);
     
+    void ApplyGPUMaterialWithShaderAlignment(FWaterSurfaceChunk& Chunk);
+
+
     // Additional smoothing functions
     void SmoothWaterDepthMap();
     void ApplySpatialSmoothing();
@@ -1099,11 +1103,11 @@ private:
     // Wave physics constants (no namespace, just class members)
     
 
-    static constexpr float WaveGravity = 981.0f;              // cm/s² (UE units)
+    static constexpr float WaveGravity = 981.0f;              // cm/sÂ² (UE units)
     static constexpr float WaveMinWindForWaves = 0.1f;        // m/s
     static constexpr float WaveDeepWaterLimit = 0.5f;         // depth/wavelength ratio
     static constexpr float WaveTwoPi = 6.28318530718f;        // 2 * PI
-    static constexpr float WaveDensity = 1000.0f; // kg/m³ for water
+    static constexpr float WaveDensity = 1000.0f; // kg/mÂ³ for water
     
     // Simple wave generation context (no forward declaration issues)
     struct FWaveContext
@@ -1156,13 +1160,8 @@ public:
     bool bUseVertexDisplacement = false;
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Vertex Displacement")
-    bool bDebugGPUDisplacement = false;
+    bool bDebugGPUDisplacement = true;
     
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Vertex Displacement")
-    float GPUWaveScale = 1.0f;
-    
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Vertex Displacement")
-    float GPUWaveSpeed = 1.0f;
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Vertex Displacement")
     UTextureRenderTarget2D* WaveOutputTexture = nullptr;
@@ -1171,7 +1170,7 @@ public:
     UMaterialInterface* WaterMaterialWithDisplacement = nullptr;
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Vertex Displacement")
-    float MeshRegenerationThreshold = 100.0f; // Only regenerate if water area changes by this much
+    float MeshRegenerationThreshold = 1.0f; // Only regenerate if water area changes by this much
     
     // Functions for GPU displacement
     UFUNCTION(BlueprintCallable, Category = "GPU Vertex Displacement")
@@ -1192,13 +1191,90 @@ public:
     UFUNCTION(BlueprintCallable, Category = "GPU Vertex Displacement")
     bool NeedsMeshRegeneration(int32 ChunkIndex) const;
     
-    //UFUNCTION(BlueprintCallable, Category = "GPU Vertex Displacement")
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Vertex Displacement")
+     bool bUseRealTimeForGPUWaves = true;  // Match CPU system behavior
+    
+
+    // ===== GPU VERTEX DISPLACEMENT PARAMETERS =====
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Waves",
+              meta = (ClampMin = "0.0", ClampMax = "2.0"))
+    float GPUWaveScale = 0.5f;  // Reduced from 1.0f for stability
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Waves",
+              meta = (ClampMin = "0.0", ClampMax = "10.0"))
+    float GPUWaveSpeed = 1.0f;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Waves",
+              meta = (ClampMin = "0.0", ClampMax = "1.0"))
+    float GPUWaveDamping = 0.9f;  // New parameter for wave energy dissipation
+    
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Waves",
+              meta = (ClampMin = "0.1", ClampMax = "5.0"))
+    float GPUWaveAnimationSpeed = 1.0f;
+    
+    void MonitorWaveAmplitudes();
+     bool ValidateGPUWaveParameters();
+     void DebugDrawWaveInfo();
+     void ResetGPUWaveSystem();
+     void UpdateGPUWaveDebug(float DeltaTime);
+     void UpdateFlowDataTexture();
+    
+    // Advanced GPU wave tuning
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Waves|Advanced",
+              meta = (ClampMin = "0.0", ClampMax = "1.0"))
+    float GPUWaveDepthFalloff = 0.5f;  // How quickly waves diminish in shallow water
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Waves|Advanced",
+              meta = (ClampMin = "0.05", ClampMax = "0.5"))
+    float GPUMaxWaveHeightRatio = 0.3f;  // Maximum wave height as ratio of water depth
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Waves|Advanced",
+              meta = (ClampMin = "0.05", ClampMax = "0.2"))
+    float GPUSafeWaveHeightRatio = 0.125f;  // Conservative wave height limit
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Waves|Advanced",
+              meta = (ClampMin = "1.0", ClampMax = "100.0"))
+    float GPUDeepWaterThreshold = 50.0f;  // Depth where waves stop growing
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Waves|Advanced",
+              meta = (ClampMin = "0.5", ClampMax = "10.0"))
+    float GPUShallowWaterThreshold = 5.0f;  // Depth where waves start attenuating
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Waves|Debug")
+    bool bDebugGPUWaves = false;  // Enable debug visualization
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Waves|Debug")
+    bool bShowWaveAmplitudes = false;  // Visualize wave amplitudes in vertex colors
+    
     void GenerateFlatBaseMesh(FWaterSurfaceChunk& Chunk);
     
-    // Add in private section:
+    UFUNCTION(BlueprintCallable)
+    void DebugGPUWaterAlignment();
+    
+    UFUNCTION(BlueprintCallable)
+    void DebugMasterControllerCoordinates();
+    
+    
     private:
         TMap<int32, float> ChunkWaterAreas;
         int32 FramesSinceLastMeshUpdate = 0;
+    
+    void UpdateGPUWaterChunks();
+    
+
+protected:
+    // GPU Wave system state tracking
+    float AccumulatedGPUTime = 0.0f;
+    float LastGPUWaveUpdateTime = 0.0f;
+    bool bGPUWaveSystemInitialized = false;
+    
+    // Wave amplitude tracking for debugging
+    float CurrentMaxWaveAmplitude = 0.0f;
+    float AverageWaveAmplitude = 0.0f;
+    int32 WaveAmplitudeSampleCount = 0;
+    
     
 private:
     // GPU displacement tracking
@@ -1209,8 +1285,8 @@ private:
     float CPUMeshUpdateTime = 0.0f;
  
     // Chunk system constants
-        static constexpr int32 ChunkSize = 33;  // ADD THIS
-        static constexpr float ChunkWorldSize = 3200.0f;  // ADD THIS (33 * 100 units)
+        static constexpr int32 ChunkSize = 33;
+        static constexpr float ChunkWorldSize = 3300.0f;
   
 public:
     UFUNCTION(BlueprintCallable, Category = "Debug")
@@ -1225,12 +1301,34 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Debug")
     FString GetSystemStateString() const;
     
+    bool bPausedForTerrainEdit = false;
+    
+    UFUNCTION(BlueprintCallable, Category = "GPU")
+       void EnableGPUMode(bool bEnable)
+       {
+           bUseVertexDisplacement = bEnable;
+           if (bEnable)
+           {
+               InitializeGPUDisplacement();
+           }
+       }
+    
 private:
     // GPU mesh initialization
     void InitializeGPUChunkMesh(FWaterSurfaceChunk& Chunk);
    // void UpdateFlowDisplacementTexture();
     float CalculateChunkWaterArea(int32 ChunkIndex) const;
+    
+    // Add to WaterSystem.h
+
+    // Add to public section:
+    public:
+        // Set precipitation input from atmosphere
+        void SetPrecipitationInput(UTextureRenderTarget2D* PrecipTexture);
+   
+    // Add to protected section:
+    protected:
+        UPROPERTY()
+        UTextureRenderTarget2D* PrecipitationInputTexture = nullptr;
 };
-
-
 

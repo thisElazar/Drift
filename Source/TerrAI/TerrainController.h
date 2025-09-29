@@ -542,9 +542,6 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Time Control")
     void ResetTimeSpeed();
 
-    // Atmospheric control functions - MOVED TO ATMOSPHERECONTROLLER
-    // All atmospheric functions moved to AtmosphereController for clean separation
-
     // Camera system functions
     UFUNCTION(BlueprintCallable, Category = "Camera")
     void SwitchCameraMode();
@@ -562,9 +559,6 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Terrain Editing")
     FVector GetCursorWorldPosition() const;
 
-    // Master controller coordinate integration
-    UFUNCTION(BlueprintCallable, Category = "Cursor System")
-    FVector GetMasterCursorWorldPosition() const;
 
     UFUNCTION(BlueprintCallable, Category = "Cursor System")
     float GetMasterBrushScale() const;
@@ -712,13 +706,9 @@ private:
     int32 FrameCount = 0;
     float StatUpdateTimer = 0.0f;
 
-    // Brush preview - REMOVED: Now handled by Universal Brush System
-    // void CreateBrushPreview();
-    // void UpdateBrushPreview();
 
     // Helper functions
     void UpdateCameraPosition(float DeltaTime);
-   // void UpdateTerrainModification(float DeltaTime);
     void UpdateWaterModification(float DeltaTime);
     void UpdateUnifiedCursor(float DeltaTime);
     void UpdateAuthorityCache(float DeltaTime);
@@ -739,8 +729,5 @@ private:
     float CalculateChunkPriority(int32 ChunkIndex) const;
     void SetupInputMapping();
     bool PerformCursorTrace(FVector& OutHitLocation) const;
-    
-    // ===== UNIVERSAL BRUSH PREVIEW SYSTEM =====
-    // These are now properly implemented in the Universal Brush System
-    // No duplicate declarations
+
 };

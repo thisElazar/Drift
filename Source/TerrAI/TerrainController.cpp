@@ -1,16 +1,16 @@
  // TerrainController.cpp - Complete Clean UE 5.4 Compatible Version with Universal Brush System
 #include "TerrainController.h"
-#include "TerrAI.h"  // Include for validation macros and constants
-#include "UObject/ConstructorHelpers.h"  // For loading default meshes
+#include "TerrAI.h"
+#include "UObject/ConstructorHelpers.h"
 #include "Camera/CameraComponent.h"
-#include "Kismet/KismetMaterialLibrary.h"  // For material parameter updates
-#include "NiagaraComponent.h"  // For Niagara effects
-#include "NiagaraFunctionLibrary.h"  // For Niagara spawning
+#include "Kismet/KismetMaterialLibrary.h"
+#include "NiagaraComponent.h"
+#include "NiagaraFunctionLibrary.h"
 #include "GameFramework/SpringArmComponent.h"
 #include "Components/StaticMeshComponent.h"
-#include "ProceduralMeshComponent.h"  // Added missing include
-#include "AtmosphericSystem.h"  // Added missing include
-#include "WaterSystem.h"  // CRITICAL FIX: Add WaterSystem include
+#include "ProceduralMeshComponent.h"
+#include "AtmosphericSystem.h"
+#include "WaterSystem.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
@@ -27,7 +27,8 @@
 #include "Kismet/GameplayStatics.h"
 #include "TerrAIGameInstance.h"
 #include "WaterController.h"
-#include "MasterController.h"  // CRITICAL: Include for Universal Brush System
+#include "GeologyController.h"
+#include "MasterController.h"
 
 ATerrainController::ATerrainController()
 {
@@ -141,7 +142,7 @@ ATerrainController::ATerrainController()
     MovementInput = FVector2D(0.0f, 0.0f);
     LookInput = FVector2D(0.0f, 0.0f);
     SmoothedMovementInput = FVector2D(0.0f, 0.0f);
-    LastCursorPosition = FVector(0.0f, 0.0f, 0.0f);
+    //LastCursorPosition = FVector(0.0f, 0.0f, 0.0f);
     CameraRotation = FRotator(-45.0f, 0.0f, 0.0f);
     
     // Initialize input values
@@ -196,8 +197,7 @@ void ATerrainController::ApplyBrush(FVector WorldPosition, const FUniversalBrush
             // Add water
             TargetTerrain->WaterSystem->AddWater(WorldPosition, WaterAmount);
             
-            // Track user addition
-            MasterController->TrackUserWaterAddition(VolumeAdded);
+        
         }
         else if (bIsRemovingWater)
         {
@@ -209,9 +209,7 @@ void ATerrainController::ApplyBrush(FVector WorldPosition, const FUniversalBrush
             
             // Remove water
             TargetTerrain->WaterSystem->RemoveWater(WorldPosition, WaterAmount);
-            
-            // Track user removal
-            MasterController->TrackUserWaterRemoval(VolumeRemoved);
+
         }
     }
 }
@@ -752,6 +750,23 @@ void ATerrainController::Move(const FInputActionValue& Value)
 void ATerrainController::Look(const FInputActionValue& Value)
 {
     FVector2D LookVector = Value.Get<FVector2D>();
+    
+    // DEBUG: Log when look input happens during editing state changes
+    static bool bLastEditingState = false;
+    bool bCurrentlyEditing = (bIsEditingTerrain || bIsEditingWater);
+    
+    if (bCurrentlyEditing != bLastEditingState)
+    {
+        UE_LOG(LogTemp, Error, TEXT("[LOOK DEBUG] Look() called during editing state change! LookVector: %s, Editing: %s"),
+               *LookVector.ToString(), bCurrentlyEditing ? TEXT("TRUE") : TEXT("FALSE"));
+        bLastEditingState = bCurrentlyEditing;
+    }
+    
+    if (bCurrentlyEditing && !LookVector.IsZero())
+    {
+        UE_LOG(LogTemp, Warning, TEXT("[LOOK DEBUG] Look input during editing: %s"), *LookVector.ToString());
+    }
+    
     LookInput = LookVector;
 }
 
@@ -836,33 +851,27 @@ void ATerrainController::StopLowerTerrain(const FInputActionValue& Value)
 
 void ATerrainController::StartTerrainEditing(bool bRaise)
 {
-    // CRITICAL: Ensure cursor continuity BEFORE changing editing state
-    if (!bIsEditingTerrain)
-    {
-        // Pre-populate the unified cursor to current position to prevent jump
-        FVector CurrentRawPosition;
-        if (PerformCursorTrace(CurrentRawPosition))
-        {
-            // If we have a valid smoothed position, use it as the baseline
-            if (bUnifiedCursorValid && UnifiedCursorPosition != FVector::ZeroVector)
-            {
-                // The cursor will smoothly transition from this position
-                UE_LOG(LogTemp, VeryVerbose, TEXT("[EDIT START] Maintaining cursor continuity"));
-            }
-            else
-            {
-                // Initialize with current raw position
-                UnifiedCursorPosition = CurrentRawPosition;
-                bUnifiedCursorValid = true;
-            }
-        }
-    }
-    
     bIsEditingTerrain = true;
     bIsRaisingTerrain = bRaise;
     bIsLoweringTerrain = !bRaise;
     
-    UE_LOG(LogTemp, Warning, TEXT("Started %s terrain"), bRaise ? TEXT("raising") : TEXT("lowering"));
+    // SURGICAL FIX: Snap cursor to eliminate interpolation jump
+    FVector CurrentRawPosition;
+    if (PerformCursorTrace(CurrentRawPosition))
+    {
+        UnifiedCursorPosition = CurrentRawPosition;
+        bUnifiedCursorValid = true;
+        UE_LOG(LogTemp, VeryVerbose, TEXT("[TERRAIN EDIT START] Snapped cursor to: %s"),
+               *CurrentRawPosition.ToString());
+    }
+    
+    if (TargetTerrain && TargetTerrain->WaterSystem)
+    {
+        TargetTerrain->WaterSystem->bPausedForTerrainEdit = true;
+    }
+    
+    UE_LOG(LogTemp, Warning, TEXT("Started %s terrain"), bRaise ?
+           TEXT("raising") : TEXT("lowering"));
 }
 
 void ATerrainController::StopTerrainEditing()
@@ -870,6 +879,12 @@ void ATerrainController::StopTerrainEditing()
     bIsEditingTerrain = false;
     bIsRaisingTerrain = false;
     bIsLoweringTerrain = false;
+    
+    if (TargetTerrain && TargetTerrain->WaterSystem)
+    {
+        TargetTerrain->WaterSystem->bPausedForTerrainEdit = false;
+        TargetTerrain->WaterSystem->ForceTerrainSync();
+    }
     
     UE_LOG(LogTemp, Warning, TEXT("Stopped terrain editing"));
 }
@@ -932,33 +947,22 @@ void ATerrainController::StopRemoveWater(const FInputActionValue& Value)
 
 void ATerrainController::StartWaterEditing(bool bAdd)
 {
-    // CRITICAL: Ensure cursor continuity BEFORE changing editing state
-    if (!bIsEditingWater)
-    {
-        // Pre-populate the unified cursor to current position to prevent jump
-        FVector CurrentRawPosition;
-        if (PerformCursorTrace(CurrentRawPosition))
-        {
-            // If we have a valid smoothed position, use it as the baseline
-            if (bUnifiedCursorValid && UnifiedCursorPosition != FVector::ZeroVector)
-            {
-                // The cursor will smoothly transition from this position
-                UE_LOG(LogTemp, VeryVerbose, TEXT("[WATER EDIT START] Maintaining cursor continuity"));
-            }
-            else
-            {
-                // Initialize with current raw position
-                UnifiedCursorPosition = CurrentRawPosition;
-                bUnifiedCursorValid = true;
-            }
-        }
-    }
-    
     bIsEditingWater = true;
     bIsAddingWater = bAdd;
     bIsRemovingWater = !bAdd;
     
-    UE_LOG(LogTemp, Warning, TEXT("Started %s water"), bAdd ? TEXT("adding") : TEXT("removing"));
+    // SURGICAL FIX: Snap cursor to eliminate interpolation jump
+    FVector CurrentRawPosition;
+    if (PerformCursorTrace(CurrentRawPosition))
+    {
+        UnifiedCursorPosition = CurrentRawPosition;
+        bUnifiedCursorValid = true;
+        UE_LOG(LogTemp, VeryVerbose, TEXT("[WATER EDIT START] Snapped cursor to: %s"),
+               *CurrentRawPosition.ToString());
+    }
+    
+    UE_LOG(LogTemp, Warning, TEXT("Started %s water"), bAdd ?
+           TEXT("adding") : TEXT("removing"));
 }
 
 
@@ -986,12 +990,6 @@ void ATerrainController::UpdateWaterModification(float DeltaTime)
         {
             TargetTerrain->WaterSystem->AddWater(CursorWorldPos, AmountToAdd);
         });
-        
-        // Track the precise change
-        if (VolumeChange > 0.0f)
-        {
-            MasterController->TrackUserWaterAddition(VolumeChange);
-        }
     }
     else if (bIsRemovingWater)
     {
@@ -1002,12 +1000,6 @@ void ATerrainController::UpdateWaterModification(float DeltaTime)
         {
             TargetTerrain->WaterSystem->RemoveWater(CursorWorldPos, AmountToRemove);
         });
-        
-        // Track the precise change (will be negative)
-        if (VolumeChange < 0.0f)
-        {
-            MasterController->TrackUserWaterRemoval(-VolumeChange);
-        }
     }
 }
 
@@ -1323,32 +1315,24 @@ void ATerrainController::StopRemoveSpring(const FInputActionValue& Value)
     }
 }
 
-// Spring editing state management
 void ATerrainController::StartSpringEditing(bool bAdd)
 {
-    // Ensure cursor continuity before changing editing state
-    if (!bIsEditingSpring)
-    {
-        FVector CurrentRawPosition;
-        if (PerformCursorTrace(CurrentRawPosition))
-        {
-            if (bUnifiedCursorValid && UnifiedCursorPosition != FVector::ZeroVector)
-            {
-                UE_LOG(LogTemp, VeryVerbose, TEXT("[SPRING EDIT START] Maintaining cursor continuity"));
-            }
-            else
-            {
-                UnifiedCursorPosition = CurrentRawPosition;
-                bUnifiedCursorValid = true;
-            }
-        }
-    }
-    
     bIsEditingSpring = true;
     bIsAddingSpring = bAdd;
     bIsRemovingSpring = !bAdd;
     
-    UE_LOG(LogTemp, Warning, TEXT("Started %s springs"), bAdd ? TEXT("adding") : TEXT("removing"));
+    // SURGICAL FIX: Snap cursor to eliminate interpolation jump
+    FVector CurrentRawPosition;
+    if (PerformCursorTrace(CurrentRawPosition))
+    {
+        UnifiedCursorPosition = CurrentRawPosition;
+        bUnifiedCursorValid = true;
+        UE_LOG(LogTemp, VeryVerbose, TEXT("[SPRING EDIT START] Snapped cursor to: %s"),
+               *CurrentRawPosition.ToString());
+    }
+    
+    UE_LOG(LogTemp, Warning, TEXT("Started %s springs"), bAdd ?
+           TEXT("adding") : TEXT("removing"));
 }
 
 void ATerrainController::StopSpringEditing()
@@ -1441,26 +1425,10 @@ void ATerrainController::ResetTerrain(const FInputActionValue& Value)
 
 FVector ATerrainController::GetCursorWorldPosition() const
 {
-    if (MasterController && bUnifiedCursorValid)
-    {
-        // Use master controller coordinate transforms
-        return GetMasterCursorWorldPosition();
-    }
-    
-    // Fallback to legacy behavior
-    return bUnifiedCursorValid ? UnifiedCursorPosition : FVector::ZeroVector;
-}
-
-FVector ATerrainController::GetMasterCursorWorldPosition() const
-{
-    if (!MasterController || !bUnifiedCursorValid)
-    {
-        return FVector::ZeroVector;
-    }
-    
-    // Fallback: just return unified cursor position
     return UnifiedCursorPosition;
 }
+
+
 
 float ATerrainController::GetMasterBrushScale() const
 {
@@ -1668,65 +1636,46 @@ void ATerrainController::UpdateUnifiedCursor(float DeltaTime)
 {
     CursorUpdateTimer += DeltaTime;
     
-    // AUTHORITY FIX: When editing, use unthrottled bounds-checked position immediately
-    if (bIsEditingTerrain || bIsEditingWater)
-    {
-        FVector CurrentRawCursorPosition;
-        if (PerformCursorTrace(CurrentRawCursorPosition))
-        {
-            UnifiedCursorPosition = CurrentRawCursorPosition;
-            bUnifiedCursorValid = true;
-            UE_LOG(LogTemp, VeryVerbose, TEXT("[CURSOR FIX] Using unthrottled bounds-checked position: %s"), 
-                   *CurrentRawCursorPosition.ToString());
-            return; // Skip throttled update when editing
-        }
-    }
-    
-    // AUTHORITY FIX: Always get current cursor position for accuracy
     FVector CurrentRawCursorPosition;
     bool bValidCursor = PerformCursorTrace(CurrentRawCursorPosition);
     
-    if (bValidCursor)
+    if (!bValidCursor)
     {
-        // IMMEDIATE: Use current position for any operations that need accuracy
-        // This ensures editing operations use the most current mouse position
-        
-        // THROTTLED: Only update the smoothed visual position at 30fps
-        if (CursorUpdateTimer >= CursorUpdateRate)
-        {
-            if (!bUnifiedCursorValid)
-            {
-                // First valid position - no smoothing
-                UnifiedCursorPosition = CurrentRawCursorPosition;
-                bUnifiedCursorValid = true;
-            }
-            else
-            {
-                // Simple distance-based smoothing for visual stability
-                float Distance = FVector::Dist(CurrentRawCursorPosition, UnifiedCursorPosition);
-                float SmoothingSpeed = Distance > 1000.0f ? 8.0f : 15.0f;
-                
-                UnifiedCursorPosition = FMath::VInterpTo(
-                    UnifiedCursorPosition, 
-                    CurrentRawCursorPosition, 
-                    CursorUpdateTimer, 
-                    SmoothingSpeed
-                );
-            }
-            
-            PreviousCursorPosition = CurrentRawCursorPosition;
-            CursorUpdateTimer = 0.0f;
-        }
-        
-        // CRITICAL: Store current raw position for immediate use
-        // This bypasses throttling for operations that need real-time accuracy
-        if (bIsEditingTerrain || bIsEditingWater)
-        {
-            // When editing, use the current unthrottled position
-            UnifiedCursorPosition = CurrentRawCursorPosition;
-        }
+        return; // Early exit if cursor trace fails
     }
-    // If trace fails, keep using last valid position (no changes)
+    
+    if (!bUnifiedCursorValid)
+    {
+        // First time initialization - no smoothing
+        UnifiedCursorPosition = CurrentRawCursorPosition;
+        bUnifiedCursorValid = true;
+        return;
+    }
+    
+    // Calculate distance for jump detection
+    float Distance = FVector::Dist(CurrentRawCursorPosition, UnifiedCursorPosition);
+    
+    // FIXED JUMP PREVENTION: Create limited target position
+    FVector TargetPosition = CurrentRawCursorPosition;
+    
+    if (Distance > 500.0f) // Jump threshold
+    {
+        //UE_LOG(LogTemp, Warning, TEXT("CURSOR: Preventing jump of %.1f units"), Distance);
+        
+        // Calculate direction and create limited target
+        FVector Direction = (CurrentRawCursorPosition - UnifiedCursorPosition).GetSafeNormal();
+        TargetPosition = UnifiedCursorPosition + (Direction * 100.0f); // Max 100 units per frame
+    }
+    
+    // Simple consistent smoothing - no editing state complexity
+    float SmoothingSpeed = 15.0f; // Always use same speed for predictability
+    
+    UnifiedCursorPosition = FMath::VInterpTo(
+        UnifiedCursorPosition,
+        TargetPosition, // Use the jump-limited target
+        DeltaTime,
+        SmoothingSpeed
+    );
 }
 
 void ATerrainController::ApplyTerrainSmoothing(FVector Position, float Radius, float Strength)
@@ -1804,11 +1753,6 @@ float ATerrainController::CalculateChunkPriority(int32 ChunkIndex) const
     return DistancePriority * EditingBoost;
 }
 
-// Old CreateBrushPreview removed - replaced by Universal Brush System implementation
-
-// Old UpdateBrushPreview removed - replaced by Universal Brush System implementation
-
-// Old UpdateBrushPreviewMaterial removed - replaced by Universal Brush System implementation
 
 void ATerrainController::SetupInputMapping()
 {
@@ -2643,12 +2587,14 @@ float ATerrainController::GetSafeTerrainHeight(const FVector& Position) const
 
 void ATerrainController::ResetInputs()
 {
+    /*
     // Always reset look input when editing to prevent accumulation
     if (bIsEditingTerrain || bIsEditingWater)
     {
         LookInput = FVector2D::ZeroVector;
     }
-    
+     */
+    MovementInput = FVector2D::ZeroVector;
     // Reset other inputs
     ZoomInput = 0.0f;
     FlyUpInput = 0.0f;
@@ -2674,7 +2620,7 @@ void ATerrainController::UpdateAuthorityCache(float DeltaTime)
         else
         {
             // Adjust smoothing speed based on editing state, but always smooth
-            float SmoothingSpeed = (bIsEditingTerrain || bIsEditingWater) ? 35.0f : 15.0f;
+            float SmoothingSpeed = (bIsEditingTerrain || bIsEditingWater) ? 20.0f : 15.0f;
             
             UnifiedCursorPosition = FMath::VInterpTo(
                 UnifiedCursorPosition,

@@ -33,6 +33,7 @@ public class TerrAI : ModuleRules
             "Renderer",
             "RenderCore",
             "RHI",
+            "RHICore",
             "Projects",
             "Slate",
             "SlateCore"

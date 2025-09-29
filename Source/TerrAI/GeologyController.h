@@ -126,12 +126,7 @@ public:
     // Simplified erosion handler - no actual erosion in simplified system
     void OnErosionOccurred(FVector Location, float ErosionAmount, ERockType ErodedType) {}
     
-        
-        // Water table fill rate based on rock permeability
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Table",
-        meta = (ClampMin = "1.0", ClampMax = "50.0"))
-    float WaterTableFillMultiplier = 20.0f;  // Increased from 10.0f
-        
+
 
 
 protected:
@@ -175,10 +170,7 @@ public:
     
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Global Water Table")
     float GlobalWaterTableVolume = 0.0f;  // m³ - tracked by water budget
-    
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Table",
-        meta = (ClampMin = "0.1", ClampMax = "5.0"))
-    float WaterEmergenceRate = 2.0f;  // Increased from 0.5f
+
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Global Water Table")
     float GlobalPorosity = 0.3f;  // 30% void space in rock
@@ -223,9 +215,7 @@ public:
     
     UFUNCTION(BlueprintCallable, Category = "Geology Update")
     void UpdateGeologySystem(float DeltaTime);
-    
-    UFUNCTION(BlueprintCallable, Category = "Water Table")
-    void EmergenceWaterAtPoints(const TArray<FVector>& WorldPositions, UWaterSystem* Water);
+
 
     UFUNCTION(BlueprintCallable, Category = "Water Table")
     void CheckInitialWaterTable();
@@ -239,9 +229,7 @@ public:
     void UpdateWaterTableDebugVisualization();
 
     // ===== QUERIES =====
-    
-  //  UFUNCTION(BlueprintPure, Category = "Geology Query")
-  //  ERockType e(FVector Location) const;
+
     
     UFUNCTION(BlueprintPure, Category = "Geology Query")
     bool IsLocationAboveWaterTable(FVector Location) const;
@@ -283,8 +271,8 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Debug")
     void ShowWaterTable(bool bEnable);
     
-    UFUNCTION(BlueprintCallable, Category = "Debug")
-    void DrawSimplifiedDebugInfo() const;
+ //   UFUNCTION(BlueprintCallable, Category = "Debug")
+ //   void DrawSimplifiedDebugInfo() const;
     
     // Debug visualization
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug")
@@ -297,6 +285,60 @@ public:
     UPROPERTY()
     ADynamicTerrain* TargetTerrain = nullptr;
     
+    
+    // ===== HYDRAULIC PROPERTIES =====
+       UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulic Properties",
+           meta = (ClampMin = "0.000001", ClampMax = "0.1"))
+       float BaseHydraulicConductivity = 0.001f; // m/s for sandy soil
+       
+       UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulic Properties",
+           meta = (ClampMin = "0.1", ClampMax = "10.0"))
+       float VerticalConductivityMultiplier = 1.0f; // Often different from horizontal
+       
+       UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulic Properties",
+           meta = (ClampMin = "0.1", ClampMax = "10.0"))
+       float EffectiveFlowPathLength = 1.0f; // Distance water travels through soil
+       
+       UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Performance",
+           meta = (ClampMin = "0.05", ClampMax = "1.0"))
+       float SeepageUpdateInterval = 0.1f; // How often to update seepage (seconds)
+       
+       UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Performance",
+           meta = (ClampMin = "4", ClampMax = "32"))
+       int32 SeepageSampleInterval = 8; // Sample every N terrain cells
+       
+       UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulic Properties",
+           meta = (ClampMin = "0.001", ClampMax = "1.0"))
+       float MinimumHeadDifference = 0.01f; // Ignore seepage below this threshold (meters)
+       
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulic Properties",
+        meta = (ClampMin = "0.001", ClampMax = "1.0"))
+    float BaseSeepageFlowRate = 0.1f;  // Base m³/s per seepage point
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hydraulic Properties",
+        meta = (ClampMin = "0.1", ClampMax = "10.0"))
+    float SeepageFlowMultiplier = 1.0f;  // Global multiplier for all seepage
+    
+       UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Table")
+       bool bEnableDynamicWaterTable = false; // Allow water table to drop during seepage
+/*
+   private:
+       // Seepage tracking
+       float SeepageUpdateTimer = 0.0f;
+       TMap<FIntPoint, float> ActiveSeepagePoints; // Track cells with active seepage
+       
+       // Core seepage function (replaces ProcessWaterTableEmergence)
+       void ProcessHydraulicSeepage(float DeltaTime);
+       
+       // Helper functions
+       void UpdateActiveSeepagePoints();
+   
+       
+   public:
+       // Called when terrain is modified
+       UFUNCTION(BlueprintCallable, Category = "Water Table")
+       void OnTerrainModified(const TArray<FVector>& ModifiedPositions);
+    */
 
 protected:
     // ===== SYSTEM REFERENCES =====
@@ -334,6 +376,8 @@ private:
     float GetSoilCapacity(ERockType Rock) const;
     float GetTotalWorldArea() const;
     
+    float GetHydraulicConductivityAt(FVector WorldPos) const;
+    
     // Grid dimensions
     int32 GridWidth = 32;
     int32 GridHeight = 32;
@@ -344,22 +388,7 @@ private:
     // Debug mesh for water table visualization
     class UProceduralMeshComponent* WaterTableDebugMesh = nullptr;
     
-    
-    // Water Table Addition Code
-    private:
-        // Track locations that need water table maintenance
-        TArray<FVector> ActiveEmergencePoints;
 
-        // Water table maintenance
-        void ProcessWaterTableEmergence(float DeltaTime);
-
-        
-    public:
-        UFUNCTION(BlueprintCallable, Category = "Water Table")
-        void RegisterEmergencePoint(FVector WorldPosition);
-        
-        UFUNCTION(BlueprintCallable, Category = "Water Table")
-        void UnregisterEmergencePoint(FVector WorldPosition);
 
 };
 

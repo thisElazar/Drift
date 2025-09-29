@@ -1,0 +1,269 @@
+// AtmosphereCompute.usf - FULLY AUDITED AND FIXED
+#include "/Engine/Public/Platform.ush"
+
+#define THREADGROUP_SIZE 8
+
+// Parameters from CPU
+float DeltaTime;
+float AccumulatedTime;  // ADD THIS - accumulated time for animation
+int2 GridSize;
+float TerrainScale;
+float OrographicLiftCoefficient;
+float AdiabatiCoolingRate;
+float RainShadowIntensity;
+uint bForceInit;  // Add this line with your other parameters
+
+// GPU-resident textures
+RWTexture2D<float4> StateTexture;
+RWTexture2D<float4> RenderTexture;
+RWTexture2D<float2> WindFieldTexture;
+RWTexture2D<float> PrecipitationTexture;
+
+// Input textures
+Texture2D<float> TerrainHeightTexture;
+SamplerState TerrainSampler;
+
+// Physics constants - INCREASED FOR VISIBILITY
+static const float CONDENSATION_RATE = 0.01;  // 10x faster
+static const float EVAPORATION_RATE = 0.005;  // 10x faster
+static const float PRECIPITATION_THRESHOLD = 0.7;
+
+float ComputeSaturationPressure(float Temperature)
+{
+    float TempC = Temperature - 273.15;
+    // Magnus formula - returns pressure in Pa
+    return 611.0 * exp((17.27 * TempC) / (TempC + 237.3));
+}
+
+float2 CalculateOrographicLift(float2 UV, float2 Wind, out float2 TerrainGradient)
+{
+    float2 TexelSize = 1.0 / float2(GridSize);
+    
+    float HeightC = TerrainHeightTexture.SampleLevel(TerrainSampler, UV, 0).r;
+    float HeightL = TerrainHeightTexture.SampleLevel(TerrainSampler, UV + float2(-TexelSize.x, 0), 0).r;
+    float HeightR = TerrainHeightTexture.SampleLevel(TerrainSampler, UV + float2(TexelSize.x, 0), 0).r;
+    float HeightT = TerrainHeightTexture.SampleLevel(TerrainSampler, UV + float2(0, -TexelSize.y), 0).r;
+    float HeightB = TerrainHeightTexture.SampleLevel(TerrainSampler, UV + float2(0, TexelSize.y), 0).r;
+    
+    // FIXED: Proper gradient calculation
+    TerrainGradient = float2(HeightR - HeightL, HeightB - HeightT) / (2.0 * TerrainScale);
+    
+    // Vertical velocity from orographic lift
+    float WindSpeed = length(Wind);
+    if (WindSpeed > 0.001)
+    {
+        float2 WindDir = normalize(Wind);
+        float VerticalVelocity = dot(WindDir, TerrainGradient) * WindSpeed * OrographicLiftCoefficient;
+        return float2(VerticalVelocity, HeightC);
+    }
+    
+    return float2(0, HeightC);
+}
+
+[numthreads(THREADGROUP_SIZE, THREADGROUP_SIZE, 1)]
+void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+    uint2 PixelCoord = DispatchThreadId.xy;
+    
+    if (any(PixelCoord >= uint2(GridSize)))
+        return;
+    
+    float2 UV = (float2(PixelCoord) + 0.5) / float2(GridSize);
+    
+    // Read current state
+    float4 CurrentState = StateTexture[PixelCoord];
+
+// CPU-controlled initialization check
+if (bForceInit == 1)
+{
+    // Multi-octave noise for realistic clouds
+    float noise1 = sin(UV.x * 8.0 + 1.0) * cos(UV.y * 8.0 + 1.0);
+    float noise2 = sin(UV.x * 16.0 + 2.3) * cos(UV.y * 16.0 + 1.7) * 0.5;
+    float noise3 = sin(UV.x * 32.0 + 5.1) * cos(UV.y * 32.0 + 3.2) * 0.25;
+    float noise4 = sin(UV.x * 64.0 + 8.7) * cos(UV.y * 64.0 + 4.9) * 0.125;
+    
+    // Combine octaves
+    float cloudNoise = (noise1 + noise2 + noise3 + noise4) * 0.4 + 0.5;
+    cloudNoise = saturate(cloudNoise);
+    
+    // Create cloud bands and patches
+    float cloudBands = sin(UV.y * 6.0 + UV.x * 2.0) * 0.3 + 0.7;
+    float cloudPattern = cloudNoise * cloudBands;
+    cloudPattern = pow(cloudPattern, 1.5); // Make more dramatic variation
+    
+    CurrentState = float4(
+        cloudPattern * 0.6,        // Cloud density with variation
+        0.4 + cloudPattern * 0.2,  // Moisture correlates with clouds
+        288.15 / 400.0,           // Temperature (15°C)
+        0.0                       // Precipitation
+    );
+    
+    // Varied wind field
+    float windAngle = (noise1 + noise2) * 3.14159;
+    float windStrength = 4.0 + noise3 * 3.0;
+    WindFieldTexture[PixelCoord] = float2(
+        cos(windAngle) * windStrength,
+        sin(windAngle * 0.7) * windStrength * 0.4
+    );
+}
+    
+    // Unpack state
+    float CloudCover = CurrentState.r;
+    float Moisture = CurrentState.g;
+    float Temperature = CurrentState.b * 400.0;
+    float Precipitation = CurrentState.a;
+    
+    // Read wind field - DON'T REDECLARE, just read it
+    float2 Wind = WindFieldTexture[PixelCoord].xy;  // Only declare oncea
+    
+    // === FIXED ADVECTION SECTION ===
+    // Calculate advection
+    float2 WindOffset = Wind * DeltaTime * 0.001;
+    float2 AdvectUV = UV - WindOffset;
+    
+    // Wrap UV coordinates
+    AdvectUV = frac(AdvectUV + float2(1.0, 1.0));
+    
+    // Convert to pixel space for manual sampling
+    float2 AdvectPixel = AdvectUV * float2(GridSize) - 0.5;
+    int2 BasePixel = int2(floor(AdvectPixel));
+    float2 Fraction = frac(AdvectPixel);
+    
+    // Calculate wrapped pixel coordinates
+    int2 P00 = (BasePixel + GridSize) % GridSize;
+    int2 P10 = ((BasePixel + int2(1, 0)) + GridSize) % GridSize;
+    int2 P01 = ((BasePixel + int2(0, 1)) + GridSize) % GridSize;
+    int2 P11 = ((BasePixel + int2(1, 1)) + GridSize) % GridSize;
+    
+    // Load states from neighboring pixels
+    float4 S00 = StateTexture[P00];
+    float4 S10 = StateTexture[P10];
+    float4 S01 = StateTexture[P01];
+    float4 S11 = StateTexture[P11];
+    
+    // Bilinear interpolation
+    float4 AdvectedState = lerp(
+        lerp(S00, S10, Fraction.x),
+        lerp(S01, S11, Fraction.x),
+        Fraction.y
+    );
+    
+    // Apply advection
+    CloudCover = lerp(CloudCover, AdvectedState.r, 0.5);
+    Moisture = lerp(Moisture, AdvectedState.g, 0.3);
+    
+    // Calculate orographic effects
+    float2 TerrainGradient;
+    float2 OrographicData = CalculateOrographicLift(UV, Wind, TerrainGradient);
+    float VerticalVelocity = OrographicData.x;
+    float TerrainHeight = OrographicData.y;
+    
+    // Temperature changes from vertical motion
+    if (abs(VerticalVelocity) > 0.01)
+    {
+        float TempChange = -VerticalVelocity * AdiabatiCoolingRate * DeltaTime;
+        Temperature = clamp(Temperature + TempChange, 200.0, 350.0);
+    }
+    
+    // FIXED: Proper saturation calculation
+    float SatPressure = ComputeSaturationPressure(Temperature);
+    float SatMixingRatio = 0.622 * SatPressure / (101325.0 - SatPressure);  // kg/kg
+    float RelativeHumidity = Moisture / SatMixingRatio;
+    
+    // Condensation/Evaporation
+    if (RelativeHumidity > 1.0 && CloudCover < 1.0)
+    {
+        float Excess = (RelativeHumidity - 1.0);
+        float Condensation = Excess * CONDENSATION_RATE * DeltaTime;
+        Moisture = max(Moisture - Condensation, 0.0);
+        CloudCover = min(CloudCover + Condensation, 1.0);
+    }
+    else if (CloudCover > 0.0 && RelativeHumidity < 0.8)
+    {
+        float Deficit = (0.8 - RelativeHumidity);
+        float Evaporation = Deficit * EVAPORATION_RATE * DeltaTime;
+        CloudCover = max(CloudCover - Evaporation, 0.0);
+        Moisture = min(Moisture + Evaporation * 0.5, 1.0);
+    }
+    
+    // Precipitation
+    if (CloudCover > PRECIPITATION_THRESHOLD && Moisture > 0.3)
+    {
+        float PrecipRate = (CloudCover - PRECIPITATION_THRESHOLD) * 0.1 * DeltaTime;
+        Precipitation = min(Precipitation + PrecipRate, 1.0);
+        CloudCover -= PrecipRate * 0.5;
+        Moisture -= PrecipRate * 0.3;
+    }
+    else if (Precipitation > 0.0)
+    {
+        Precipitation = max(Precipitation - 0.01 * DeltaTime, 0.0);
+    }
+    
+    // FIXED: Proper wind deflection by terrain
+    if (length(TerrainGradient) > 0.01)
+    {
+        float2 TerrainNormal = normalize(float2(-TerrainGradient.y, TerrainGradient.x));
+        float Deflection = dot(Wind, TerrainGradient);
+        Wind = Wind - TerrainGradient * Deflection * 0.5;
+    }
+    
+    // Ensure all values are in valid ranges
+    CloudCover = saturate(CloudCover);
+    Moisture = saturate(Moisture);
+    Temperature = clamp(Temperature, 200.0, 350.0);
+    Precipitation = saturate(Precipitation);
+    
+    // Check for NaN and reset if found
+    if (isnan(CloudCover + Moisture + Temperature + Precipitation))
+    {
+        CloudCover = 0.5;
+        Moisture = 0.5;
+        Temperature = 288.15;
+        Precipitation = 0.0;
+    }
+    
+    // Pack state with proper normalization
+    StateTexture[PixelCoord] = float4(
+        CloudCover,
+        Moisture,
+        Temperature / 400.0,  // Normalize to 0-1 range
+        Precipitation
+    );
+    
+    // Update wind field
+    WindFieldTexture[PixelCoord] = Wind;
+    
+    // Write precipitation
+    PrecipitationTexture[PixelCoord] = Precipitation;
+    
+    // === RENDER OUTPUT ===
+    // Create visually appealing cloud representation
+    float3 CloudColor = float3(1.0, 1.0, 1.0);
+    
+    // Darken based on moisture and precipitation
+    float Darkness = 1.0;
+    if (Precipitation > 0.01) {
+        Darkness = lerp(1.0, 0.3, saturate(Precipitation * 2.0));
+    } else if (CloudCover > 0.5) {
+        Darkness = lerp(1.0, 0.7, (CloudCover - 0.5) * 2.0);
+    }
+    
+    CloudColor *= Darkness;
+    
+    // Add slight color variation based on temperature
+    float3 ColdTint = float3(0.9, 0.95, 1.0);
+    float3 WarmTint = float3(1.0, 0.98, 0.9);
+    float TempNorm = saturate((Temperature - 273.15) / 30.0);
+    CloudColor *= lerp(ColdTint, WarmTint, TempNorm);
+    
+    // Animated shimmer effect
+    float Shimmer = sin(AccumulatedTime * 2.0 + UV.x * 10.0) * 0.05 + 1.0;
+    CloudColor *= Shimmer;
+    
+    // Final alpha
+    float FinalAlpha = CloudCover * 1.5;  // Boost visibility
+    FinalAlpha = saturate(FinalAlpha);
+    
+    // Write to render texture
+    RenderTexture[PixelCoord] = float4(CloudColor * FinalAlpha, FinalAlpha);
+}

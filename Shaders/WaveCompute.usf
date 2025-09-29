@@ -1,6 +1,6 @@
 // WaveCompute.usf
 // GPU-based wave computation for vertex displacement water system
-// This runs in a compute shader to generate wave height data
+// FIXED: Added proper amplitude limiting and depth-based constraints
 
 #include "/Engine/Public/Platform.ush"
 #include "/Engine/Private/Common.ush"
@@ -22,16 +22,68 @@ float4 TerrainParams;  // xy = terrain dimensions, zw = unused
 // Sampler for texture reads
 SamplerState TextureSampler;
 
+// ===== CONSTANTS =====
+#define MIN_WATER_DEPTH 0.01f
+#define MAX_WAVE_HEIGHT_RATIO 0.3f  // Waves can't exceed 30% of depth
+#define SAFE_WAVE_HEIGHT_RATIO 0.125f  // Conservative limit: 12.5% of depth
+#define DEEP_WATER_THRESHOLD 50.0f
+#define SHALLOW_WATER_THRESHOLD 5.0f
+#define TWO_PI 6.28318530718f
+
 // ===== HELPER FUNCTIONS =====
 
-// Calculate wind-driven waves (simplified Gerstner waves)
+// Calculate proper depth attenuation with deep water limiting
+float CalculateDepthAttenuation(float WaterDepth)
+{
+    if (WaterDepth < SHALLOW_WATER_THRESHOLD)
+    {
+        // Shallow water - waves attenuate with depth
+        return saturate(WaterDepth / SHALLOW_WATER_THRESHOLD);
+    }
+    else if (WaterDepth > DEEP_WATER_THRESHOLD)
+    {
+        // Deep water - waves stabilize and don't grow infinitely
+        // Gradual reduction prevents unbounded growth
+        float deepFactor = (WaterDepth - DEEP_WATER_THRESHOLD) / DEEP_WATER_THRESHOLD;
+        return 1.0f / (1.0f + deepFactor * 0.5f);
+    }
+    else
+    {
+        // Transition zone - full wave development
+        return 1.0f;
+    }
+}
+
+// Calculate Froude number for flow regime detection
+float CalculateFroudeNumber(float FlowSpeed, float WaterDepth)
+{
+    if (WaterDepth < MIN_WATER_DEPTH)
+        return 0.0f;
+    
+    // Fr = V / sqrt(g * h)
+    // Using 981 cm/s^2 for gravity (UE units)
+    float sqrtGH = sqrt(981.0f * WaterDepth);
+    return FlowSpeed / max(sqrtGH, 0.001f);
+}
+
+// Calculate wind-driven waves with proper amplitude limiting
 float CalculateWindWaves(float2 WorldPos, float WaterDepth, float WindStrength, float2 WindDirection, float Time)
 {
     float WaveHeight = 0.0f;
     
-    // Multiple octaves for more realistic waves
+    // Calculate depth-based maximum amplitude
+    float depthAttenuation = CalculateDepthAttenuation(WaterDepth);
+    
+    // Scale amplitude based on both wind and depth
+    float baseAmplitude = WindStrength * 0.3f * depthAttenuation;
+    
+    // Limit amplitude to percentage of water depth
+    float maxAmplitude = WaterDepth * 0.1f;  // 10% of depth for wind waves
+    baseAmplitude = min(baseAmplitude, maxAmplitude);
+    
+    // Multiple octaves for realistic waves
     float frequency = 0.01f;
-    float amplitude = WindStrength * 0.5f;
+    float amplitude = baseAmplitude;
     
     for (int i = 0; i < 3; i++)
     {
@@ -39,65 +91,131 @@ float CalculateWindWaves(float2 WorldPos, float WaterDepth, float WindStrength, 
         float phase = dot(WorldPos, direction) * frequency + Time * WaveParams.y;
         WaveHeight += sin(phase) * amplitude;
         
-        // Increase frequency and decrease amplitude for each octave
+        // Each octave has less energy
         frequency *= 2.2f;
-        amplitude *= 0.5f;
+        amplitude *= 0.4f;  // Reduced from 0.5f for stability
     }
     
-    // Attenuate by water depth
-    float depthAttenuation = saturate(WaterDepth / 5.0f);
-    return WaveHeight * depthAttenuation * WaveParams.x;
+    return WaveHeight * WaveParams.x;
 }
 
-// Calculate flow-driven waves
+// Calculate flow-driven waves with Froude number consideration
 float CalculateFlowWaves(float2 WorldPos, float WaterDepth, float2 FlowVector, float FlowSpeed, float Time)
 {
     if (FlowSpeed < 0.01f)
         return 0.0f;
     
     float WaveHeight = 0.0f;
+    float FroudeNumber = CalculateFroudeNumber(FlowSpeed, WaterDepth);
     
     // Flow creates waves perpendicular to flow direction
     float2 flowDir = normalize(FlowVector + float2(0.001f, 0.001f));
-    float2 waveDir = float2(-flowDir.y, flowDir.x); // Perpendicular
+    float2 waveDir = float2(-flowDir.y, flowDir.x);
     
-    // Wave frequency based on flow speed
+    // Amplitude based on Froude number and depth
+    float amplitude;
+    if (FroudeNumber < 1.0f)
+    {
+        // Subcritical flow - smaller waves
+        amplitude = WaterDepth * 0.02f * FroudeNumber;
+    }
+    else
+    {
+        // Supercritical flow - hydraulic jumps, but limited
+        float jumpHeight = WaterDepth * (sqrt(1.0f + 8.0f * FroudeNumber * FroudeNumber) - 1.0f) * 0.04f;
+        amplitude = min(jumpHeight, WaterDepth * 0.2f);  // Cap at 20% of depth
+    }
+    
+    // Wave frequency based on flow regime
     float frequency = 0.02f * (1.0f + FlowSpeed * 0.1f);
-    float amplitude = FlowSpeed * 0.2f;
+    frequency = min(frequency, 0.5f);  // Prevent aliasing
     
     // Create standing waves
     float phase = dot(WorldPos, waveDir) * frequency + Time * FlowSpeed * 0.5f;
     WaveHeight = sin(phase) * amplitude;
     
-    // Add some turbulence
+    // Add controlled turbulence
     float turbulence = sin(WorldPos.x * 0.03f + Time) * cos(WorldPos.y * 0.04f - Time * 0.7f);
-    WaveHeight += turbulence * amplitude * 0.3f;
+    WaveHeight += turbulence * amplitude * 0.2f;  // Reduced turbulence contribution
     
     return WaveHeight * WaveParams.x;
 }
 
-// Calculate collision/obstacle waves
+// Calculate collision/obstacle waves with energy limiting
 float CalculateCollisionWaves(float2 WorldPos, float2 FlowVector, float WaterDepth, float Time)
 {
-    // Simple ripple effect for collisions
     float WaveHeight = 0.0f;
     
-    // Create circular ripples at obstacle points
+    // Collision waves scale with flow magnitude and depth
+    float flowMagnitude = length(FlowVector);
+    if (flowMagnitude < 0.1f)
+        return 0.0f;
+    
+    // Maximum collision wave amplitude
+    float maxAmplitude = min(WaterDepth * 0.05f, flowMagnitude * 0.1f);
+    
+    // Create circular ripples with decay
     float rippleFreq = 0.05f;
     float rippleSpeed = 2.0f;
     
-    // Simulate ripples from flow hitting obstacles
-    float flowMagnitude = length(FlowVector);
-    if (flowMagnitude > 0.1f)
-    {
-        // Create interference pattern
-        float ripple1 = sin(length(WorldPos) * rippleFreq - Time * rippleSpeed);
-        float ripple2 = cos(length(WorldPos + float2(100, 100)) * rippleFreq * 1.3f - Time * rippleSpeed * 0.8f);
-        
-        WaveHeight = (ripple1 + ripple2 * 0.5f) * flowMagnitude * 0.15f;
-    }
+    // Create interference pattern
+    float ripple1 = sin(length(WorldPos) * rippleFreq - Time * rippleSpeed);
+    float ripple2 = cos(length(WorldPos + float2(100, 100)) * rippleFreq * 1.3f - Time * rippleSpeed * 0.8f);
+    
+    WaveHeight = (ripple1 + ripple2 * 0.5f) * maxAmplitude;
     
     return WaveHeight * WaveParams.x;
+}
+
+// Combine wave components with energy conservation
+float CombineWaveComponents(float windWave, float flowWave, float collisionWave, float baseNoise)
+{
+    // Calculate total energy (sum of squares)
+    float totalEnergy = windWave * windWave +
+                       flowWave * flowWave +
+                       collisionWave * collisionWave +
+                       baseNoise * baseNoise;
+    
+    // Linear superposition
+    float linearSum = windWave + flowWave + collisionWave + baseNoise;
+    
+    // If total energy exceeds threshold, scale down
+    float maxEnergy = sqrt(totalEnergy);
+    if (abs(linearSum) > maxEnergy && maxEnergy > 0.001f)
+    {
+        // Energy-limited combination
+        return linearSum * (maxEnergy / abs(linearSum)) * 0.8f;  // 80% for stability margin
+    }
+    
+    return linearSum;
+}
+
+// Apply final amplitude constraints
+float ApplyAmplitudeLimits(float WaveHeight, float WaterDepth, float WindStrength)
+{
+    // Physical constraint: waves shouldn't exceed percentage of water depth
+    float depthLimit = WaterDepth * MAX_WAVE_HEIGHT_RATIO;
+    
+    // Wind constraint: calm conditions = smaller waves
+    float windLimit = WindStrength * 0.05f;
+    
+    // Use the more restrictive limit
+    float maxWaveHeight = min(depthLimit, windLimit);
+    
+    // For very shallow water, be even more conservative
+    if (WaterDepth < 1.0f)
+    {
+        maxWaveHeight = WaterDepth * 0.1f;  // Only 10% for very shallow
+    }
+    
+    // Apply the limit symmetrically
+    WaveHeight = clamp(WaveHeight, -maxWaveHeight, maxWaveHeight);
+    
+    // Final safety clamp at 12.5% (matching CPU implementation)
+    float safeLimit = WaterDepth * SAFE_WAVE_HEIGHT_RATIO;
+    WaveHeight = clamp(WaveHeight, -safeLimit, safeLimit);
+    
+    return WaveHeight;
 }
 
 // ===== MAIN COMPUTE FUNCTION =====
@@ -115,13 +233,13 @@ void WaveComputeCS(uint3 id : SV_DispatchThreadID)
     // Calculate UV coordinates
     float2 UV = float2(id.xy) / float2(TextureDims);
     
-    // Sample input data using Load instead of SampleLevel for compute shaders
+    // Sample input data
     uint2 PixelCoord = id.xy;
     float WaterDepth = WaterDepthTexture.Load(uint3(PixelCoord, 0)).r;
     float4 FlowData = FlowDataTexture.Load(uint3(PixelCoord, 0));
     
     // Early out for no water
-    if (WaterDepth < 0.01f)
+    if (WaterDepth < MIN_WATER_DEPTH)
     {
         WaveOutputTexture[id.xy] = float4(0, 0, 0, 0);
         return;
@@ -136,48 +254,64 @@ void WaveComputeCS(uint3 id : SV_DispatchThreadID)
     float FoamIntensity = FlowData.w;
     
     // Wind parameters
-    float2 WindDirection = normalize(WindParams.xy + float2(0.001f, 0.001f)); // Avoid zero
+    float2 WindDirection = normalize(WindParams.xy + float2(0.001f, 0.001f));
     float WindStrength = WindParams.z;
     
-    // ===== WAVE CALCULATION =====
-    float WaveHeight = 0.0f;
-    float WaveDisplacement = 0.0f;
+    // ===== CALCULATE INDIVIDUAL WAVE COMPONENTS =====
+    
+    float windWave = 0.0f;
+    float flowWave = 0.0f;
+    float collisionWave = 0.0f;
+    float baseNoise = 0.0f;
     
     // 1. Wind-driven waves
     if (WindStrength > 0.1f)
     {
-        WaveHeight += CalculateWindWaves(WorldPos, WaterDepth, WindStrength, WindDirection, Time);
+        windWave = CalculateWindWaves(WorldPos, WaterDepth, WindStrength, WindDirection, Time);
     }
     
     // 2. Flow-driven waves
     if (FlowSpeed > 0.1f)
     {
-        WaveHeight += CalculateFlowWaves(WorldPos, WaterDepth, FlowVector, FlowSpeed, Time);
+        flowWave = CalculateFlowWaves(WorldPos, WaterDepth, FlowVector, FlowSpeed, Time);
     }
     
     // 3. Collision waves
-    float CollisionWave = CalculateCollisionWaves(WorldPos, FlowVector, WaterDepth, Time);
-    WaveHeight += CollisionWave;
+    collisionWave = CalculateCollisionWaves(WorldPos, FlowVector, WaterDepth, Time);
     
-    // 4. Apply depth-based dampening
-    float DepthFactor = saturate(WaterDepth / 5.0f);
-    WaveHeight *= DepthFactor;
+    // 4. Base noise for realism (small amplitude)
+    float noiseAmplitude = min(WaterDepth * 0.01f, 0.1f);  // Very small, max 1% of depth
+    baseNoise = sin(WorldPos.x * 0.1f + Time * 0.5f) * cos(WorldPos.y * 0.15f - Time * 0.3f) * noiseAmplitude;
     
-    // 5. Add base noise for realism
-    float baseNoise = sin(WorldPos.x * 0.1f + Time * 0.5f) * cos(WorldPos.y * 0.15f - Time * 0.3f) * 0.1f;
-    WaveHeight += baseNoise * WaveParams.x;
+    // ===== COMBINE WAVES WITH ENERGY CONSERVATION =====
     
-    // 6. Calculate wave normal (for displacement)
+    float WaveHeight = CombineWaveComponents(windWave, flowWave, collisionWave, baseNoise);
+    
+    // ===== APPLY FINAL AMPLITUDE CONSTRAINTS =====
+    
+    WaveHeight = ApplyAmplitudeLimits(WaveHeight, WaterDepth, WindStrength);
+    
+    // ===== CALCULATE ADDITIONAL OUTPUT DATA =====
+    
+    // Calculate wave normal gradient for displacement
     float2 gradient = float2(
-        sin(WorldPos.x * 0.02f + Time) * 0.1f,
-        cos(WorldPos.y * 0.02f + Time) * 0.1f
+        sin(WorldPos.x * 0.02f + Time) * 0.05f,  // Reduced from 0.1f
+        cos(WorldPos.y * 0.02f + Time) * 0.05f
     );
+    
+    // Scale gradient by wave height
+    gradient *= saturate(abs(WaveHeight) / (WaterDepth * 0.1f));
+    
+    // Calculate foam intensity
+    float waveDerivative = abs(windWave - flowWave);  // Wave interaction creates foam
+    float foamFromWaves = saturate(waveDerivative / (WaterDepth * 0.05f));
+    float totalFoam = saturate(FoamIntensity + foamFromWaves + abs(collisionWave) * 2.0f);
     
     // Output: R=height, G=depth for blending, B=flow speed, A=foam
     WaveOutputTexture[id.xy] = float4(
         WaveHeight,
         WaterDepth,
         FlowSpeed,
-        FoamIntensity + abs(CollisionWave) * 0.5f  // Add foam from collisions
+        totalFoam
     );
 }

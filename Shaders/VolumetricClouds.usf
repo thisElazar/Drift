@@ -1,0 +1,90 @@
+#include "/Engine/Public/Platform.ush"
+
+// Textures from compute shader
+Texture2D CloudDataTexture;
+SamplerState CloudDataSampler;
+
+Texture2D WindFieldTexture;
+SamplerState WindFieldSampler;
+
+// Parameters
+float CloudBaseHeight;
+float CloudTopHeight;
+float CloudDensityScale;
+float3 CloudBoundsMin;
+float3 CloudBoundsMax;
+float3 WindOffset;
+float3 LightDirection;
+
+// Volumetric raymarching
+float4 RaymarchClouds(float2 ScreenUV)
+{
+    // Get world position and ray
+    float SceneDepth = CalcSceneDepth(ScreenUV);
+    float3 WorldPos = mul(float4(ScreenUV * 2 - 1, SceneDepth, 1), View.ScreenToWorld).xyz;
+    float3 RayOrigin = View.WorldCameraOrigin;
+    float3 RayDir = normalize(WorldPos - RayOrigin);
+    
+    // Intersect with cloud layer
+    float t0 = (CloudBaseHeight - RayOrigin.z) / RayDir.z;
+    float t1 = (CloudTopHeight - RayOrigin.z) / RayDir.z;
+    
+    if (t1 < 0.0) return float4(0, 0, 0, 0);
+    
+    float tMin = max(0.0, min(t0, t1));
+    float tMax = min(length(WorldPos - RayOrigin), max(t0, t1));
+    
+    if (tMin >= tMax) return float4(0, 0, 0, 0);
+    
+    // Raymarch settings
+    const int Steps = 32;
+    float StepSize = (tMax - tMin) / float(Steps);
+    
+    // Accumulate color and transmittance
+    float3 AccumColor = float3(0, 0, 0);
+    float Transmittance = 1.0;
+    
+    for (int i = 0; i < Steps; i++)
+    {
+        if (Transmittance < 0.01) break;
+        
+        float3 Pos = RayOrigin + RayDir * (tMin + i * StepSize);
+        
+        // Sample cloud data
+        float2 UV = (Pos.xy - CloudBoundsMin.xy) / (CloudBoundsMax.xy - CloudBoundsMin.xy);
+        UV += WindOffset.xy * 0.0001;
+        
+        float4 CloudData = CloudDataTexture.SampleLevel(CloudDataSampler, UV, 0);
+        
+        // Height gradient
+        float HeightFraction = (Pos.z - CloudBaseHeight) / (CloudTopHeight - CloudBaseHeight);
+        float HeightFade = smoothstep(0.0, 0.2, HeightFraction) * (1.0 - smoothstep(0.8, 1.0, HeightFraction));
+        
+        // Cloud density
+        float Density = CloudData.r * HeightFade * CloudDensityScale;
+        
+        if (Density > 0.01)
+        {
+            // Simple lighting
+            float NdotL = max(dot(float3(0, 0, 1), -normalize(LightDirection)), 0.0);
+            float3 CloudColor = lerp(float3(0.4, 0.5, 0.6), float3(1.0, 1.0, 1.0), NdotL);
+            
+            // Apply precipitation darkening
+            CloudColor *= 1.0 - CloudData.a * 0.5;
+            
+            // Accumulate
+            float Alpha = 1.0 - exp(-Density * StepSize * 0.5);
+            AccumColor += CloudColor * Alpha * Transmittance;
+            Transmittance *= 1.0 - Alpha;
+        }
+    }
+    
+    return float4(AccumColor, 1.0 - Transmittance);
+}
+
+// Main pixel shader entry
+float4 MainPS(float2 UV : TEXCOORD0) : SV_Target
+{
+    return RaymarchClouds(UV);
+}
+
