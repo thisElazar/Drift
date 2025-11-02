@@ -1,4 +1,4 @@
-// TerrainCompute.usf - Fixed for UAV access
+// TerrainCompute.usf - FIXED with NaN/Inf Protection
 #include "/Engine/Public/Platform.ush"
 
 // Thread group size
@@ -14,6 +14,7 @@ Texture2D<float2> WindFieldTexture;
 Texture2D<float> HardnessTexture;
 RWTexture2D<float> ErosionOutputTexture;
 
+
 SamplerState TextureSampler;
 
 // Shader parameters
@@ -25,58 +26,150 @@ uint SimulationMode;       // Bit flags: 1=erosion, 2=orographic
 float4 BrushParams;        // xy = position, z = radius, w = strength
 uint BrushActive;
 
+// ===== SAFETY CONSTANTS =====
+#define MIN_TERRAIN_SCALE 0.1
+#define MIN_WATER_DEPTH 0.01
+#define MIN_FLOW_SPEED 0.001
+#define MAX_EROSION_RATE 100.0
+#define MIN_HEIGHT -1000.0
+#define MAX_HEIGHT 10000.0
+
+// ===== SAFE MATH HELPERS =====
+
+// Safe division that returns 0 if denominator is too small
+float SafeDivide(float numerator, float denominator, float minDenom = 0.001)
+{
+    return abs(denominator) > minDenom ? (numerator / denominator) : 0.0;
+}
+
+// Validate and clamp a float value
+float SafeFloat(float value, float minVal = MIN_HEIGHT, float maxVal = MAX_HEIGHT)
+{
+    // Check for NaN/Inf
+    if (isnan(value) || isinf(value))
+        return 0.0;
+    
+    // Clamp to range
+    return clamp(value, minVal, maxVal);
+}
+
+// Safe length calculation with minimum threshold
+float SafeLength(float2 v, float minLength = MIN_FLOW_SPEED)
+{
+    float len = length(v);
+    return max(len, minLength);
+}
+
+// Safe normalize with zero check
+float2 SafeNormalize(float2 v)
+{
+    float len = length(v);
+    return (len > 0.001) ? (v / len) : float2(0, 0);
+}
+
+// ===== TERRAIN SAMPLING =====
+
 // Helper function to sample neighboring heights using UAV
 float SampleHeightUAV(int2 Coord)
 {
     // Clamp to texture bounds
     int2 ClampedCoord = clamp(Coord, int2(0, 0), int2(TerrainParams.xy) - int2(1, 1));
-    return HeightTexture[ClampedCoord].r;
+    float height = HeightTexture[ClampedCoord].r;
+    
+    // Validate the sampled height
+    return SafeFloat(height);
 }
 
-// Hydraulic erosion calculation
+// ===== EROSION CALCULATION =====
+
 float CalculateErosion(float2 UV, float Height, float WaterDepth, float2 FlowVel, float Hardness)
 {
-    if (WaterDepth < 0.01)
+    // Early exit for no water
+    if (WaterDepth < MIN_WATER_DEPTH)
         return 0.0;
     
-    float FlowSpeed = length(FlowVel);
+    // Validate inputs
+    WaterDepth = SafeFloat(WaterDepth, 0.0, 1000.0);
+    FlowVel = float2(SafeFloat(FlowVel.x, -1000.0, 1000.0),
+                      SafeFloat(FlowVel.y, -1000.0, 1000.0));
+    Hardness = SafeFloat(Hardness, 0.0, 10.0);
+    
+    // Safe flow speed calculation
+    float FlowSpeed = SafeLength(FlowVel);
+    
+    // Stream power with safe multiplication
     float StreamPower = WaterDepth * FlowSpeed;
-    float ErosionRate = ErosionParams.x * StreamPower / (1.0 + Hardness * ErosionParams.w);
+    StreamPower = SafeFloat(StreamPower, 0.0, 10000.0);
+    
+    // CRITICAL FIX: Ensure terrain scale is valid
+    float TerrainScale = max(TerrainParams.z, MIN_TERRAIN_SCALE);
     
     // Get current pixel position
     int2 PixelCoord = int2(UV * TerrainParams.xy);
     
-    // Sample neighboring heights using direct UAV access
+    // Sample neighboring heights with validation
     float HeightL = SampleHeightUAV(PixelCoord + int2(-1, 0));
     float HeightR = SampleHeightUAV(PixelCoord + int2(1, 0));
     float HeightT = SampleHeightUAV(PixelCoord + int2(0, -1));
     float HeightB = SampleHeightUAV(PixelCoord + int2(0, 1));
     
-    float2 Gradient = float2(HeightR - HeightL, HeightB - HeightT) / (2.0 * TerrainParams.z);
-    float Slope = length(Gradient);
+    // CRITICAL FIX: Safe gradient calculation with proper scale
+    float2 Gradient = float2(HeightR - HeightL, HeightB - HeightT);
+    Gradient = SafeDivide(Gradient.x, 2.0 * TerrainScale, 0.1) * float2(1, 0) +
+               SafeDivide(Gradient.y, 2.0 * TerrainScale, 0.1) * float2(0, 1);
     
+    float Slope = SafeLength(Gradient, 0.0);
+    Slope = min(Slope, 10.0);  // Cap slope to prevent extreme erosion
+    
+    // Calculate erosion rate with slope influence
+    float ErosionRate = ErosionParams.x * StreamPower;
     ErosionRate *= (1.0 + Slope * 2.0);
     
+    // Apply hardness resistance with safe division
+    ErosionRate = SafeDivide(ErosionRate, 1.0 + Hardness * ErosionParams.w);
+    
+    // Calculate sediment capacity
     float Capacity = ErosionParams.z * FlowSpeed * WaterDepth;
+    Capacity = SafeFloat(Capacity, 0.0, 1000.0);
+    
+    // Calculate deposition (when flow slows)
     float Deposition = 0.0;
     if (FlowSpeed < 0.5)
     {
-        Deposition = ErosionParams.y * (1.0 - FlowSpeed / 0.5) * WaterDepth;
+        float DepositFactor = SafeDivide(FlowSpeed, 0.5);
+        Deposition = ErosionParams.y * (1.0 - DepositFactor) * WaterDepth;
+        Deposition = SafeFloat(Deposition, 0.0, 100.0);
     }
     
-    return ErosionRate - Deposition;
+    // Net erosion (positive = erosion, negative = deposition)
+    float NetErosion = ErosionRate - Deposition;
+    
+    // CRITICAL: Clamp to prevent extreme changes
+    NetErosion = clamp(NetErosion, -MAX_EROSION_RATE, MAX_EROSION_RATE);
+    
+    return NetErosion;
 }
 
-// Orographic effects
+// ===== OROGRAPHIC EFFECTS =====
+
 float2 CalculateOrographicEffects(float2 UV, float Height)
 {
+    // Sample wind field with validation
     float2 Wind = WindFieldTexture.SampleLevel(TextureSampler, UV, 0).xy;
-    float WindSpeed = length(Wind);
+    Wind = float2(SafeFloat(Wind.x, -100.0, 100.0),
+                   SafeFloat(Wind.y, -100.0, 100.0));
     
+    float WindSpeed = SafeLength(Wind);
+    
+    // Early exit for no wind
     if (WindSpeed < 0.1)
         return float2(0, 0);
     
-    float2 WindDir = normalize(Wind);
+    // Safe normalize
+    float2 WindDir = SafeNormalize(Wind);
+    
+    // CRITICAL FIX: Safe terrain scale
+    float TerrainScale = max(TerrainParams.z, MIN_TERRAIN_SCALE);
     
     // Get current pixel position
     int2 PixelCoord = int2(UV * TerrainParams.xy);
@@ -87,52 +180,72 @@ float2 CalculateOrographicEffects(float2 UV, float Height)
     float HeightT = SampleHeightUAV(PixelCoord + int2(0, -1));
     float HeightB = SampleHeightUAV(PixelCoord + int2(0, 1));
     
-    float2 TerrainGradient = float2(HeightR - HeightL, HeightB - HeightT) / (2.0 * TerrainParams.z);
+    // Safe terrain gradient
+    float2 TerrainGradient = float2(HeightR - HeightL, HeightB - HeightT);
+    TerrainGradient = SafeDivide(TerrainGradient.x, 2.0 * TerrainScale, 0.1) * float2(1, 0) +
+                      SafeDivide(TerrainGradient.y, 2.0 * TerrainScale, 0.1) * float2(0, 1);
     
+    // Vertical velocity from orographic lift
     float VerticalVelocity = dot(WindDir, TerrainGradient) * WindSpeed * OrographicParams.x;
+    VerticalVelocity = SafeFloat(VerticalVelocity, -100.0, 100.0);
     
+    // Calculate precipitation
     float Precipitation = 0.0;
     if (VerticalVelocity > 0.0)
     {
         float Moisture = MoistureTexture.SampleLevel(TextureSampler, UV, 0).r;
+        Moisture = SafeFloat(Moisture, 0.0, 1.0);
+        
         if (Moisture > OrographicParams.y)
         {
             Precipitation = VerticalVelocity * (Moisture - OrographicParams.y) * OrographicParams.z;
+            Precipitation = SafeFloat(Precipitation, 0.0, 10.0);
         }
     }
     
     return float2(VerticalVelocity, Precipitation);
 }
 
-// Main compute shader
+// ===== MAIN COMPUTE SHADER =====
+
 [numthreads(THREADGROUP_SIZE_X, THREADGROUP_SIZE_Y, 1)]
 void TerrainComputeCS(uint3 ThreadId : SV_DispatchThreadID)
 {
     float2 TexelCoord = float2(ThreadId.xy);
     float2 UV = (TexelCoord + 0.5) / TerrainParams.xy;
     
+    // Early exit for out of bounds
     if (any(ThreadId.xy >= uint2(TerrainParams.xy)))
         return;
     
-    // Read current height directly from UAV
+    // Read current height with validation
     float Height = HeightTexture[ThreadId.xy].r;
+    Height = SafeFloat(Height);
     float OriginalHeight = Height;
     
     // Apply brush modifications
     if (BrushActive > 0)
     {
-        float2 WorldPos = TexelCoord * TerrainParams.z;
-        float2 BrushPos = BrushParams.xy;
-        float BrushRadius = BrushParams.z;
-        float BrushStrength = BrushParams.w;
-        
-        float Distance = length(WorldPos - BrushPos);
-        if (Distance <= BrushRadius)
+    
+    float2 BrushPos = BrushParams.xy;          // Brush center in texture coords
+    float BrushRadius = max(BrushParams.z, 0.1); // Brush radius in texels
+    float BrushStrength = clamp(BrushParams.w, -1000.0, 1000.0);
+    
+    // Calculate distance in texture space
+    float Distance = length(TexelCoord - BrushPos);
+    
+    if (Distance <= BrushRadius)
         {
-            float Falloff = 1.0 - (Distance / BrushRadius);
-            Falloff = smoothstep(0.0, 1.0, Falloff);
-            float HeightChange = BrushStrength * Falloff * DeltaTime;
-            Height = Height + HeightChange;
+        // Calculate falloff (0 at edge, 1 at center)
+        float Falloff = SafeDivide(Distance, BrushRadius);
+        Falloff = 1.0 - Falloff;
+        Falloff = smoothstep(0.0, 1.0, Falloff);
+        
+        // Apply height change
+        float HeightChange = BrushStrength * Falloff * DeltaTime;
+        HeightChange = clamp(HeightChange, -1000.0, 1000.0);
+        
+        Height = Height + HeightChange;
         }
     }
     
@@ -145,7 +258,13 @@ void TerrainComputeCS(uint3 ThreadId : SV_DispatchThreadID)
         float Hardness = HardnessTexture.SampleLevel(TextureSampler, UV, 0).r;
         
         ErosionAmount = CalculateErosion(UV, Height, WaterDepth, FlowVel, Hardness);
-        Height -= ErosionAmount * DeltaTime;
+        
+        // Apply erosion with safe delta time
+        float SafeDelta = clamp(DeltaTime, 0.0, 1.0);
+        float HeightDelta = ErosionAmount * SafeDelta;
+        HeightDelta = clamp(HeightDelta, -100.0, 100.0);  // Max 100m change per frame
+        
+        Height -= HeightDelta;
     }
     
     // Apply orographic effects
@@ -158,31 +277,39 @@ void TerrainComputeCS(uint3 ThreadId : SV_DispatchThreadID)
         if (Precipitation > 0.0)
         {
             ErosionAmount += Precipitation * 0.01;
-            Height -= Precipitation * 0.01 * DeltaTime;
+            
+            float PrecipDelta = Precipitation * 0.01 * DeltaTime;
+            PrecipDelta = clamp(PrecipDelta, 0.0, 10.0);
+            
+            Height -= PrecipDelta;
         }
     }
     
-    // Clamp and write results
-    Height = clamp(Height, -1000.0, 10000.0);
-    HeightTexture[ThreadId.xy] = Height;
+    // CRITICAL: Final validation and clamping
+    Height = SafeFloat(Height, MIN_HEIGHT, MAX_HEIGHT);
     
-    // Always write erosion output (shader assumes it's bound)
-    ErosionOutputTexture[ThreadId.xy] = ErosionAmount;
+    // Write validated results
+    HeightTexture[ThreadId.xy] = Height;
+    ErosionOutputTexture[ThreadId.xy] = SafeFloat(ErosionAmount, -1000.0, 1000.0);
 }
 
-// Orographic compute shader entry point
+// ===== OROGRAPHIC COMPUTE SHADER =====
+
 [numthreads(THREADGROUP_SIZE_X, THREADGROUP_SIZE_Y, 1)]
 void OrographicComputeCS(uint3 ThreadId : SV_DispatchThreadID)
 {
-    // For now, just pass through - implement full orographic compute later
     float2 UV = (float2(ThreadId.xy) + 0.5) / TerrainParams.xy;
     
     if (any(ThreadId.xy >= uint2(TerrainParams.xy)))
         return;
     
-    // Basic implementation - can expand later
+    // Read and validate height
     float Height = HeightTexture[ThreadId.xy].r;
+    Height = SafeFloat(Height);
+    
+    // Calculate orographic effects
     float2 OrographicResult = CalculateOrographicEffects(UV, Height);
     
     // Could write to precipitation texture here if needed
+    // For now, effects are applied in main compute shader
 }

@@ -107,6 +107,13 @@ public:
     
     UFUNCTION(BlueprintCallable, Category = "Temporal")
     void ResetFrameCounter() { SystemUpdateCounter = 0; }
+    
+    // ===== PAUSE STATE QUERY =====
+    UFUNCTION(BlueprintPure, Category = "Time Control")
+    bool IsPaused() const { return bPauseAllSystems; }
+
+    UFUNCTION(BlueprintPure, Category = "Time Control")
+    bool IsSystemPaused() const { return bPauseAllSystems; }
 
 protected:
     virtual void Initialize(FSubsystemCollectionBase& Collection) override;

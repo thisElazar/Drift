@@ -1,90 +1,238 @@
+// VolumetricClouds.usf - GPU Volumetric Cloud Rendering with Orographic Response
 #include "/Engine/Public/Platform.ush"
+#include "/Engine/Private/Common.ush"
 
-// Textures from compute shader
-Texture2D CloudDataTexture;
+#define THREADGROUP_SIZE_X 8
+#define THREADGROUP_SIZE_Y 8
+
+// Output
+RWTexture2D<float4> OutputTexture;
+
+// Input textures
+Texture2D<float4> CloudDataTexture;
+Texture2D<float2> WindFieldTexture;
+Texture2D<float> SceneDepthTexture;
 SamplerState CloudDataSampler;
-
-Texture2D WindFieldTexture;
 SamplerState WindFieldSampler;
 
-// Parameters
+// Cloud parameters
 float CloudBaseHeight;
 float CloudTopHeight;
 float CloudDensityScale;
 float3 CloudBoundsMin;
 float3 CloudBoundsMax;
-float3 WindOffset;
-float3 LightDirection;
+float2 TerrainOffset;
 
-// Volumetric raymarching
-float4 RaymarchClouds(float2 ScreenUV)
+// Rendering parameters
+float3 CameraPosition;
+float3 LightDirection;
+float4x4 InvViewProjectionMatrix;
+int2 RenderTargetSize;
+float Time;
+
+// Orographic parameters
+float OrographicStrength;
+float MaxOrographicLift;
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+float hash(float3 p)
 {
-    // Get world position and ray
-    float SceneDepth = CalcSceneDepth(ScreenUV);
-    float3 WorldPos = mul(float4(ScreenUV * 2 - 1, SceneDepth, 1), View.ScreenToWorld).xyz;
-    float3 RayOrigin = View.WorldCameraOrigin;
-    float3 RayDir = normalize(WorldPos - RayOrigin);
+    p = frac(p * 0.3183099 + 0.1);
+    p *= 17.0;
+    return frac(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
+
+float noise3D(float3 p)
+{
+    float3 i = floor(p);
+    float3 f = frac(p);
+    f = f * f * (3.0 - 2.0 * f);
     
+    float n = i.x + i.y * 157.0 + 113.0 * i.z;
+    
+    return lerp(
+        lerp(
+            lerp(hash(float3(n + 0.0, 0, 0)), hash(float3(n + 1.0, 0, 0)), f.x),
+            lerp(hash(float3(n + 157.0, 0, 0)), hash(float3(n + 158.0, 0, 0)), f.x),
+            f.y
+        ),
+        lerp(
+            lerp(hash(float3(n + 113.0, 0, 0)), hash(float3(n + 114.0, 0, 0)), f.x),
+            lerp(hash(float3(n + 270.0, 0, 0)), hash(float3(n + 271.0, 0, 0)), f.x),
+            f.y
+        ),
+        f.z
+    );
+}
+
+// Reconstruct world position from screen UV and depth
+float3 ReconstructWorldPosition(float2 ScreenUV, float Depth)
+{
+    float4 ClipPos = float4(ScreenUV * 2.0 - 1.0, Depth, 1.0);
+    ClipPos.y *= -1.0; // Flip Y for correct orientation
+    
+    float4 WorldPos = mul(ClipPos, InvViewProjectionMatrix);
+    return WorldPos.xyz / WorldPos.w;
+}
+
+// ============================================================================
+// VOLUMETRIC RAYMARCHING WITH OROGRAPHIC DISPLACEMENT
+// ============================================================================
+
+float4 RaymarchClouds(float2 ScreenUV, float3 RayOrigin, float3 RayDir, float SceneDistance)
+{
     // Intersect with cloud layer
     float t0 = (CloudBaseHeight - RayOrigin.z) / RayDir.z;
     float t1 = (CloudTopHeight - RayOrigin.z) / RayDir.z;
     
-    if (t1 < 0.0) return float4(0, 0, 0, 0);
+    if (t1 < 0.0)
+        return float4(0, 0, 0, 0);
     
     float tMin = max(0.0, min(t0, t1));
-    float tMax = min(length(WorldPos - RayOrigin), max(t0, t1));
+    float tMax = max(t0, t1);
     
-    if (tMin >= tMax) return float4(0, 0, 0, 0);
+    // Depth testing
+    if (tMin > SceneDistance)
+        return float4(0, 0, 0, 0);
+    
+    tMax = min(tMax, SceneDistance);
+    
+    if (tMin >= tMax)
+        return float4(0, 0, 0, 0);
     
     // Raymarch settings
-    const int Steps = 32;
+    const int Steps = 24;
     float StepSize = (tMax - tMin) / float(Steps);
     
-    // Accumulate color and transmittance
-    float3 AccumColor = float3(0, 0, 0);
+    // Dithering for temporal anti-aliasing
+    float Dither = frac(sin(dot(ScreenUV, float2(12.9898, 78.233)) + Time) * 43758.5453);
+    tMin += Dither * StepSize * 0.5;
+    
+    // Accumulation
+    float3 AccumulatedColor = float3(0, 0, 0);
     float Transmittance = 1.0;
     
     for (int i = 0; i < Steps; i++)
     {
-        if (Transmittance < 0.01) break;
+        if (Transmittance < 0.01)
+            break;
         
-        float3 Pos = RayOrigin + RayDir * (tMin + i * StepSize);
+        float t = tMin + i * StepSize;
+        float3 SamplePos = RayOrigin + RayDir * t;
         
-        // Sample cloud data
-        float2 UV = (Pos.xy - CloudBoundsMin.xy) / (CloudBoundsMax.xy - CloudBoundsMin.xy);
-        UV += WindOffset.xy * 0.0001;
+        // Calculate UV
+        float2 BaseUV = (SamplePos.xy - TerrainOffset - CloudBoundsMin.xy) / (CloudBoundsMax.xy - CloudBoundsMin.xy);
         
-        float4 CloudData = CloudDataTexture.SampleLevel(CloudDataSampler, UV, 0);
+        if (any(BaseUV < 0.0) || any(BaseUV > 1.0))
+            continue;
         
-        // Height gradient
-        float HeightFraction = (Pos.z - CloudBaseHeight) / (CloudTopHeight - CloudBaseHeight);
-        float HeightFade = smoothstep(0.0, 0.2, HeightFraction) * (1.0 - smoothstep(0.8, 1.0, HeightFraction));
+        // === SAMPLE ATMOSPHERIC DATA ===
+        // CloudData: R=density, G=orographic_offset, B=visual_variety, A=precipitation
+        float4 CloudData = CloudDataTexture.SampleLevel(CloudDataSampler, BaseUV, 0);
+        float2 WindData = WindFieldTexture.SampleLevel(WindFieldSampler, BaseUV, 0).xy;
         
-        // Cloud density
-        float Density = CloudData.r * HeightFade * CloudDensityScale;
+        // === OROGRAPHIC HEIGHT DISPLACEMENT ===
+        // The G channel contains normalized height offset (0-1) from terrain/updrafts
+        float OrographicOffset = CloudData.g * MaxOrographicLift * OrographicStrength;
         
-        if (Density > 0.01)
+        // Adjust cloud heights based on terrain
+        float LocalBaseHeight = CloudBaseHeight + OrographicOffset;
+        float LocalTopHeight = CloudTopHeight + OrographicOffset;
+        
+        // Height fraction with orographic adjustment
+        float HeightFraction = (SamplePos.z - LocalBaseHeight) / (LocalTopHeight - LocalBaseHeight);
+        HeightFraction = saturate(HeightFraction);
+        
+        // SMOOTH vertical gradient
+        float BottomFade = smoothstep(0.0, 0.35, HeightFraction);
+        float TopFade = 1.0 - smoothstep(0.65, 1.0, HeightFraction);
+        float HeightWeight = BottomFade * TopFade;
+        
+        // Procedural detail that varies with height
+        float3 DetailPos = SamplePos * float3(0.0008, 0.0008, 0.002) + float3(WindData * 0.05, Time * 0.01);
+        float DetailNoise = noise3D(DetailPos) * 0.5 + 0.5;
+        
+        // Combine simulation data with height and detail
+        float BaseDensity = CloudData.r * HeightWeight * CloudDensityScale;
+        float Density = BaseDensity * lerp(0.8, 1.2, DetailNoise);
+        
+        // Wind turbulence
+        float WindStrength = length(WindData);
+        float Turbulence = noise3D(SamplePos * 0.001 + float3(WindData * 0.1, Time * 0.05));
+        Density *= lerp(1.0, 0.7, saturate(WindStrength * 0.15) * Turbulence);
+        
+        // Enhanced density over mountains (from orographic lift)
+        float MountainBoost = saturate(OrographicOffset / (MaxOrographicLift * 0.5));
+        Density *= lerp(1.0, 1.4, MountainBoost);
+        
+        if (Density > 0.001)
         {
-            // Simple lighting
-            float NdotL = max(dot(float3(0, 0, 1), -normalize(LightDirection)), 0.0);
-            float3 CloudColor = lerp(float3(0.4, 0.5, 0.6), float3(1.0, 1.0, 1.0), NdotL);
+            // === LIGHTING ===
+            float3 ToLight = -normalize(LightDirection);
+            float NdotL = max(dot(float3(0, 0, 1), ToLight), 0.0);
             
-            // Apply precipitation darkening
-            CloudColor *= 1.0 - CloudData.a * 0.5;
+            // Height-based coloring
+            float3 DarkGray = float3(0.35, 0.4, 0.45);
+            float3 MidGray = float3(0.65, 0.7, 0.75);
+            float3 BrightWhite = float3(0.95, 0.98, 1.0);
             
-            // Accumulate
-            float Alpha = 1.0 - exp(-Density * StepSize * 0.5);
-            AccumColor += CloudColor * Alpha * Transmittance;
-            Transmittance *= 1.0 - Alpha;
+            float3 BaseColor = lerp(DarkGray, MidGray, smoothstep(0.2, 0.6, HeightFraction));
+            BaseColor = lerp(BaseColor, BrightWhite, smoothstep(0.6, 0.95, HeightFraction));
+            
+            // Sun lighting
+            float3 SunColor = float3(1.0, 0.98, 0.95);
+            float3 CloudColor = lerp(BaseColor, SunColor, NdotL * 0.6);
+            
+            // Precipitation darkening
+            float Precipitation = CloudData.a;
+            CloudColor *= lerp(1.0, 0.35, Precipitation * Precipitation);
+            
+            // Powder effect
+            float PowderEffect = 1.0 - exp(-Density * 2.0);
+            CloudColor *= lerp(1.0, 1.4, PowderEffect * NdotL);
+            
+            // === ACCUMULATION ===
+            float SampleAlpha = 1.0 - exp(-Density * StepSize);
+            SampleAlpha *= smoothstep(0.0, 0.03, Density);
+            
+            AccumulatedColor += CloudColor * SampleAlpha * Transmittance;
+            Transmittance *= (1.0 - SampleAlpha);
         }
     }
     
-    return float4(AccumColor, 1.0 - Transmittance);
+    float FinalAlpha = 1.0 - Transmittance;
+    return float4(AccumulatedColor, FinalAlpha);
 }
 
-// Main pixel shader entry
-float4 MainPS(float2 UV : TEXCOORD0) : SV_Target
+// ============================================================================
+// COMPUTE SHADER ENTRY POINT
+// ============================================================================
+
+[numthreads(THREADGROUP_SIZE_X, THREADGROUP_SIZE_Y, 1)]
+void VolumetricCloudsCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 {
-    return RaymarchClouds(UV);
+    uint2 PixelCoord = DispatchThreadId.xy;
+    
+    if (any(PixelCoord >= uint2(RenderTargetSize)))
+        return;
+    
+    // Calculate screen UV (0-1)
+    float2 ScreenUV = (float2(PixelCoord) + 0.5) / float2(RenderTargetSize);
+    
+    // Sample scene depth
+    float SceneDepth = SceneDepthTexture.Load(int3(PixelCoord, 0)).r;
+    
+    // Reconstruct world position
+    float3 WorldPos = ReconstructWorldPosition(ScreenUV, SceneDepth);
+    float3 RayDir = normalize(WorldPos - CameraPosition);
+    float SceneDistance = length(WorldPos - CameraPosition);
+    
+    // Perform volumetric raymarching
+    float4 CloudColor = RaymarchClouds(ScreenUV, CameraPosition, RayDir, SceneDistance);
+    
+    // Write output
+    OutputTexture[PixelCoord] = CloudColor;
 }
-

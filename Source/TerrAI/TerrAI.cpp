@@ -12,6 +12,8 @@
 // Log category definition
 DEFINE_LOG_CATEGORY_STATIC(LogTerrAI, Log, All);
 
+
+
 class FTerrAIModule : public FDefaultGameModuleImpl
 {
 public:

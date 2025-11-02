@@ -66,154 +66,245 @@ float CalculateFroudeNumber(float FlowSpeed, float WaterDepth)
     return FlowSpeed / max(sqrtGH, 0.001f);
 }
 
-// Calculate wind-driven waves with proper amplitude limiting
-float CalculateWindWaves(float2 WorldPos, float WaterDepth, float WindStrength, float2 WindDirection, float Time)
+/**
+ * Generate physically-based wind-driven waves with dispersion
+ * Uses deep-water dispersion relation: c = sqrt(g*lambda/(2*pi))
+ */
+float CalculateWindWaves(float2 WorldPos, float WaterDepth, float WindStrength,
+                         float2 WindDirection, float Time)
 {
-    float WaveHeight = 0.0f;
-    
-    // Calculate depth-based maximum amplitude
-    float depthAttenuation = CalculateDepthAttenuation(WaterDepth);
-    
-    // Scale amplitude based on both wind and depth
-    float baseAmplitude = WindStrength * 0.3f * depthAttenuation;
-    
-    // Limit amplitude to percentage of water depth
-    float maxAmplitude = WaterDepth * 0.1f;  // 10% of depth for wind waves
-    baseAmplitude = min(baseAmplitude, maxAmplitude);
-    
-    // Multiple octaves for realistic waves
-    float frequency = 0.01f;
-    float amplitude = baseAmplitude;
-    
-    for (int i = 0; i < 3; i++)
-    {
-        float2 direction = normalize(WindDirection + float2(i * 0.1f, i * 0.05f));
-        float phase = dot(WorldPos, direction) * frequency + Time * WaveParams.y;
-        WaveHeight += sin(phase) * amplitude;
-        
-        // Each octave has less energy
-        frequency *= 2.2f;
-        amplitude *= 0.4f;  // Reduced from 0.5f for stability
-    }
-    
-    return WaveHeight * WaveParams.x;
-}
-
-// Calculate flow-driven waves with Froude number consideration
-float CalculateFlowWaves(float2 WorldPos, float WaterDepth, float2 FlowVector, float FlowSpeed, float Time)
-{
-    if (FlowSpeed < 0.01f)
+    // Early exit for no wind
+    if (WindStrength < 0.01f)
         return 0.0f;
     
-    float WaveHeight = 0.0f;
-    float FroudeNumber = CalculateFroudeNumber(FlowSpeed, WaterDepth);
-    
-    // Flow creates waves perpendicular to flow direction
-    float2 flowDir = normalize(FlowVector + float2(0.001f, 0.001f));
-    float2 waveDir = float2(-flowDir.y, flowDir.x);
-    
-    // Amplitude based on Froude number and depth
-    float amplitude;
-    if (FroudeNumber < 1.0f)
-    {
-        // Subcritical flow - smaller waves
-        amplitude = WaterDepth * 0.02f * FroudeNumber;
-    }
-    else
-    {
-        // Supercritical flow - hydraulic jumps, but limited
-        float jumpHeight = WaterDepth * (sqrt(1.0f + 8.0f * FroudeNumber * FroudeNumber) - 1.0f) * 0.04f;
-        amplitude = min(jumpHeight, WaterDepth * 0.2f);  // Cap at 20% of depth
-    }
-    
-    // Wave frequency based on flow regime
-    float frequency = 0.02f * (1.0f + FlowSpeed * 0.1f);
-    frequency = min(frequency, 0.5f);  // Prevent aliasing
-    
-    // Create standing waves
-    float phase = dot(WorldPos, waveDir) * frequency + Time * FlowSpeed * 0.5f;
-    WaveHeight = sin(phase) * amplitude;
-    
-    // Add controlled turbulence
-    float turbulence = sin(WorldPos.x * 0.03f + Time) * cos(WorldPos.y * 0.04f - Time * 0.7f);
-    WaveHeight += turbulence * amplitude * 0.2f;  // Reduced turbulence contribution
-    
-    return WaveHeight * WaveParams.x;
-}
-
-// Calculate collision/obstacle waves with energy limiting
-float CalculateCollisionWaves(float2 WorldPos, float2 FlowVector, float WaterDepth, float Time)
-{
-    float WaveHeight = 0.0f;
-    
-    // Collision waves scale with flow magnitude and depth
-    float flowMagnitude = length(FlowVector);
-    if (flowMagnitude < 0.1f)
-        return 0.0f;
-    
-    // Maximum collision wave amplitude
-    float maxAmplitude = min(WaterDepth * 0.05f, flowMagnitude * 0.1f);
-    
-    // Create circular ripples with decay
-    float rippleFreq = 0.05f;
-    float rippleSpeed = 2.0f;
-    
-    // Create interference pattern
-    float ripple1 = sin(length(WorldPos) * rippleFreq - Time * rippleSpeed);
-    float ripple2 = cos(length(WorldPos + float2(100, 100)) * rippleFreq * 1.3f - Time * rippleSpeed * 0.8f);
-    
-    WaveHeight = (ripple1 + ripple2 * 0.5f) * maxAmplitude;
-    
-    return WaveHeight * WaveParams.x;
-}
-
-// Combine wave components with energy conservation
-float CombineWaveComponents(float windWave, float flowWave, float collisionWave, float baseNoise)
-{
-    // Calculate total energy (sum of squares)
-    float totalEnergy = windWave * windWave +
-                       flowWave * flowWave +
-                       collisionWave * collisionWave +
-                       baseNoise * baseNoise;
-    
-    // Linear superposition
-    float linearSum = windWave + flowWave + collisionWave + baseNoise;
-    
-    // If total energy exceeds threshold, scale down
-    float maxEnergy = sqrt(totalEnergy);
-    if (abs(linearSum) > maxEnergy && maxEnergy > 0.001f)
-    {
-        // Energy-limited combination
-        return linearSum * (maxEnergy / abs(linearSum)) * 0.8f;  // 80% for stability margin
-    }
-    
-    return linearSum;
-}
-
-// Apply final amplitude constraints
-float ApplyAmplitudeLimits(float WaveHeight, float WaterDepth, float WindStrength)
-{
     // Physical constraint: waves shouldn't exceed percentage of water depth
     float depthLimit = WaterDepth * MAX_WAVE_HEIGHT_RATIO;
-    
-    // Wind constraint: calm conditions = smaller waves
     float windLimit = WindStrength * 0.05f;
-    
-    // Use the more restrictive limit
     float maxWaveHeight = min(depthLimit, windLimit);
     
-    // For very shallow water, be even more conservative
+    // Very shallow water gets conservative limit
     if (WaterDepth < 1.0f)
-    {
-        maxWaveHeight = WaterDepth * 0.1f;  // Only 10% for very shallow
-    }
+        maxWaveHeight = WaterDepth * 0.1f;
     
-    // Apply the limit symmetrically
-    WaveHeight = clamp(WaveHeight, -maxWaveHeight, maxWaveHeight);
+    // Multiple wave components with different wavelengths
+    float WaveHeight = 0.0f;
     
-    // Final safety clamp at 12.5% (matching CPU implementation)
+    // Primary wind waves (long wavelength)
+    float lambda1 = 200.0f * WindStrength; // Wavelength scales with wind
+    float k1 = TWO_PI / lambda1;           // Wave number
+    float omega1 = sqrt(981.0f * k1 * tanh(k1 * WaterDepth)); // Dispersion relation
+    float phase1 = dot(WorldPos, WindDirection) * k1 - omega1 * Time;
+    float amp1 = maxWaveHeight * 0.6f;
+    WaveHeight += amp1 * sin(phase1);
+    
+    // Secondary waves (medium wavelength, 30° off wind)
+    float2 windDir2 = float2(
+        WindDirection.x * cos(0.52f) - WindDirection.y * sin(0.52f),
+        WindDirection.x * sin(0.52f) + WindDirection.y * cos(0.52f)
+    );
+    float lambda2 = 80.0f * WindStrength;
+    float k2 = TWO_PI / lambda2;
+    float omega2 = sqrt(981.0f * k2 * tanh(k2 * WaterDepth));
+    float phase2 = dot(WorldPos, windDir2) * k2 - omega2 * Time;
+    float amp2 = maxWaveHeight * 0.3f;
+    WaveHeight += amp2 * sin(phase2);
+    
+    // Tertiary waves (short wavelength, capillary)
+    float lambda3 = 30.0f;
+    float k3 = TWO_PI / lambda3;
+    float omega3 = sqrt((981.0f * k3 + 0.074f * k3 * k3 * k3) * tanh(k3 * WaterDepth)); // Surface tension
+    float phase3 = dot(WorldPos, WindDirection) * k3 - omega3 * Time * 1.3f;
+    float amp3 = maxWaveHeight * 0.1f;
+    WaveHeight += amp3 * sin(phase3);
+    
+    // Apply depth-dependent attenuation
+    float depthAtten = CalculateDepthAttenuation(WaterDepth);
+    WaveHeight *= depthAtten;
+    
+    // Final safety clamp
     float safeLimit = WaterDepth * SAFE_WAVE_HEIGHT_RATIO;
     WaveHeight = clamp(WaveHeight, -safeLimit, safeLimit);
+    
+    return WaveHeight;
+}
+
+/**
+ * Generate waves from water flow interactions with terrain
+ * Creates standing waves (hydraulic jumps) and flow perturbations
+ */
+float CalculateFlowWaves(float2 WorldPos, float WaterDepth, float2 FlowVector,
+                         float FlowSpeed, float Time)
+{
+    // Early exit for still water
+    if (FlowSpeed < 0.1f)
+        return 0.0f;
+    
+    // Calculate Froude number
+    float Fr = CalculateFroudeNumber(FlowSpeed, WaterDepth);
+    
+    // Subcritical flow (Fr < 1): gentle waves
+    // Supercritical flow (Fr > 1): shock waves
+    
+    float WaveHeight = 0.0f;
+    
+    if (Fr < 0.7f) // Subcritical - smooth flow
+    {
+        // Gentle undulations in flow direction
+        float2 flowDir = normalize(FlowVector + float2(0.001f, 0.001f));
+        float flowPhase = dot(WorldPos, flowDir) * 0.02f - Time * FlowSpeed * 0.1f;
+        WaveHeight = sin(flowPhase) * WaterDepth * 0.05f * Fr;
+    }
+    else if (Fr > 1.2f) // Supercritical - shock waves
+    {
+        // Standing waves form perpendicular to flow
+        float2 flowDir = normalize(FlowVector + float2(0.001f, 0.001f));
+        float2 perpDir = float2(-flowDir.y, flowDir.x);
+        
+        // Hydraulic jump wavelength scales with depth
+        float jumpWavelength = WaterDepth * 8.0f;
+        float jumpPhase = dot(WorldPos, flowDir) / jumpWavelength * TWO_PI;
+        
+        // Amplitude grows with Froude number excess
+        float shockStrength = (Fr - 1.0f) * 0.5f;
+        WaveHeight = sin(jumpPhase) * WaterDepth * shockStrength;
+        
+        // Add perpendicular oscillations
+        float perpPhase = dot(WorldPos, perpDir) * 0.05f + Time * 0.5f;
+        WaveHeight += cos(perpPhase) * WaterDepth * 0.1f * shockStrength;
+    }
+    else // Transition region (0.7 < Fr < 1.2)
+    {
+        // Blend between subcritical and supercritical
+        float blendFactor = (Fr - 0.7f) / 0.5f;
+        
+        // Subcritical component
+        float2 flowDir = normalize(FlowVector + float2(0.001f, 0.001f));
+        float subPhase = dot(WorldPos, flowDir) * 0.02f - Time * FlowSpeed * 0.1f;
+        float subWave = sin(subPhase) * WaterDepth * 0.05f * Fr;
+        
+        // Supercritical component
+        float superPhase = dot(WorldPos, flowDir) * 0.05f;
+        float superWave = sin(superPhase) * WaterDepth * 0.15f;
+        
+        WaveHeight = lerp(subWave, superWave, blendFactor);
+    }
+    
+    // Clamp to safe limits
+    float safeLimit = WaterDepth * SAFE_WAVE_HEIGHT_RATIO;
+    return clamp(WaveHeight, -safeLimit, safeLimit);
+}
+
+/**
+ * Generate waves from flow collisions and turbulence
+ * Detects velocity divergence to create splash patterns
+ */
+float CalculateCollisionWaves(float2 WorldPos, float2 FlowVector,
+                              float WaterDepth, float Time)
+{
+    // This requires sampling neighboring flow velocities
+    // For now, use simplified turbulence model based on flow curvature
+    
+    float FlowSpeed = length(FlowVector);
+    if (FlowSpeed < 0.5f)
+        return 0.0f;
+    
+    // Generate turbulent waves using flow-modulated noise
+    float2 flowDir = normalize(FlowVector + float2(0.001f, 0.001f));
+    
+    // Turbulence scale decreases with flow speed (faster = smaller eddies)
+    float turbScale = 50.0f / (1.0f + FlowSpeed * 0.5f);
+    
+    // Rotate sampling by flow direction for directional turbulence
+    float angle = atan2(flowDir.y, flowDir.x);
+    float2 rotatedPos = float2(
+        WorldPos.x * cos(angle) - WorldPos.y * sin(angle),
+        WorldPos.x * sin(angle) + WorldPos.y * cos(angle)
+    );
+    
+    // Multi-scale turbulent noise
+    float noise1 = sin(rotatedPos.x / turbScale + Time * FlowSpeed * 0.2f) *
+                   cos(rotatedPos.y / turbScale - Time * FlowSpeed * 0.15f);
+    float noise2 = sin(rotatedPos.x / (turbScale * 0.5f) - Time * FlowSpeed * 0.4f) *
+                   cos(rotatedPos.y / (turbScale * 0.5f) + Time * FlowSpeed * 0.3f);
+    
+    float turbulence = (noise1 * 0.7f + noise2 * 0.3f);
+    
+    // Amplitude scales with flow speed but limited by depth
+    float amplitude = min(FlowSpeed * 0.02f, WaterDepth * 0.08f);
+    float WaveHeight = turbulence * amplitude;
+    
+    // Clamp to safe limits
+    float safeLimit = WaterDepth * SAFE_WAVE_HEIGHT_RATIO;
+    return clamp(WaveHeight, -safeLimit, safeLimit);
+}
+
+/**
+ * Combine multiple wave sources using energy conservation
+ * Non-linear combination prevents unrealistic amplitude stacking
+ */
+float CombineWaveComponents(float windWave, float flowWave,
+                            float collisionWave, float baseNoise)
+{
+    // Simple linear combination causes amplitude blowup
+    // Instead, use root-mean-square (energy-based combination)
+    
+    // Method 1: RMS Combination (Energy-conserving)
+    // E_total = E_wind + E_flow + E_collision
+    // Since E ∝ A², we have: A_total = sqrt(A_wind² + A_flow² + ...)
+    float energySum = windWave * windWave +
+                      flowWave * flowWave +
+                      collisionWave * collisionWave;
+    float rmsAmplitude = sqrt(energySum);
+    
+    // Preserve sign of dominant component
+    float dominantSign = sign(windWave); // Wind usually dominates
+    if (abs(flowWave) > abs(windWave))
+        dominantSign = sign(flowWave);
+    
+    float combinedWave = dominantSign * rmsAmplitude;
+    
+    // Add base noise additively (it's already very small)
+    combinedWave += baseNoise;
+    
+    // Alternative Method 2: Weighted Linear (simpler, less physical)
+    // Uncomment if RMS causes issues:
+    // float combinedWave = windWave * 0.6f + flowWave * 0.3f +
+    //                      collisionWave * 0.1f + baseNoise;
+    
+    return combinedWave;
+}
+
+/**
+ * Final amplitude validation and physical constraint enforcement
+ * Ensures waves never exceed breaking limit or depth constraints
+ */
+float ApplyAmplitudeLimits(float WaveHeight, float WaterDepth, float WindStrength)
+{
+    // Breaking wave limit: H/lambda > 1/7 (Miche criterion)
+    // For our wavelengths, this translates to H < depth * 0.4
+    float breakingLimit = WaterDepth * 0.4f;
+    
+    // Conservative operational limit (30% of depth)
+    float operationalLimit = WaterDepth * MAX_WAVE_HEIGHT_RATIO;
+    
+    // Very shallow water needs even stricter limits
+    float shallowLimit = WaterDepth * SAFE_WAVE_HEIGHT_RATIO;
+    if (WaterDepth < 2.0f)
+        operationalLimit = shallowLimit;
+    
+    // Wind can't generate waves larger than fetch allows
+    // Simplified: wave height limited by wind strength
+    float windLimit = WindStrength * 0.1f; // 10cm per m/s of wind
+    
+    // Apply most restrictive limit
+    float finalLimit = min(operationalLimit, min(breakingLimit, windLimit));
+    
+    // Symmetric clamping
+    WaveHeight = clamp(WaveHeight, -finalLimit, finalLimit);
+    
+    // Sanity check: absolute maximum regardless of conditions
+    float absoluteMax = min(WaterDepth * 0.5f, 10.0f); // Never more than 50% depth or 10m
+    WaveHeight = clamp(WaveHeight, -absoluteMax, absoluteMax);
     
     return WaveHeight;
 }

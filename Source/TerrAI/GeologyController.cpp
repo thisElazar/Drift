@@ -13,8 +13,8 @@
 
 AGeologyController::AGeologyController()
 {
-    PrimaryActorTick.bCanEverTick = true;
-    PrimaryActorTick.TickInterval = 1.0f; // Update every second
+    PrimaryActorTick.bCanEverTick = false; // from true to false for MasterController Authority
+    // PrimaryActorTick.TickInterval = 1.0f; // Update every second commented out for MasterController Authority
     RootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("GeologyRoot"));
 }
 
@@ -316,10 +316,11 @@ float AGeologyController::GetInfiltrationRate(ERockType Rock) const
 
 void AGeologyController::UpdateGeologySystem(float DeltaTime)
 {
-    if (!TargetTerrain || !WaterSystem) return;
-    
-    // Process hydraulic seepage (replaces old emergence system)
-    //ProcessHydraulicSeepage(DeltaTime);
+    // SAFETY CHECK: Prevent updates when paused or invalid time
+    if (DeltaTime <= 0.0f || !TargetTerrain || !WaterSystem)
+    {
+        return;
+    }
     
     // Process user-created springs
     ProcessUserSprings(DeltaTime);
@@ -611,27 +612,39 @@ void AGeologyController::ProcessUserSprings(float DeltaTime)
 {
     if (!MasterController || UserSprings.Num() == 0) return;
     
-    
+    // Throttle reactivation checks to once per second
+    static float ReactivationTimer = 0.0f;
+    ReactivationTimer += DeltaTime;
+    bool bCheckReactivation = (ReactivationTimer >= 1.0f);
+    if (bCheckReactivation) ReactivationTimer = 0.0f;
     
     for (FUserSpring& Spring : UserSprings)
     {
-        if (!Spring.bActive) continue;
+        // Skip inactive springs unless it's time to check reactivation
+        if (!Spring.bActive && !bCheckReactivation) continue;
         
-        // Calculate volume to add this frame
         float VolumeToAdd = Spring.FlowRate * DeltaTime;
         
-        // Check if we have enough groundwater
         if (MasterController->CanGroundwaterEmerge(VolumeToAdd))
         {
-            // Transfer from groundwater to surface
+            // Reactivate if needed
+            if (!Spring.bActive)
+            {
+                Spring.bActive = true;
+                UE_LOG(LogTemp, Warning, TEXT("Spring at %s reactivated"),
+                    *Spring.Location.ToString());
+            }
+            
             MasterController->TransferGroundwaterToSurface(Spring.Location, VolumeToAdd);
         }
         else
         {
-            // Not enough groundwater - disable spring
-            Spring.bActive = false;
-            UE_LOG(LogTemp, Warning, TEXT("Spring at %s ran dry - insufficient groundwater"), 
-                *Spring.Location.ToString());
+            if (Spring.bActive)
+            {
+                Spring.bActive = false;
+                UE_LOG(LogTemp, Warning, TEXT("Spring at %s ran dry"),
+                    *Spring.Location.ToString());
+            }
         }
     }
 }

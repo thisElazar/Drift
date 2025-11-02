@@ -153,22 +153,16 @@ void UAtmosphericSystem::UpdateAtmosphericPhysics(float DeltaTime)
 {
     FScopeLock Lock(&GridDataLock);
     
-    // Apply weather patterns to grid
-    ApplyWeatherToGrid();
+    // Only apply weather when transitioning, not every frame
+    if (WeatherTransitionProgress < 1.0f)
+    {
+        ApplyWeatherToGrid();
+    }
     
-    // Process condensation and precipitation
     ProcessCondensationAndPrecipitation(DeltaTime);
-    
-    // Advect moisture with wind
     AdvectMoisture(DeltaTime);
-    
-    // Apply terrain effects
     ApplyOrographicEffects(DeltaTime);
-    
-    // Process evaporation from water bodies
     ProcessEvaporation(DeltaTime);
-    
-    // Update cloud coverage
     UpdateCloudPhysics(DeltaTime);
 }
 
@@ -282,44 +276,20 @@ void UAtmosphericSystem::ProcessWeatherTransition(float DeltaTime)
 
 void UAtmosphericSystem::ApplyWeatherToGrid()
 {
-    // Apply current weather state to all grid cells
+    const float BlendFactor = 0.05f;  // Gentle influence per frame
+    
     for (FSimplifiedAtmosphericCell& Cell : AtmosphericGrid)
     {
-        // Base values from weather
-        Cell.CloudCover = CurrentWeather.CloudCover;
-        Cell.Humidity = CurrentWeather.Humidity;
+        // Gradually influence towards weather state, don't overwrite
+        Cell.CloudCover = FMath::Lerp(Cell.CloudCover,
+            CurrentWeather.CloudCover, BlendFactor);
+        Cell.Humidity = FMath::Lerp(Cell.Humidity,
+            CurrentWeather.Humidity, BlendFactor);
         
-        // Wind with some variation
-        FVector2D BaseWind = FVector2D(CurrentWeather.WindDirection.X, CurrentWeather.WindDirection.Y) * CurrentWeather.WindSpeed;
-        
-        // Check for global wind override (from mouse control)
-        if (bGlobalWindActive)
-        {
-            BaseWind = GlobalWindOverride;
-        }
-        
-        // Add slight variation
-        float Variation = FMath::FRandRange(0.8f, 1.2f);
-        Cell.WindVector = BaseWind * Variation;
-        
-        // Temperature with height variation
-        Cell.Temperature = CurrentWeather.Temperature;
-        if (TargetTerrain)
-        {
-            FVector WorldPos = GridToWorldCoordinates(Cell.GridX, Cell.GridY);
-            float Height = TargetTerrain->GetHeightAtPosition(WorldPos);
-            Cell.Temperature -= Height * 0.0065f;  // Lapse rate: -6.5K per 1000m
-        }
-        
-        // Precipitation based on cloud cover and moisture
-        if (CurrentWeather.PrecipitationRate > 0.0f && Cell.CloudCover > 0.7f)
-        {
-            Cell.PrecipitationRate = CurrentWeather.PrecipitationRate * Cell.CloudCover;
-        }
-        else
-        {
-            Cell.PrecipitationRate = 0.0f;
-        }
+        // Wind: Stable base direction, no per-frame randomness
+        FVector2D TargetWind = FVector2D(CurrentWeather.WindDirection.X,
+            CurrentWeather.WindDirection.Y) * CurrentWeather.WindSpeed;
+        Cell.WindVector = FMath::Lerp(Cell.WindVector, TargetWind, BlendFactor);
     }
 }
 

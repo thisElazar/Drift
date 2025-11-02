@@ -23,7 +23,7 @@ UENUM(BlueprintType)
 enum class EBrushMode : uint8
 {
     Add         UMETA(DisplayName = "Add/Raise"),
-    Remove      UMETA(DisplayName = "Remove/Lower"), 
+    Remove      UMETA(DisplayName = "Remove/Lower"),
     Smooth      UMETA(DisplayName = "Smooth")
 };
 
@@ -46,8 +46,9 @@ struct TERRAI_API FUniversalBrushSettings
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Brush")
     EBrushMode BrushMode = EBrushMode::Add;
     
+    //CHANGE MAX BRUSH SIZE AND STRENGTH HERE
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Brush",
-              meta = (ClampMin = "10.0", ClampMax = "5000.0", ToolTip = "Brush radius in world units"))
+              meta = (ClampMin = "10.0", ClampMax = "25000.0", ToolTip = "Brush radius in world units"))
     float BrushRadius = 500.0f;
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Brush",
@@ -246,6 +247,8 @@ struct TERRAI_API FGeologySystemScaling
     }
 };
 
+
+
 /**
  * Ecosystem system scaling configuration
  */
@@ -351,6 +354,8 @@ struct TERRAI_API FWorldScalingConfig
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
     float BrushStrength = 200.0f;
     
+
+    
     FWorldScalingConfig()
     {
         TerrainWidth = 513;
@@ -451,7 +456,7 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Budget")
     bool bShowWaterBudgetDebug = false;
     
-    // Surface ↔ Atmosphere transfers
+    // Surface â†” Atmosphere transfers
         UFUNCTION(BlueprintCallable, Category = "Water Authority")
         void TransferSurfaceToAtmosphere(FVector WorldLocation, float Volume);
         
@@ -491,6 +496,47 @@ public:
     // Current world scaling configuration
     FWorldScalingConfig WorldScalingConfig;
     FWorldCoordinateSystem WorldCoordinateSystem;
+    
+    // ===== MAP DEFINITION =====
+    
+    // Current map definition from GameInstance
+    UPROPERTY()
+    FTerrainMapDefinition CurrentMapDefinition;
+    
+    bool bHasMapDefinition = false;
+    
+    
+    
+    // ===== AUTHORITATIVE GPU BRUSH TRANSFORMS =====
+
+    /**
+     * Converts world-space brush position to GPU shader texture coordinates
+     * This is the SINGLE SOURCE OF TRUTH for all brush→shader coordinate transforms
+     *
+     * @param WorldPosition - Brush position in world space (Unreal coordinates)
+     * @param OutTextureCoords - Output texture space coordinates (0 to TerrainWidth-1)
+     * @param OutRadiusInTexels - Output brush radius in texture space
+     * @param WorldRadius - Input brush radius in world units
+     */
+    UFUNCTION(BlueprintPure, Category = "Coordinate Transforms")
+    void WorldBrushToTextureSpace(
+        FVector WorldPosition,
+        float WorldRadius,
+        FVector2D& OutTextureCoords,
+        float& OutRadiusInTexels
+    ) const;
+
+    /**
+     * Get complete shader parameters for GPU compute
+     * Ensures all coordinate transforms are consistent
+     */
+    UFUNCTION(BlueprintPure, Category = "Coordinate Transforms")
+    FVector4f GetShaderTerrainParams() const;
+
+    UFUNCTION(BlueprintPure, Category = "Coordinate Transforms")
+    FVector GetTerrainWorldOrigin() const;
+    
+    
     
 
 private:
@@ -615,7 +661,7 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Controllers")
     AWaterController* WaterController = nullptr;
     
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Controllers") 
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Controllers")
     AAtmosphereController* AtmosphereController = nullptr;
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Controllers")
@@ -679,7 +725,7 @@ public:
     UFUNCTION(BlueprintPure, Category = "World Authority")
     FVector2D GetWorldDimensions() const;
     
-    UFUNCTION(BlueprintPure, Category = "World Authority") 
+    UFUNCTION(BlueprintPure, Category = "World Authority")
     int32 GetOptimalChunkSize() const;
     
     UFUNCTION(BlueprintPure, Category = "World Authority")
@@ -690,6 +736,14 @@ public:
     
     UFUNCTION(BlueprintPure, Category = "World Authority")
     float GetTerrainScale() const;
+    
+    // ===== MAP DEFINITION FUNCTIONS =====
+    
+    UFUNCTION(BlueprintPure, Category = "World Authority")
+    bool HasMapDefinition() const { return bHasMapDefinition; }
+    
+    UFUNCTION(BlueprintPure, Category = "World Authority")
+    FTerrainMapDefinition GetMapDefinition() const { return CurrentMapDefinition; }
     
     UFUNCTION(BlueprintCallable, Category = "World Authority")
     void SetWorldDimensions(int32 Width, int32 Height);
@@ -726,7 +780,7 @@ public:
     
     // ===== UNIVERSAL BRUSH AUTHORITY =====
     
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Universal Brush", 
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Universal Brush",
               meta = (ShowOnlyInnerProperties))
     FUniversalBrushSettings UniversalBrushSettings;
     
@@ -779,6 +833,13 @@ public:
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Universal Brush")
     UMaterialParameterCollection* BrushParameterCollection = nullptr;
+    
+    // ===== PAUSE STATE QUERY =====
+    UFUNCTION(BlueprintPure, Category = "Temporal Control")
+    bool IsSimulationPaused() const { return bPauseSimulation; }
+
+    UFUNCTION(BlueprintCallable, Category = "Temporal Control")
+    void TogglePause();
     
     // ===== BRUSH SCALING FUNCTIONS =====
     
@@ -902,7 +963,7 @@ public:
     // ===== WATER VOLUME CONVERSIONS =====
     
     /**
-     * Convert depth (meters) to moisture mass (kg/m²)
+     * Convert depth (meters) to moisture mass (kg/mÂ²)
      */
     UFUNCTION(BlueprintPure, Category = "Water Authority")
     static float DepthToMoistureMass(float DepthMeters)
@@ -911,7 +972,7 @@ public:
     }
     
     /**
-     * Convert moisture mass (kg/m²) to depth (meters)
+     * Convert moisture mass (kg/mÂ²) to depth (meters)
      */
     UFUNCTION(BlueprintPure, Category = "Water Authority")
     static float MoistureMassToDepth(float MassKgPerM2)
@@ -1039,5 +1100,80 @@ public:
     AGeologyController* GetGeologyController() const { return GeologyController; }
     
     
-};
+    // ===== RUNTIME MAP SWITCHING (Blueprint Exposed) =====
 
+    /**
+     * Switch to a different map at runtime (0-3 for presets, -1 for random)
+     * Regenerates terrain without reloading level
+     */
+    UFUNCTION(BlueprintCallable, Category = "Map Loading", meta = (DisplayName = "Switch To Map"))
+    void SwitchToMap(int32 MapIndex);
+
+    /**
+     * Reload current map (useful for testing)
+     */
+    UFUNCTION(BlueprintCallable, Category = "Map Loading", meta = (DisplayName = "Reload Current Map"))
+    void ReloadCurrentMap();
+
+    /**
+     * Get list of available map names for UI
+     */
+    UFUNCTION(BlueprintPure, Category = "Map Loading")
+    TArray<FString> GetAvailableMapNames() const;
+
+    /**
+     * Get current map index (-1 if random/custom)
+     */
+    UFUNCTION(BlueprintPure, Category = "Map Loading")
+    int32 GetCurrentMapIndex() const;
+
+    /**
+     * Get current map display name
+     */
+    UFUNCTION(BlueprintPure, Category = "Map Loading")
+    FString GetCurrentMapName() const;
+
+    // ===== RUNTIME PARAMETER UPDATES (for live tuning) =====
+
+    /**
+     * Update terrain scale at runtime (changes physical world size)
+     * Example: 50.0 = 25km, 100.0 = 51km, 200.0 = 103km
+     */
+    UFUNCTION(BlueprintCallable, Category = "Map Parameters", meta = (DisplayName = "Update Terrain Scale"))
+    void UpdateTerrainScale(float NewScale);
+
+    /**
+     * Update procedural parameters and regenerate
+     * Only works if current map is procedural type
+     */
+    UFUNCTION(BlueprintCallable, Category = "Map Parameters", meta = (DisplayName = "Update Procedural Parameters"))
+    void UpdateProceduralParameters(int32 Seed, float HeightVariation, float NoiseScale, int32 Octaves);
+
+    /**
+     * Quick terrain regeneration with current settings
+     */
+    UFUNCTION(BlueprintCallable, Category = "Map Parameters", meta = (DisplayName = "Quick Regenerate"))
+    void QuickRegenerate();
+
+    // ===== DEBUG/INSPECTOR FUNCTIONS =====
+
+    /**
+     * Get detailed info about current map for debugging
+     */
+    UFUNCTION(BlueprintPure, Category = "Map Loading")
+    FString GetMapDebugInfo() const;
+
+    /**
+     * Check if current map is procedural (can be tweaked)
+     */
+    UFUNCTION(BlueprintPure, Category = "Map Loading")
+    bool IsCurrentMapProcedural() const;
+
+    /**
+     * Check if current map uses a fixed seed (reproducible)
+     */
+    UFUNCTION(BlueprintPure, Category = "Map Loading")
+    bool IsCurrentMapSeeded() const;
+    
+    
+};

@@ -65,8 +65,8 @@ ADynamicTerrain::ADynamicTerrain()
     TerrainHeight = WorldConfig.TerrainHeight;
     ChunkSize = WorldConfig.ChunkSize;
     TerrainScale = 100.0f;
-    MaxTerrainHeight = 5000.0f;
-    MinTerrainHeight = -5000.0f;
+    MaxTerrainHeight = 8000.0f;
+    MinTerrainHeight = -25000.0f;
     
     // Create water system AFTER terrain dimensions are set
     // WaterSystem = NewObject<UWaterSystem>(this, UWaterSystem::StaticClass(), TEXT("WaterSystem"));
@@ -136,19 +136,17 @@ void ADynamicTerrain::BeginPlay()
     
     UE_LOG(LogTemp, Warning, TEXT("DynamicTerrain: Beginning initialization"));
     
-    // PHASE 2: Initialize basic data structures
+    // PHASE 1: Initialize basic data structures ONLY
     InitializeTerrainData();
     
+    // CRITICAL FIX: DO NOT initialize GPU here!
+    // GPU initialization must happen AFTER terrain generation
     if (bUseGPUTerrain)
-      {
-          InitializeGPUTerrain();
-          UE_LOG(LogTemp, Warning, TEXT("GPU Terrain Init requested"));
-      }
-      else
-      {
-          UE_LOG(LogTemp, Warning, TEXT("GPU Terrain disabled (bUseGPUTerrain = false)"));
-      }
-    
+    {
+        UE_LOG(LogTemp, Warning, TEXT("GPU Terrain will be initialized AFTER terrain generation"));
+        // Set a flag to initialize GPU later
+        bPendingGPUInit = true;
+    }
 }
 
 void ADynamicTerrain::Tick(float DeltaTime)
@@ -276,16 +274,55 @@ void ADynamicTerrain::InitializeWaterSystem()
     }
 }
 
-// ===== WATER FUNCTIONS REMOVED - USE WATERCONTROLLER INSTEAD =====
-// All water interaction now goes through WaterController for clean separation
+
 
 bool ADynamicTerrain::IsWaterSystemReady() const
 {
     return WaterSystem && WaterSystem->IsSystemReady();
 }
 
-// ===== VOLUMETRIC WATER CONTROL - REMOVED =====
-// All volumetric water functions moved to WaterController for clean separation
+void ADynamicTerrain::ValidateGPUUpload()
+{
+    // Check for NaN or extreme values
+    int32 InvalidCount = 0;
+    float MinHeight = FLT_MAX;
+    float MaxHeight = -FLT_MAX;
+    
+    for (int32 i = 0; i < HeightMap.Num(); i++)
+    {
+        float Height = HeightMap[i];
+        
+        if (FMath::IsNaN(Height) || !FMath::IsFinite(Height))
+        {
+            HeightMap[i] = 0.0f;  // Fix invalid values
+            InvalidCount++;
+        }
+        else
+        {
+            MinHeight = FMath::Min(MinHeight, Height);
+            MaxHeight = FMath::Max(MaxHeight, Height);
+        }
+    }
+    
+    if (InvalidCount > 0)
+    {
+        UE_LOG(LogTemp, Error, TEXT("Fixed %d invalid height values!"), InvalidCount);
+    }
+    
+    // Clamp extreme values
+    const float MaxAllowedHeight = 10000.0f;
+    if (MaxHeight > MaxAllowedHeight || MinHeight < -MaxAllowedHeight)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("Clamping extreme heights: Min=%.2f, Max=%.2f"),
+               MinHeight, MaxHeight);
+        
+        for (int32 i = 0; i < HeightMap.Num(); i++)
+        {
+            HeightMap[i] = FMath::Clamp(HeightMap[i], -MaxAllowedHeight, MaxAllowedHeight);
+        }
+    }
+}
+
 
 // ===== TERRAIN GENERATION =====
 
@@ -300,9 +337,32 @@ bool ADynamicTerrain::IsWaterSystemReady() const
  *
  * Creates realistic terrain with valleys for water flow demonstration
  */
+
+
 void ADynamicTerrain::GenerateProceduralTerrain()
 {
-    UE_LOG(LogTemp, Warning, TEXT("Generating sinusoidal terrain for water flow demonstration..."));
+    // CRITICAL FIX: Check if we have map definition with specific parameters
+    if (bHasMapDefinition)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("=== USING MAP DEFINITION FOR TERRAIN GENERATION ==="));
+        UE_LOG(LogTemp, Warning, TEXT("Map: %s"), *CurrentMapDefinition.DisplayName.ToString());
+        UE_LOG(LogTemp, Warning, TEXT("Seed: %d"), CurrentMapDefinition.ProceduralSeed);
+        UE_LOG(LogTemp, Warning, TEXT("Height Variation: %.1f"), CurrentMapDefinition.HeightVariation);
+        UE_LOG(LogTemp, Warning, TEXT("Noise Scale: %.4f"), CurrentMapDefinition.NoiseScale);
+        UE_LOG(LogTemp, Warning, TEXT("Octaves: %d"), CurrentMapDefinition.NoiseOctaves);
+        
+        // Use the map definition parameters
+        GenerateProceduralTerrainWithSettings(
+            CurrentMapDefinition.ProceduralSeed,
+            CurrentMapDefinition.HeightVariation,
+            CurrentMapDefinition.NoiseScale,
+            CurrentMapDefinition.NoiseOctaves
+        );
+        return;
+    }
+    
+    // FALLBACK: Default procedural generation (no map definition)
+    UE_LOG(LogTemp, Warning, TEXT("Generating default sinusoidal terrain (no map definition)..."));
     
     // Create sinusoidal terrain with multiple wave frequencies for interesting water flow
     for (int32 Y = 0; Y < TerrainHeight; Y++)
@@ -401,7 +461,6 @@ void ADynamicTerrain::ModifyTerrainAtIndex(int32 X, int32 Y, float Radius, float
         return;
     }
     
-    // Clamp center coordinates
     X = FMath::Clamp(X, 0, TerrainWidth - 1);
     Y = FMath::Clamp(Y, 0, TerrainHeight - 1);
     
@@ -425,7 +484,6 @@ void ADynamicTerrain::ModifyTerrainAtIndex(int32 X, int32 Y, float Radius, float
                     int32 Index = CurrentY * TerrainWidth + CurrentX;
                     if (Index >= 0 && Index < HeightMap.Num())
                     {
-                        // ORIGINAL: Simple quadratic falloff
                         float Falloff = FMath::Pow(1.0f - (Distance / Radius), 2.0f);
                         float HeightChange = Strength * Falloff * (bRaise ? 1.0f : -1.0f);
                         
@@ -434,7 +492,6 @@ void ADynamicTerrain::ModifyTerrainAtIndex(int32 X, int32 Y, float Radius, float
                             MinTerrainHeight, MaxTerrainHeight
                         );
                         
-                        // Track affected chunks
                         int32 ChunkIndex = GetChunkIndexFromCoordinates(CurrentX, CurrentY);
                         if (ChunkIndex >= 0)
                         {
@@ -446,63 +503,89 @@ void ADynamicTerrain::ModifyTerrainAtIndex(int32 X, int32 Y, float Radius, float
         }
     }
     
-    // Mark affected chunks for update with priority
+    // ===== CRITICAL: Include neighbors for boundary stitching =====
+    TSet<int32> ChunksToUpdate = AffectedChunks;
+    
     for (int32 ChunkIndex : AffectedChunks)
     {
-        // Calculate priority based on cursor proximity and size
-        FVector ModificationWorldPos = CachedMasterController->TerrainToWorldPosition(FVector2D(X, Y));
-        FVector ChunkWorldPos = GetChunkWorldPosition(ChunkIndex);
-        float CursorDistance = FVector::Dist(ModificationWorldPos, ChunkWorldPos);
-        float Priority = 100.0f / FMath::Max(CursorDistance, 100.0f); // Higher priority for closer chunks
-        
-        if (Radius > 1000.0f) Priority *= 2.0f; // Large brushes get priority boost
-        
-        RequestPriorityChunkUpdate(ChunkIndex, Priority);
-    }
-    
-    // OPTIMIZED LARGE BRUSH HANDLING
-    if (AffectedChunks.Num() > 15 || Radius > 2000.0f)
-    {
-        // Large operation: batch process immediately to prevent accumulation
-        UE_LOG(LogTemp, Warning, TEXT("TerrAI: Large brush operation affecting chunks, batch processing: %d"), AffectedChunks.Num());
-        
-        // Process in smaller batches to maintain framerate
-        TArray<int32> ChunkArray = AffectedChunks.Array();
-        int32 BatchSize = 8;
-        
-        for (int32 i = 0; i < ChunkArray.Num(); i += BatchSize)
+        TArray<int32> Neighbors = GetNeighboringChunks(ChunkIndex, false);
+        for (int32 NeighborIndex : Neighbors)
         {
-            int32 BatchEnd = FMath::Min(i + BatchSize, ChunkArray.Num());
-            for (int32 j = i; j < BatchEnd; j++)
-            {
-                UpdateChunk(ChunkArray[j]);
-                PendingChunkUpdates.Remove(ChunkArray[j]);
-            }
-            
-            // Yield control if batch processing takes too long
-            if ((i + BatchSize) < ChunkArray.Num())
-            {
-                // Schedule remaining chunks for next frame
-                break;
-            }
-        }
-    }
-    else if (AffectedChunks.Num() <= 4)
-    {
-        // Small edits: immediate update to prevent chunk tears
-        for (int32 ChunkIndex : AffectedChunks)
-        {
-            UpdateChunk(ChunkIndex);
-            PendingChunkUpdates.Remove(ChunkIndex);
+            ChunksToUpdate.Add(NeighborIndex);
         }
     }
     
+    TArray<int32> ChunkArray = ChunksToUpdate.Array();
     
-    // NEW: Force water system to sync with terrain changes
-    if (WaterSystem)
+    // ===== KEY FIX: Atomic vs Queued based on operation size =====
+    if (ChunksToUpdate.Num() <= 25)
     {
-        WaterSystem->ForceTerrainSync();
-        UE_LOG(LogTemp, Warning, TEXT("WaterSystem Synced and Restarted"));
+        // SMALL TO MEDIUM: Update ALL atomically in single frame
+        // Prevents any tears by ensuring all boundaries update together
+        UE_LOG(LogTemp, Verbose, TEXT("CPU: Atomic update of %d chunks (incl. neighbors)"),
+               ChunksToUpdate.Num());
+        
+        UpdateChunkGroupAtomic(ChunkArray);
+    }
+    else if (ChunksToUpdate.Num() <= 60)
+    {
+        // LARGE: Hybrid approach - immediate core + fast queuing
+        UE_LOG(LogTemp, Warning, TEXT("CPU: Large brush - %d chunks, hybrid update"),
+               ChunksToUpdate.Num());
+        
+        // Update core 20 chunks atomically
+        int32 CoreSize = 20;
+        TArray<int32> CoreChunks;
+        TArray<int32> RemainingChunks;
+        
+        for (int32 i = 0; i < ChunkArray.Num(); i++)
+        {
+            if (i < CoreSize)
+                CoreChunks.Add(ChunkArray[i]);
+            else
+                RemainingChunks.Add(ChunkArray[i]);
+        }
+        
+        UpdateChunkGroupAtomic(CoreChunks);
+        
+        // Queue remaining with VERY high priority (process next frame)
+        for (int32 ChunkIndex : RemainingChunks)
+        {
+            FChunkUpdateRequest Request;
+            Request.ChunkIndex = ChunkIndex;
+            Request.Priority = 95.0f; // Very high
+            Request.RequestTime = GetCachedFrameTime();
+            PriorityChunkQueue.Add(Request);
+        }
+    }
+    else
+    {
+        // MASSIVE: Update first 30 atomically, queue rest
+        UE_LOG(LogTemp, Warning, TEXT("CPU: Massive brush - %d chunks, staged update"),
+               ChunksToUpdate.Num());
+        
+        int32 ImmediateSize = 30;
+        
+        for (int32 i = 0; i < FMath::Min(ImmediateSize, ChunkArray.Num()); i++)
+        {
+            UpdateChunk(ChunkArray[i]);
+            PendingChunkUpdates.Remove(ChunkArray[i]);
+        }
+        
+        // Queue remaining
+        for (int32 i = ImmediateSize; i < ChunkArray.Num(); i++)
+        {
+            FChunkUpdateRequest Request;
+            Request.ChunkIndex = ChunkArray[i];
+            Request.Priority = 90.0f - (i * 0.02f);
+            Request.RequestTime = GetCachedFrameTime();
+            PriorityChunkQueue.Add(Request);
+        }
+    }
+    
+    if (bUseGPUTerrain)
+    {
+        SyncCPUToGPU();
     }
 }
 
@@ -589,7 +672,7 @@ void ADynamicTerrain::InitializeChunks()
         UE_LOG(LogTemp, Error, TEXT("Failed to create %d chunks"), FailedChunkCount);
     }
     
-    UE_LOG(LogTemp, Warning, TEXT("âœ… Created %d chunks with validated materials"), TerrainChunks.Num());
+    UE_LOG(LogTemp, Warning, TEXT("Ã¢Å“â€¦ Created %d chunks with validated materials"), TerrainChunks.Num());
 }
 
 void ADynamicTerrain::GenerateChunkMesh(int32 ChunkX, int32 ChunkY)
@@ -947,68 +1030,97 @@ void ADynamicTerrain::ProcessPendingWaterChunkUpdates()
  * - Called from Tick() after frustum culling
  * - Requires PriorityChunkQueue and PendingChunkUpdates to be populated
  */
+
 void ADynamicTerrain::ProcessPendingChunkUpdates()
 {
-    // PRIORITY-BASED CHUNK PROCESSING
     int32 TotalUpdatesNeeded = PriorityChunkQueue.Num() + PendingChunkUpdates.Num();
     
-    // Adaptive throttling based on queue pressure
     int32 UpdatesThisFrame;
     if (TotalUpdatesNeeded > 50)
-    {
-        UpdatesThisFrame = EMERGENCY_CHUNK_UPDATES;  // Emergency mode
-        UE_LOG(LogTemp, Warning, TEXT("TerrAI: Emergency chunk processing, total pending: %d"), TotalUpdatesNeeded);
-    }
+        UpdatesThisFrame = EMERGENCY_CHUNK_UPDATES;
     else if (TotalUpdatesNeeded > 20)
-    {
-        UpdatesThisFrame = 8;   // High pressure
-    }
+        UpdatesThisFrame = 8;
     else if (TotalUpdatesNeeded > 10)
-    {
-        UpdatesThisFrame = 6;   // Moderate pressure
-    }
+        UpdatesThisFrame = 6;
     else
-    {
         UpdatesThisFrame = MaxUpdatesPerFrame;
-    }
     
     int32 ProcessedThisFrame = 0;
     
-    // STEP 1: Process priority queue first (editing chunks, near camera)
     if (PriorityChunkQueue.Num() > 0)
     {
-    // Sort by priority (higher priority first)
-    PriorityChunkQueue.Sort();
-    
-    // Process highest priority chunks
-    int32 PriorityUpdates = FMath::Min(UpdatesThisFrame, PriorityChunkQueue.Num());
-    
-    // PHASE 4: Multi-threaded processing for large batches
-    if (PriorityUpdates > 4 && bEnableChunkPooling)
-    {
-    TArray<int32> BatchIndices;
-        for (int32 i = 0; i < PriorityUpdates; i++)
+        PriorityChunkQueue.Sort();
+        
+        // ===== NEW: Group chunks by proximity =====
+        TSet<int32> ProcessedChunks;
+        
+        while (ProcessedThisFrame < UpdatesThisFrame && PriorityChunkQueue.Num() > 0)
         {
-            BatchIndices.Add(PriorityChunkQueue[i].ChunkIndex);
-        }
-            ForceUpdateChunkGroup(BatchIndices);
-                ProcessedThisFrame += PriorityUpdates;
-            }
-            else
+            int32 ChunkIndex = PriorityChunkQueue[0].ChunkIndex;
+            
+            if (ProcessedChunks.Contains(ChunkIndex))
             {
-                // Standard single-threaded processing
-                for (int32 i = 0; i < PriorityUpdates; i++)
+                PriorityChunkQueue.RemoveAt(0);
+                continue;
+            }
+            
+            // Get this chunk + its neighbors
+            TArray<int32> ChunkGroup;
+            ChunkGroup.Add(ChunkIndex);
+            
+            // Check if neighbors are in queue with similar priority
+            float BasePriority = PriorityChunkQueue[0].Priority;
+            TArray<int32> Neighbors = GetNeighboringChunks(ChunkIndex, false);
+            
+            for (int32 NeighborIndex : Neighbors)
+            {
+                // Find neighbor in priority queue
+                for (int32 i = 1; i < FMath::Min(8, PriorityChunkQueue.Num()); i++)
                 {
-                    UpdateChunk(PriorityChunkQueue[i].ChunkIndex);
-                    ProcessedThisFrame++;
+                    if (PriorityChunkQueue[i].ChunkIndex == NeighborIndex)
+                    {
+                        float PriorityDiff = FMath::Abs(BasePriority - PriorityChunkQueue[i].Priority);
+                        
+                        // If neighbor has similar priority (within 1.0), group it
+                        if (PriorityDiff < 1.0f)
+                        {
+                            ChunkGroup.Add(NeighborIndex);
+                        }
+                        break;
+                    }
                 }
             }
             
-            // Remove processed chunks
-            PriorityChunkQueue.RemoveAt(0, PriorityUpdates);
+            // Update entire group atomically
+            if (ChunkGroup.Num() <= 5 && (ProcessedThisFrame + ChunkGroup.Num()) <= UpdatesThisFrame)
+            {
+                // Can fit entire group this frame
+                UpdateChunkGroupAtomic(ChunkGroup);
+                ProcessedThisFrame += ChunkGroup.Num();
+                
+                // Mark as processed
+                for (int32 Idx : ChunkGroup)
+                {
+                    ProcessedChunks.Add(Idx);
+                }
+                
+                // Remove from queue
+                PriorityChunkQueue.RemoveAll([&ProcessedChunks](const FChunkUpdateRequest& Req) {
+                    return ProcessedChunks.Contains(Req.ChunkIndex);
+                });
+            }
+            else
+            {
+                // Just update the main chunk
+                UpdateChunk(ChunkIndex);
+                ProcessedThisFrame++;
+                ProcessedChunks.Add(ChunkIndex);
+                PriorityChunkQueue.RemoveAt(0);
+            }
         }
+    }
     
-    // STEP 2: Process remaining capacity with legacy chunks
+    // Standard pending updates
     int32 RemainingCapacity = UpdatesThisFrame - ProcessedThisFrame;
     if (RemainingCapacity > 0 && PendingChunkUpdates.Num() > 0)
     {
@@ -1017,12 +1129,9 @@ void ADynamicTerrain::ProcessPendingChunkUpdates()
         {
             ChunksToUpdate.Add(ChunkIndex);
             if (ChunksToUpdate.Num() >= RemainingCapacity)
-            {
                 break;
-            }
         }
         
-        // Clear processed chunks from pending set
         for (int32 ChunkIndex : ChunksToUpdate)
         {
             PendingChunkUpdates.Remove(ChunkIndex);
@@ -1031,15 +1140,7 @@ void ADynamicTerrain::ProcessPendingChunkUpdates()
         }
     }
     
-    // STEP 3: Process water-only updates separately
     ProcessPendingWaterChunkUpdates();
-    
-    // Performance warning for large queues
-    if (TotalUpdatesNeeded > 100)
-    {
-        UE_LOG(LogTemp, Warning, TEXT("TerrAI: Large update queue, priority: %d, legacy pending: %d"),
-               PriorityChunkQueue.Num(), PendingChunkUpdates.Num());
-    }
 }
 
 // ===== UTILITY FUNCTIONS =====
@@ -1298,7 +1399,7 @@ void ADynamicTerrain::SetActiveMaterial(UMaterialInterface* Material)
         }
     }
     
-    UE_LOG(LogTemp, Log, TEXT("âœ… Material applied to %d chunks, %d enhanced with water shaders"),
+    UE_LOG(LogTemp, Log, TEXT("Ã¢Å“â€¦ Material applied to %d chunks, %d enhanced with water shaders"),
            MaterialsApplied, WaterShadersApplied);
 }
 
@@ -1408,7 +1509,7 @@ float ADynamicTerrain::GetTemperatureAt(FVector WorldPosition) const
     {
         return AtmosphericSystem->GetTemperatureAt(WorldPosition);
     }
-    return 288.15f; // 15Â°C default
+    return 288.15f; // 15Ã‚Â°C default
 }
 
 float ADynamicTerrain::GetPrecipitationAt(FVector WorldPosition) const
@@ -1443,7 +1544,7 @@ FVector ADynamicTerrain::GetWindAt(FVector WorldPosition) const
  * - Minimal CPU overhead (bounds testing only)
  *
  * References:
- * - Akenine-MÃ¶ller, T. et al. (2018). "Real-Time Rendering" 4th Ed., Ch. 19
+ * - Akenine-MÃƒÂ¶ller, T. et al. (2018). "Real-Time Rendering" 4th Ed., Ch. 19
  * - Ulrich, T. (2000). "Rendering massive terrains using chunked level of detail control"
  *
  * @param DeltaTime - Frame time for update timer
@@ -1582,26 +1683,29 @@ void ADynamicTerrain::ResetTerrainFully()
 
     // ===== CRITICAL FIX: PROPER WATER SYSTEM RESET SEQUENCE =====
     
-    // Step 1: Completely reset water system
     if (WaterSystem)
     {
-        UE_LOG(LogTemp, Warning, TEXT("Resetting water system..."));
-        WaterSystem->ResetWaterSystem();
+        UE_LOG(LogTemp, Warning, TEXT("Resetting water system with erosion texture cleanup..."));
+        WaterSystem->ResetWaterSystem();  // This now includes erosion texture recreation
         
-        // Step 2: Re-register with MasterController if available
+        // Re-register with MasterController
         if (CachedMasterController)
         {
             WaterSystem->RegisterWithMasterController(CachedMasterController);
-            UE_LOG(LogTemp, Warning, TEXT("Water system re-registered with MasterController"));
-            
-            // Reset water budget tracking
             CachedMasterController->ResetWaterBudget();
         }
         
-        // Step 3: Force texture recreation
+        // Force texture recreation and update
         WaterSystem->CreateWaterDepthTexture();
         WaterSystem->CreateAdvancedWaterTexture();
         WaterSystem->UpdateWaterDepthTexture();
+        
+        // CRITICAL: Reconnect GPU terrain to ensure erosion textures are linked
+        if (CurrentComputeMode == ETerrainComputeMode::GPU && bEnableGPUErosion)
+        {
+            ConnectToGPUWaterSystem(WaterSystem);
+        }
+    }
         
         // Step 4: Enhanced ready check with timeout
         float WaitTime = 0.0f;
@@ -1641,7 +1745,7 @@ void ADynamicTerrain::ResetTerrainFully()
         {
             UE_LOG(LogTemp, Warning, TEXT("Water system taking longer than expected (%.1f seconds) - continuing with initialization"), WaitTime);
         }
-    }
+    
     
     // Step 5: Reconnect WaterController to the reset water system
     if (CachedMasterController && CachedMasterController->WaterController)
@@ -1684,11 +1788,26 @@ void ADynamicTerrain::ResetTerrainFully()
         }
     }
     
-    // Step 6: Initialize atmospheric system AFTER water is confirmed ready
-    if (AtmosphericSystem)
+    // Step 6: RESET atmospheric system AFTER water is confirmed ready
+    if (CachedMasterController && CachedMasterController->AtmosphereController)
     {
+        AAtmosphereController* AtmoController = CachedMasterController->AtmosphereController;
+        
+        // Reset the atmosphere system completely
+        AtmoController->ResetAtmosphereSystem();
+        
+        // Reinitialize with proper connections
+        if (AtmosphericSystem)
+        {
+            AtmosphericSystem->Initialize(this, WaterSystem);
+            UE_LOG(LogTemp, Warning, TEXT("Atmospheric system reset and reinitialized"));
+        }
+    }
+    else if (AtmosphericSystem)
+    {
+        // Fallback if no MasterController
         AtmosphericSystem->Initialize(this, WaterSystem);
-        UE_LOG(LogTemp, Warning, TEXT("Atmospheric system reinitialized with confirmed water system"));
+        UE_LOG(LogTemp, Warning, TEXT("Atmospheric system reinitialized (no controller reset)"));
     }
     
     // Step 7: Force material refresh to ensure water shaders are properly connected
@@ -1750,8 +1869,17 @@ void ADynamicTerrain::PerformCleanGeneration(bool bInitializeSystems)
     PriorityChunkQueue.Empty();
     TotalChunkUpdatesThisFrame = 0;
 
-    // Generate fresh procedural terrain
-    GenerateProceduralTerrain();
+    // ROUTER: Check if we have map definition
+    if (bHasMapDefinition)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("Using map definition: %s"), *CurrentMapDefinition.DisplayName.ToString());
+        ApplyMapDefinitionGeneration();
+    }
+    else
+    {
+        UE_LOG(LogTemp, Warning, TEXT("No map definition - using default procedural"));
+        GenerateProceduralTerrain();
+    }
 
     // Initialize chunk system
     InitializeChunks();
@@ -1763,6 +1891,152 @@ void ADynamicTerrain::PerformCleanGeneration(bool bInitializeSystems)
        }
 
     UE_LOG(LogTemp, Warning, TEXT("Clean terrain generation complete."));
+}
+
+// ===== MAP DEFINITION IMPLEMENTATION =====
+
+void ADynamicTerrain::SetMapDefinition(const FTerrainMapDefinition& MapDef)
+{
+    CurrentMapDefinition = MapDef;
+    bHasMapDefinition = true;
+    
+    // Apply terrain scale from map definition
+    TerrainScale = MapDef.TerrainScale;
+    
+    UE_LOG(LogTemp, Warning, TEXT("DynamicTerrain: Map definition set - Scale=%.1f, Mode=%s"),
+           TerrainScale, *MapDef.GetGenerationModeName());
+}
+
+void ADynamicTerrain::ApplyMapDefinitionGeneration()
+{
+    switch (CurrentMapDefinition.GenerationMode)
+    {
+        case ETerrainGenerationMode::Procedural:
+        case ETerrainGenerationMode::ProceduralSeed:
+            GenerateProceduralTerrainWithSettings(
+                CurrentMapDefinition.ProceduralSeed,
+                CurrentMapDefinition.HeightVariation,
+                CurrentMapDefinition.NoiseScale,
+                CurrentMapDefinition.NoiseOctaves
+            );
+            break;
+            
+        case ETerrainGenerationMode::DEM:
+            UE_LOG(LogTemp, Warning, TEXT("DEM loading not yet implemented - using fallback procedural"));
+            GenerateProceduralTerrain(); // Fallback
+            break;
+            
+        case ETerrainGenerationMode::Preset:
+            UE_LOG(LogTemp, Warning, TEXT("Preset loading not yet implemented - using fallback procedural"));
+            GenerateProceduralTerrain(); // Fallback
+            break;
+    }
+}
+
+void ADynamicTerrain::GenerateProceduralTerrainWithSettings(int32 Seed, float HeightVar, float NoiseScl, int32 Octaves)
+{
+    UE_LOG(LogTemp, Warning, TEXT("=== GENERATING TERRAIN WITH SETTINGS ==="));
+    UE_LOG(LogTemp, Warning, TEXT("Seed=%d, Height=%.1f, Noise=%.4f, Octaves=%d"),
+           Seed, HeightVar, NoiseScl, Octaves);
+    UE_LOG(LogTemp, Warning, TEXT("HeightMultiplier=%.2f"), HeightMultiplier);
+    
+    // Use Seed if >= 0, otherwise random
+    FRandomStream RandomStream;
+    if (Seed >= 0)
+    {
+        RandomStream.Initialize(Seed);
+        UE_LOG(LogTemp, Warning, TEXT("Using FIXED SEED %d for reproducible terrain"), Seed);
+    }
+    else
+    {
+        Seed = FMath::Rand();
+        RandomStream.Initialize(Seed);
+        UE_LOG(LogTemp, Warning, TEXT("Generated RANDOM seed %d"), Seed);
+    }
+    
+    // Generate with parameters
+    for (int32 Y = 0; Y < TerrainHeight; Y++)
+    {
+        for (int32 X = 0; X < TerrainWidth; X++)
+        {
+            float NormX = (float)X / (TerrainWidth - 1);
+            float NormY = (float)Y / (TerrainHeight - 1);
+            
+            float Height = 0.0f;
+            float Amplitude = HeightVar * HeightMultiplier; // USE EXPOSED PROPERTY
+            float Frequency = 1.0f;
+            
+            // Multi-octave generation with proper seed variation
+            for (int32 Octave = 0; Octave < Octaves; Octave++)
+            {
+                // Add seed-based phase offset for variation
+                float PhaseX = (float)(Seed % 1000) * 0.001f;
+                float PhaseY = (float)((Seed / 1000) % 1000) * 0.001f;
+                
+                // NoiseScl controls the BASE frequency
+                float ScaledFreq = Frequency * (NoiseScl * 100.0f);
+                
+                Height += FMath::Sin((NormX + PhaseX) * ScaledFreq * 2.0f * PI) *
+                         FMath::Sin((NormY + PhaseY) * ScaledFreq * 2.0f * PI) * Amplitude;
+                
+                Amplitude *= 0.5f;
+                Frequency *= 2.0f;
+            }
+            
+            SetHeightSafe(X, Y, Height);
+        }
+    }
+    
+    UE_LOG(LogTemp, Warning, TEXT("=== TERRAIN GENERATION COMPLETE ==="));
+    UE_LOG(LogTemp, Warning, TEXT("Effective max height: ~%.0f meters"), HeightVar * HeightMultiplier * 2.0f);
+}
+
+// ===== RUNTIME PARAMETER UPDATES =====
+
+void ADynamicTerrain::SetHeightMultiplier(float NewMultiplier)
+{
+    NewMultiplier = FMath::Clamp(NewMultiplier, 0.1f, 10.0f);
+    
+    if (FMath::IsNearlyEqual(HeightMultiplier, NewMultiplier, 0.01f))
+    {
+        return; // No significant change
+    }
+    
+    UE_LOG(LogTemp, Warning, TEXT("Updating HeightMultiplier: %.2f → %.2f"),
+           HeightMultiplier, NewMultiplier);
+    
+    HeightMultiplier = NewMultiplier;
+    
+    // Regenerate terrain with new multiplier
+    if (bHasMapDefinition)
+    {
+        GenerateProceduralTerrainWithSettings(
+            CurrentMapDefinition.ProceduralSeed,
+            CurrentMapDefinition.HeightVariation,
+            CurrentMapDefinition.NoiseScale,
+            CurrentMapDefinition.NoiseOctaves
+        );
+        
+        // Mark all chunks for update
+        for (FTerrainChunk& Chunk : TerrainChunks)
+        {
+            Chunk.bNeedsUpdate = true;
+        }
+    }
+}
+
+FVector2D ADynamicTerrain::GetHeightRange() const
+{
+    float MinHeight = FLT_MAX;
+    float MaxHeight = -FLT_MAX;
+    
+    for (float Height : HeightMap)
+    {
+        MinHeight = FMath::Min(MinHeight, Height);
+        MaxHeight = FMath::Max(MaxHeight, Height);
+    }
+    
+    return FVector2D(MinHeight, MaxHeight);
 }
 
 // ===== WORLD SIZE MANAGEMENT IMPLEMENTATION =====
@@ -2269,13 +2543,12 @@ void ADynamicTerrain::InitializeWithMasterController(AMasterWorldController* Mas
     
     CachedMasterController = Master;
     
-    // PHASE 2: Direct authority application without validation
+    // Apply authoritative values
     FVector2D AuthoritativeDims = Master->GetWorldDimensions();
     int32 AuthoritativeChunkSize = Master->GetOptimalChunkSize();
     float AuthoritativeScale = Master->GetTerrainScale();
     FVector2D ChunkDims = Master->GetChunkDimensions();
     
-    // Apply authoritative values
     TerrainWidth = AuthoritativeDims.X;
     TerrainHeight = AuthoritativeDims.Y;
     ChunkSize = AuthoritativeChunkSize;
@@ -2283,16 +2556,24 @@ void ADynamicTerrain::InitializeWithMasterController(AMasterWorldController* Mas
     ChunksX = ChunkDims.X;
     ChunksY = ChunkDims.Y;
     
-    // Initialize HeightMap
+    // Initialize HeightMap with proper size
     int32 TotalSize = TerrainWidth * TerrainHeight;
     HeightMap.SetNumZeroed(TotalSize);
     
     UE_LOG(LogTemp, Warning, TEXT("DynamicTerrain: Authority established - %dx%d terrain, %dx%d chunks"),
            TerrainWidth, TerrainHeight, ChunksX, ChunksY);
     
-
+    // CRITICAL: Generate terrain BEFORE GPU initialization
     GenerateProceduralTerrain();
     InitializeChunks();
+    
+    // NOW initialize GPU with actual terrain data
+    if (bPendingGPUInit)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("Initializing GPU Terrain with generated data..."));
+        InitializeGPUTerrainWithData();
+        bPendingGPUInit = false;
+    }
     
     UE_LOG(LogTemp, Warning, TEXT("DynamicTerrain: Terrain generation complete, awaiting system initialization"));
 }
@@ -2437,32 +2718,71 @@ void ADynamicTerrain::InitializeGPUTerrain()
 {
     if (bGPUInitialized)
     {
-        UE_LOG(LogTemp, Warning, TEXT("InitializeGPUTerrain Called"));
+        UE_LOG(LogTemp, Warning, TEXT("GPU Terrain already initialized"));
         return;
     }
     
-    // DON'T round to power of 2 - use exact dimensions
-    GPUTextureWidth = TerrainWidth;   // 513
-    GPUTextureHeight = TerrainHeight; // 513
+    // Check if we have terrain data
+    if (HeightMap.Num() > 0)
+    {
+        // We have data - initialize with it
+        InitializeGPUTerrainWithData();
+    }
+    else
+    {
+        // No data yet - just mark as pending
+        UE_LOG(LogTemp, Warning, TEXT("GPU Terrain init deferred - no terrain data yet"));
+        bPendingGPUInit = true;
+    }
+}
+
+void ADynamicTerrain::InitializeGPUTerrainWithData()
+{
+    if (bGPUInitialized)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("GPU Terrain already initialized"));
+        return;
+    }
     
-    UE_LOG(LogTemp, Warning, TEXT("Initializing GPU Terrain: %dx%d (from %dx%d)"),
-           GPUTextureWidth, GPUTextureHeight, TerrainWidth, TerrainHeight);
+    // Ensure we have valid terrain data first
+    if (HeightMap.Num() == 0)
+    {
+        UE_LOG(LogTemp, Error, TEXT("Cannot initialize GPU terrain - no height data!"));
+        return;
+    }
     
+    // Use exact dimensions
+    GPUTextureWidth = TerrainWidth;
+    GPUTextureHeight = TerrainHeight;
+    
+    UE_LOG(LogTemp, Warning, TEXT("Initializing GPU Terrain with existing data: %dx%d"),
+           GPUTextureWidth, GPUTextureHeight);
+    
+    // Create GPU resources
     CreateGPUResources();
     
-    // Verify resources were created
     if (!HeightRenderTexture)
     {
-        UE_LOG(LogTemp, Error, TEXT("Failed to create HeightRenderTexture!"));
+        UE_LOG(LogTemp, Error, TEXT("Failed to create GPU resources!"));
         bGPUInitialized = false;
         return;
     }
     
-    // Initial CPU to GPU sync
-    SyncCPUToGPU();
+    // CRITICAL: Upload existing CPU terrain to GPU
+    UE_LOG(LogTemp, Warning, TEXT("Uploading CPU terrain data to GPU..."));
+    TransferHeightmapToGPU();
+    
+    // Wait for upload to complete
+    FlushRenderingCommands();
     
     bGPUInitialized = true;
-    UE_LOG(LogTemp, Warning, TEXT("GPU Terrain initialized successfully"));
+    
+    // Set compute mode but DON'T sync back from GPU
+    if (bUseGPUTerrain)
+    {
+        CurrentComputeMode = ETerrainComputeMode::GPU;
+        UE_LOG(LogTemp, Warning, TEXT("âœ“ GPU Terrain initialized with CPU data as authority"));
+    }
 }
 
 void ADynamicTerrain::CreateGPUResources()
@@ -2556,44 +2876,55 @@ void ADynamicTerrain::ReleaseGPUResources()
 }
 
 
-// 1. CPUâ†’GPU Transfer (one-time on mode switch)
 void ADynamicTerrain::TransferHeightmapToGPU()
 {
-    if (!HeightRenderTexture) return;
+    if (!HeightRenderTexture || HeightMap.Num() == 0) return;
     
-    TArray<FFloat16> GPUData;
-    GPUData.SetNum(TerrainWidth * TerrainHeight);
+    TArray<float> GPUData;
+    GPUData.SetNum(GPUTextureWidth * GPUTextureHeight);  // Use GPU dimensions
     
-    for (int32 i = 0; i < HeightMap.Num(); i++)
+    // Initialize to zero (prevents garbage)
+    for (int32 i = 0; i < GPUData.Num(); i++)
     {
-        GPUData[i] = FFloat16(HeightMap[i]);
+        GPUData[i] = 0.0f;
+    }
+    
+    // Copy with proper bounds checking
+    for (int32 Y = 0; Y < FMath::Min(TerrainHeight, GPUTextureHeight); Y++)
+    {
+        for (int32 X = 0; X < FMath::Min(TerrainWidth, GPUTextureWidth); X++)
+        {
+            int32 CPUIndex = Y * TerrainWidth + X;
+            int32 GPUIndex = Y * GPUTextureWidth + X;
+            
+            if (CPUIndex < HeightMap.Num() && GPUIndex < GPUData.Num())
+            {
+                GPUData[GPUIndex] = HeightMap[CPUIndex];
+            }
+        }
     }
     
     ENQUEUE_RENDER_COMMAND(UploadHeightmapToGPU)(
         [this, GPUData](FRHICommandListImmediate& RHICmdList)
         {
-            FTextureRenderTargetResource* Resource = HeightRenderTexture->GetRenderTargetResource();
-            if (!Resource) return;
+            FTextureRHIRef TextureRHI = HeightRenderTexture->GetRenderTargetResource()->GetRenderTargetTexture();
+            if (!TextureRHI) return;
             
-            FRHITexture* Texture = Resource->GetRenderTargetTexture();
-            if (!Texture) return;
-            
-            uint32 Stride = sizeof(FFloat16);
-            FUpdateTextureRegion2D Region(0, 0, 0, 0, TerrainWidth, TerrainHeight);
+            // Use GPU texture width for stride
+            uint32 Stride = GPUTextureWidth * sizeof(float);
+            FUpdateTextureRegion2D Region(0, 0, 0, 0, GPUTextureWidth, GPUTextureHeight);
             
             RHICmdList.UpdateTexture2D(
-                Texture,
+                TextureRHI,
                 0,
                 Region,
-                Stride * TerrainWidth,
-                (uint8*)GPUData.GetData()
+                Stride,
+                (const uint8*)GPUData.GetData()
             );
         });
-    
-    FlushRenderingCommands();
 }
 
-// 2. GPUâ†’CPU Transfer (one-time on mode switch)
+// 2. GPUÃ¢â€ â€™CPU Transfer (one-time on mode switch)
 void ADynamicTerrain::TransferHeightmapFromGPU()
 {
     if (!HeightRenderTexture) return;
@@ -2618,23 +2949,26 @@ void ADynamicTerrain::TransferHeightmapFromGPU()
 }
 
 
-
-
 void ADynamicTerrain::ExecuteTerrainComputeShader(float DeltaTime)
+{
+    if (CurrentComputeMode != ETerrainComputeMode::GPU || !bGPUInitialized)
     {
-        if (!bGPUInitialized || !HeightRenderTexture) {
-            UE_LOG(LogTemp, Error, TEXT("GPU NOT READY: Init=%d, Texture=%s"),
-                   bGPUInitialized, HeightRenderTexture ? TEXT("Valid") : TEXT("Null"));
-            return;
-        }
+        return;
+    }
+    
+    if (!HeightRenderTexture || !ErosionRenderTexture)
+    {
+        UE_LOG(LogTemp, Error, TEXT("GPU textures not initialized: Height=%s, Erosion=%s"),
+               HeightRenderTexture ? TEXT("Valid") : TEXT("Null"),
+               ErosionRenderTexture ? TEXT("Valid") : TEXT("Null"));
+        return;
+    }
     
     // Throttle execution to improve performance
     static float LastExecutionTime = 0.0f;
     float CurrentTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
-    if (!bHasPendingBrush && CurrentTime - LastExecutionTime < 0.033f) return; // 30 FPS for ambient updates
+    if (!bHasPendingBrush && CurrentTime - LastExecutionTime < 0.033f) return;
     LastExecutionTime = CurrentTime;
-        
-       // UE_LOG(LogTemp, Warning, TEXT("GPU COMPUTE EXECUTING: Brush=%d"), bHasPendingBrush);
     
     // Skip accumulator for brush operations - execute immediately
     if (!bHasPendingBrush)
@@ -2645,68 +2979,163 @@ void ADynamicTerrain::ExecuteTerrainComputeShader(float DeltaTime)
     
     GPUUpdateAccumulator = 0.0f;
     
+    // ===== GET AUTHORITATIVE SHADER PARAMETERS ON GAME THREAD =====
+    FVector4f TerrainParams;
+    if (CachedMasterController)
+    {
+        TerrainParams = CachedMasterController->GetShaderTerrainParams();
+    }
+    else
+    {
+        // Fallback if MasterController not available
+        TerrainParams = FVector4f(GPUTextureWidth, GPUTextureHeight, TerrainScale, CurrentTime);
+        UE_LOG(LogTemp, Warning, TEXT("ExecuteTerrainComputeShader: No MasterController, using fallback params"));
+    }
+    
     ENQUEUE_RENDER_COMMAND(TerrainComputeCommand)(
-        [this, DeltaTime](FRHICommandListImmediate& RHICmdList)
+        [this, DeltaTime, TerrainParams](FRHICommandListImmediate& RHICmdList)
         {
+            // ONE-TIME LOG: Confirm shader is dispatching
+            static bool bLoggedOnce = false;
+            if (!bLoggedOnce && bEnableGPUErosion)
+            {
+                UE_LOG(LogTemp, Warning, TEXT("✓ Erosion shader dispatching (logged once)"));
+                bLoggedOnce = true;
+            }
+            
             TShaderMapRef<FTerrainComputeCS> ComputeShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
-            if (!ComputeShader.IsValid()) return;
+            if (!ComputeShader.IsValid())
+            {
+                UE_LOG(LogTemp, Error, TEXT("✗ Terrain compute shader not valid!"));
+                return;
+            }
             
             FRDGBuilder GraphBuilder(RHICmdList);
             
-            FTextureRenderTargetResource* Resource = HeightRenderTexture->GetRenderTargetResource();
+            // ===== REGISTER HEIGHT TEXTURE (INPUT/OUTPUT) =====
+            FTextureRenderTargetResource* HeightResource = HeightRenderTexture->GetRenderTargetResource();
             TRefCountPtr<IPooledRenderTarget> PooledHeightTexture = CreateRenderTarget(
-                Resource->GetRenderTargetTexture(), TEXT("HeightTexture"));
+                HeightResource->GetRenderTargetTexture(), TEXT("HeightTexture"));
             FRDGTextureRef HeightTextureRDG = GraphBuilder.RegisterExternalTexture(PooledHeightTexture);
             
+            // ===== REGISTER EROSION TEXTURE (OUTPUT) =====
+            FTextureRenderTargetResource* ErosionResource = ErosionRenderTexture->GetRenderTargetResource();
+            TRefCountPtr<IPooledRenderTarget> PooledErosionTexture = CreateRenderTarget(
+                ErosionResource->GetRenderTargetTexture(), TEXT("ErosionTexture"));
+            FRDGTextureRef ErosionTextureRDG = GraphBuilder.RegisterExternalTexture(PooledErosionTexture);
+            
+            // Allocate shader parameters
             FTerrainComputeCS::FParameters* PassParameters =
                 GraphBuilder.AllocParameters<FTerrainComputeCS::FParameters>();
             
             PassParameters->HeightTexture = GraphBuilder.CreateUAV(HeightTextureRDG);
-            PassParameters->TerrainParams = FVector4f(TerrainWidth, TerrainHeight, TerrainScale, 0);
+            PassParameters->TerrainParams = TerrainParams;  // Use captured authoritative params
             
-            // Create and CLEAR dummy textures
+            // ===== WATER DATA CONNECTION FOR EROSION =====
+            FRDGTextureRef WaterDepthRDG = nullptr;
+            FRDGTextureRef FlowVelocityRDG = nullptr;
+            
+            // Try to get real water textures if water system is connected
+            if (bEnableGPUErosion && ConnectedWaterSystem &&
+                ConnectedWaterSystem->ErosionWaterDepthRT &&
+                ConnectedWaterSystem->ErosionFlowVelocityRT)
+            {
+                // Register real water depth texture
+                FTextureRenderTargetResource* DepthResource =
+                    ConnectedWaterSystem->ErosionWaterDepthRT->GetRenderTargetResource();
+                if (DepthResource)
+                {
+                    TRefCountPtr<IPooledRenderTarget> DepthPool = CreateRenderTarget(
+                        DepthResource->GetRenderTargetTexture(),
+                        TEXT("RealWaterDepth"));
+                    WaterDepthRDG = GraphBuilder.RegisterExternalTexture(DepthPool);
+                }
+                
+                // Register real flow velocity texture
+                FTextureRenderTargetResource* VelocityResource =
+                    ConnectedWaterSystem->ErosionFlowVelocityRT->GetRenderTargetResource();
+                if (VelocityResource)
+                {
+                    TRefCountPtr<IPooledRenderTarget> VelocityPool = CreateRenderTarget(
+                        VelocityResource->GetRenderTargetTexture(),
+                        TEXT("RealFlowVelocity"));
+                    FlowVelocityRDG = GraphBuilder.RegisterExternalTexture(VelocityPool);
+                }
+                
+                static bool bLoggedRealWater = false;
+                if (!bLoggedRealWater)
+                {
+                    UE_LOG(LogTemp, Warning, TEXT("GPU Erosion: Using REAL water data"));
+                    bLoggedRealWater = true;
+                }
+            }
+            
+            // Create dummy textures if water data not available
             FRDGTextureDesc DummyDesc = FRDGTextureDesc::Create2D(
                 FIntPoint(GPUTextureWidth, GPUTextureHeight),
                 PF_R32_FLOAT,
                 FClearValueBinding::Black,
-                TexCreate_ShaderResource | TexCreate_UAV | TexCreate_RenderTargetable  // Add this flag
+                TexCreate_ShaderResource | TexCreate_UAV | TexCreate_RenderTargetable
             );
-
+            
             FRDGTextureRef DummyTexture = GraphBuilder.CreateTexture(DummyDesc, TEXT("DummyWater"));
             AddClearRenderTargetPass(GraphBuilder, DummyTexture);
-
-            // Now use for SRVs
-            PassParameters->WaterDepthTexture = GraphBuilder.CreateSRV(DummyTexture);
-            PassParameters->FlowVelocityTexture = GraphBuilder.CreateSRV(DummyTexture);
+            
+            // Use real water textures if available, otherwise use dummy
+            if (!WaterDepthRDG)
+            {
+                WaterDepthRDG = DummyTexture;
+            }
+            if (!FlowVelocityRDG)
+            {
+                FlowVelocityRDG = DummyTexture;
+            }
+            
+            // Bind shader resources
+            PassParameters->WaterDepthTexture = GraphBuilder.CreateSRV(WaterDepthRDG);
+            PassParameters->FlowVelocityTexture = GraphBuilder.CreateSRV(FlowVelocityRDG);
             PassParameters->MoistureTexture = GraphBuilder.CreateSRV(DummyTexture);
             PassParameters->WindFieldTexture = GraphBuilder.CreateSRV(DummyTexture);
             PassParameters->HardnessTexture = GraphBuilder.CreateSRV(DummyTexture);
-
-            FRDGTextureRef ErosionTexture = GraphBuilder.CreateTexture(DummyDesc, TEXT("ErosionOutput"));
-            AddClearRenderTargetPass(GraphBuilder, ErosionTexture);
-            PassParameters->ErosionOutputTexture = GraphBuilder.CreateUAV(ErosionTexture);
+            PassParameters->ErosionOutputTexture = GraphBuilder.CreateUAV(ErosionTextureRDG);
+            
             PassParameters->TextureSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-            
             PassParameters->DeltaTime = DeltaTime;
-            PassParameters->SimulationMode = 0; // Height only
-            PassParameters->ErosionParams = FVector4f(0,0,0,0);
-            PassParameters->OrographicParams = FVector4f(0,0,0,0);
             
-            if (bHasPendingBrush)
-            {
-                PassParameters->BrushParams = PendingBrushParams;
-                PassParameters->BrushActive = 1;
-                bHasPendingBrush = false;
-            }
-            else
-            {
-                PassParameters->BrushActive = 0;
-            }
+            // Set simulation mode based on enabled features
+            uint32 SimMode = 0;
+            if (bEnableGPUErosion) SimMode |= 1;
+            if (bEnableOrographicEffects) SimMode |= 2;
+            PassParameters->SimulationMode = SimMode;
             
-            // Dispatch compute
+            // Set erosion parameters
+            PassParameters->ErosionParams = FVector4f(
+                GPUErosionRate,
+                GPUDepositionRate,
+                1.0f,  // Erosion capacity multiplier
+                1.0f   // Hardness multiplier
+            );
+            
+            // Set orographic parameters
+            PassParameters->OrographicParams = FVector4f(
+                OrographicLiftStrength,
+                MoistureCondensationThreshold,
+                0.01f, // Precipitation rate
+                0.0f   // Unused
+            );
+            
+            // Handle brush operations
+            PassParameters->BrushParams = PendingBrushParams;
+            PassParameters->BrushActive = bHasPendingBrush ? 1 : 0;
+            
+            UE_LOG(LogTemp, VeryVerbose,
+                   TEXT("Shader Params: Dims(%.0f,%.0f) Scale=%.2f BrushActive=%d"),
+                   TerrainParams.X, TerrainParams.Y, TerrainParams.Z, bHasPendingBrush ? 1 : 0);
+            
+            // Dispatch compute shader
             FComputeShaderUtils::AddPass(
                 GraphBuilder,
-                RDG_EVENT_NAME("TerrainCompute"),
+                RDG_EVENT_NAME("TerrainComputeShader"),
                 ComputeShader,
                 PassParameters,
                 FIntVector(
@@ -2716,14 +3145,16 @@ void ADynamicTerrain::ExecuteTerrainComputeShader(float DeltaTime)
                 )
             );
             
+            // Execute the graph
             GraphBuilder.Execute();
-        });
-    
-    // Immediate flush for brush operations
-    if (PendingBrushParams.W != 0)
-    {
-        FlushRenderingCommands();
-    }
+            
+            // Clear brush flag after execution
+            if (bHasPendingBrush)
+            {
+                bHasPendingBrush = false;
+            }
+        }
+    );
 }
 
 void ADynamicTerrain::SyncCPUToGPU()
@@ -2731,9 +3162,17 @@ void ADynamicTerrain::SyncCPUToGPU()
     if (!HeightRenderTexture || HeightMap.Num() == 0)
         return;
     
+    // Use float array directly - matches texture format
     TArray<float> GPUHeightData;
     GPUHeightData.SetNum(GPUTextureWidth * GPUTextureHeight);
     
+    // Initialize to zero
+    for (int32 i = 0; i < GPUHeightData.Num(); i++)
+    {
+        GPUHeightData[i] = 0.0f;
+    }
+    
+    // Copy CPU heightmap to GPU buffer
     for (int32 Y = 0; Y < TerrainHeight; Y++)
     {
         for (int32 X = 0; X < TerrainWidth; X++)
@@ -2741,7 +3180,7 @@ void ADynamicTerrain::SyncCPUToGPU()
             int32 CPUIndex = Y * TerrainWidth + X;
             int32 GPUIndex = Y * GPUTextureWidth + X;
             
-            if (CPUIndex < HeightMap.Num())
+            if (CPUIndex < HeightMap.Num() && GPUIndex < GPUHeightData.Num())
             {
                 GPUHeightData[GPUIndex] = HeightMap[CPUIndex];
             }
@@ -2752,76 +3191,261 @@ void ADynamicTerrain::SyncCPUToGPU()
         [this, GPUHeightData](FRHICommandListImmediate& RHICmdList)
         {
             FTextureRHIRef TextureRHI = HeightRenderTexture->GetRenderTargetResource()->GetRenderTargetTexture();
+            if (!TextureRHI) return;
             
-            // Use UpdateTexture2D for upload
-            uint32 Stride = GPUTextureWidth * sizeof(float);
-            uint8* TextureData = (uint8*)GPUHeightData.GetData();
-            
+            // CRITICAL FIX: Correct stride calculation
+            uint32 Stride = GPUTextureWidth * sizeof(float);  // Bytes per ROW
             FUpdateTextureRegion2D Region(0, 0, 0, 0, GPUTextureWidth, GPUTextureHeight);
-            RHIUpdateTexture2D(TextureRHI, 0, Region, Stride, TextureData);
+            
+            RHICmdList.UpdateTexture2D(
+                TextureRHI,
+                0,  // Mip level
+                Region,
+                Stride,
+                (const uint8*)GPUHeightData.GetData()
+            );
         });
     
-    UE_LOG(LogTemp, Log, TEXT("Synced CPU heightmap to GPU"));
+    UE_LOG(LogTemp, Verbose, TEXT("âœ“ Synced %dx%d CPU heightmap to GPU"),
+           TerrainWidth, TerrainHeight);
 }
 
 void ADynamicTerrain::SyncGPUToCPU()
 {
-    if (!HeightRenderTexture || bPendingGPUReadback)
+    if (!HeightRenderTexture || !bGPUDataDirty)
+    {
         return;
+    }
+    
+    // Store CPU data as backup for validation
+    TArray<float> CPUBackup = HeightMap;
+    
+    // Don't sync if we're actively editing
+    if (bHasPendingBrush)
+    {
+        return;
+    }
+    
+    if (bPendingGPUReadback)
+    {
+        GPUReadbackFence.Wait();
+        bPendingGPUReadback = false;
+    }
+    
+    bPendingGPUReadback = true;
     
     ENQUEUE_RENDER_COMMAND(ReadbackHeightFromGPU)(
-        [this](FRHICommandListImmediate& RHICmdList)
+        [this, CPUBackup](FRHICommandListImmediate& RHICmdList)
         {
             FTextureRHIRef TextureRHI = HeightRenderTexture->GetRenderTargetResource()->GetRenderTargetTexture();
+            if (!TextureRHI) return;
             
-            // Create a surface to read back data
-            FIntRect Rect(0, 0, GPUTextureWidth, GPUTextureHeight);
             TArray<FFloat16Color> SurfaceData;
+            FIntRect Rect(0, 0, GPUTextureWidth, GPUTextureHeight);
             
-            RHICmdList.ReadSurfaceFloatData(TextureRHI, Rect, SurfaceData, ECubeFace::CubeFace_PosX, 0, 0);
+            RHICmdList.ReadSurfaceFloatData(
+                TextureRHI,
+                Rect,
+                SurfaceData,
+                CubeFace_PosX,
+                0,
+                0
+            );
             
-            // Convert to float array
-            GPUHeightReadbackBuffer.SetNum(TerrainWidth * TerrainHeight);
-            for (int32 Y = 0; Y < TerrainHeight; Y++)
+            AsyncTask(ENamedThreads::GameThread, [this, SurfaceData, CPUBackup]()
             {
-                for (int32 X = 0; X < TerrainWidth; X++)
+                // Validate that GPU data isn't completely flat
+                float MinHeight = FLT_MAX;
+                float MaxHeight = -FLT_MAX;
+                float AvgHeight = 0.0f;
+                int32 ValidCount = 0;
+                
+                for (int32 Y = 0; Y < FMath::Min(TerrainHeight, GPUTextureHeight); Y++)
                 {
-                    int32 SrcIndex = Y * GPUTextureWidth + X;
-                    int32 DstIndex = Y * TerrainWidth + X;
-                    if (SrcIndex < SurfaceData.Num())
+                    for (int32 X = 0; X < FMath::Min(TerrainWidth, GPUTextureWidth); X++)
                     {
-                        GPUHeightReadbackBuffer[DstIndex] = SurfaceData[SrcIndex].R.GetFloat();
+                        int32 GPUIndex = Y * GPUTextureWidth + X;
+                        if (GPUIndex < SurfaceData.Num())
+                        {
+                            float Height = SurfaceData[GPUIndex].R.GetFloat();
+                            if (!FMath::IsNaN(Height) && FMath::IsFinite(Height))
+                            {
+                                MinHeight = FMath::Min(MinHeight, Height);
+                                MaxHeight = FMath::Max(MaxHeight, Height);
+                                AvgHeight += Height;
+                                ValidCount++;
+                            }
+                        }
                     }
                 }
-            }
+                
+                if (ValidCount > 0)
+                {
+                    AvgHeight /= ValidCount;
+                }
+                
+                // Check if GPU data is suspiciously flat
+                float HeightRange = MaxHeight - MinHeight;
+                bool bGPUDataSeemsFlat = (HeightRange < 1.0f && FMath::Abs(AvgHeight) < 1.0f);
+                
+                if (bGPUDataSeemsFlat)
+                {
+                    UE_LOG(LogTemp, Warning, TEXT("GPU data appears flat (range: %.2f), keeping CPU data"),
+                           HeightRange);
+                    // Restore CPU backup
+                    HeightMap = CPUBackup;
+                    
+                    // Re-upload CPU data to GPU to fix it
+                    TransferHeightmapToGPU();
+                }
+                else
+                {
+                    // GPU data looks valid, apply it
+                    for (int32 Y = 0; Y < FMath::Min(TerrainHeight, GPUTextureHeight); Y++)
+                    {
+                        for (int32 X = 0; X < FMath::Min(TerrainWidth, GPUTextureWidth); X++)
+                        {
+                            int32 GPUIndex = Y * GPUTextureWidth + X;
+                            int32 CPUIndex = Y * TerrainWidth + X;
+                            
+                            if (GPUIndex < SurfaceData.Num() && CPUIndex < HeightMap.Num())
+                            {
+                                float NewHeight = SurfaceData[GPUIndex].R.GetFloat();
+                                
+                                if (FMath::IsNaN(NewHeight) || !FMath::IsFinite(NewHeight))
+                                {
+                                    NewHeight = CPUBackup[CPUIndex];
+                                }
+                                else
+                                {
+                                    NewHeight = FMath::Clamp(NewHeight, -10000.0f, 10000.0f);
+                                }
+                                
+                                HeightMap[CPUIndex] = NewHeight;
+                            }
+                        }
+                    }
+                    
+                    UE_LOG(LogTemp, Verbose, TEXT("GPU sync successful (range: %.2f)"), HeightRange);
+                }
+                
+                ValidateAndRepairChunkBoundaries();
+                
+                for (int32 i = 0; i < TerrainChunks.Num(); i++)
+                {
+                    PendingChunkUpdates.Add(i);
+                }
+                
+                bPendingGPUReadback = false;
+                bGPUDataDirty = false;
+            });
         });
     
-    if (GPUHeightReadbackBuffer.Num() == HeightMap.Num())
+    GPUReadbackFence.BeginFence();
+}
+
+
+void ADynamicTerrain::RefreshAllChunkMaterials()
+{
+    UE_LOG(LogTemp, Warning, TEXT("DynamicTerrain: Refreshing all chunk materials with updated scale %.2f"), TerrainScale);
+    
+    int32 UpdatedCount = 0;
+    
+    // Iterate through all chunks and reapply material parameters
+    for (FTerrainChunk& Chunk : TerrainChunks)
     {
-        HeightMap = GPUHeightReadbackBuffer;
-        for (int32 i = 0; i < TerrainChunks.Num(); i++)
+        if (Chunk.MeshComponent)
         {
-            PendingChunkUpdates.Add(i);
+            UMaterialInstanceDynamic* ChunkMaterial = Cast<UMaterialInstanceDynamic>(
+                Chunk.MeshComponent->GetMaterial(0));
+            
+            if (ChunkMaterial)
+            {
+                ApplyMaterialParameters(ChunkMaterial, Chunk.ChunkX, Chunk.ChunkY);
+                UpdatedCount++;
+            }
         }
     }
     
-    bGPUDataDirty = false;
+    UE_LOG(LogTemp, Warning, TEXT("DynamicTerrain: Refreshed %d chunk materials"), UpdatedCount);
+}
+
+
+// =====================================================
+// HELPER: Get Safe Neighbor Average
+// =====================================================
+float ADynamicTerrain::GetSafeNeighborAverage(int32 X, int32 Y) const
+{
+    float Sum = 0.0f;
+    int32 Count = 0;
     
-    if (GPUHeightReadbackBuffer.Num() == HeightMap.Num())
-       {
-           HeightMap = GPUHeightReadbackBuffer;
-           
-           // Fix chunk tears using existing validation
-           ValidateAndRepairChunkBoundaries();
-           
-           // Mark chunks for update
-           for (int32 i = 0; i < TerrainChunks.Num(); i++)
-           {
-               PendingChunkUpdates.Add(i);
-           }
-       }
+    // Sample 3x3 neighborhood in CURRENT heightmap
+    for (int32 dy = -1; dy <= 1; dy++)
+    {
+        for (int32 dx = -1; dx <= 1; dx++)
+        {
+            if (dx == 0 && dy == 0) continue;
+            
+            int32 NX = X + dx;
+            int32 NY = Y + dy;
+            
+            if (NX >= 0 && NX < TerrainWidth && NY >= 0 && NY < TerrainHeight)
+            {
+                int32 Index = NY * TerrainWidth + NX;
+                if (Index >= 0 && Index < HeightMap.Num())
+                {
+                    float Height = HeightMap[Index];
+                    if (FMath::IsFinite(Height))
+                    {
+                        Sum += Height;
+                        Count++;
+                    }
+                }
+            }
+        }
+    }
     
-    UE_LOG(LogTemp, Log, TEXT("Synced GPU heightmap to CPU"));
+    return (Count > 0) ? (Sum / Count) : 0.0f;
+}
+
+// =====================================================
+// HELPER: Validate Height Data
+// =====================================================
+bool ADynamicTerrain::ValidateHeightData(const TArray<float>& Data) const
+{
+    if (Data.Num() != TerrainWidth * TerrainHeight)
+    {
+        UE_LOG(LogTemp, Error, TEXT("Height data size mismatch"));
+        return false;
+    }
+    
+    int32 NaNCount = 0;
+    int32 InfCount = 0;
+    int32 ExtremeCount = 0;
+    
+    for (float Height : Data)
+    {
+        if (FMath::IsNaN(Height)) NaNCount++;
+        else if (!FMath::IsFinite(Height)) InfCount++;
+        else if (FMath::Abs(Height) > 10000.0f) ExtremeCount++;
+    }
+    
+    // Allow up to 1% corrupted data (will be fixed by neighbor averaging)
+    float CorruptionRate = (NaNCount + InfCount) / (float)Data.Num();
+    
+    if (CorruptionRate > 0.01f)
+    {
+        UE_LOG(LogTemp, Error, TEXT("Height data too corrupted: %.1f%% (NaN=%d, Inf=%d)"),
+               CorruptionRate * 100.0f, NaNCount, InfCount);
+        return false;
+    }
+    
+    if (ExtremeCount > Data.Num() * 0.1f)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("Height data has %d extreme values (>10000m)"), ExtremeCount);
+    }
+    
+    return true;
 }
 
 void ADynamicTerrain::UpdateGPUShaderParameters(float DeltaTime)
@@ -2854,11 +3478,25 @@ void ADynamicTerrain::UpdateGPUBrush(FVector WorldPosition, float Radius, float 
 {
     UE_LOG(LogTemp, Warning, TEXT("UpdateGPUBrush CALLED: Pos=%s, Radius=%.1f"),
                *WorldPosition.ToString(), Radius);
-    if (CurrentComputeMode != ETerrainComputeMode::GPU || !bGPUInitialized) return;
     
-    FVector2D TerrainPos = FVector2D(
-        WorldPosition.X / TerrainScale,
-        WorldPosition.Y / TerrainScale
+    if (CurrentComputeMode != ETerrainComputeMode::GPU || !bGPUInitialized)
+        return;
+    
+    // ===== CRITICAL FIX: Use MasterController as single source of truth =====
+    if (!CachedMasterController)
+    {
+        UE_LOG(LogTemp, Error, TEXT("UpdateGPUBrush: No MasterController - cannot transform coordinates!"));
+        return;
+    }
+    
+    // Get authoritative coordinate transformation from MasterController
+    FVector2D TextureCoords;
+    float RadiusInTexels;
+    CachedMasterController->WorldBrushToTextureSpace(
+        WorldPosition,
+        Radius,
+        TextureCoords,
+        RadiusInTexels
     );
     
     // Match CPU's strength scaling for large brushes
@@ -2868,13 +3506,19 @@ void ADynamicTerrain::UpdateGPUBrush(FVector WorldPosition, float Radius, float 
         AdjustedStrength *= (Radius / 500.0f);
     }
     
+    // Store brush parameters in texture space (NOT world space!)
     PendingBrushParams = FVector4f(
-        TerrainPos.X,
-        TerrainPos.Y,
-        Radius / TerrainScale,
+        TextureCoords.X,        // X in texture coordinates
+        TextureCoords.Y,        // Y in texture coordinates
+        RadiusInTexels,         // Radius in texture space
         bRaise ? AdjustedStrength : -AdjustedStrength
     );
+    
     bHasPendingBrush = true;
+    
+    UE_LOG(LogTemp, Log,
+           TEXT("GPU Brush: Texture(%.2f, %.2f) Radius=%.2f texels Strength=%.1f"),
+           TextureCoords.X, TextureCoords.Y, RadiusInTexels, AdjustedStrength);
     
     // Execute compute shader immediately
     ExecuteTerrainComputeShader(0.0f);
@@ -2882,11 +3526,11 @@ void ADynamicTerrain::UpdateGPUBrush(FVector WorldPosition, float Radius, float 
     // ALWAYS sync GPU to CPU for terrain modifications
     SyncGPUToCPU();
     
-    // Find all affected chunks
+    // Find all affected chunks (continue with existing logic)
     TSet<int32> AffectedChunks;
-    int32 RadiusInIndices = FMath::CeilToInt(Radius / TerrainScale);
-    int32 CenterX = FMath::RoundToInt(TerrainPos.X);
-    int32 CenterY = FMath::RoundToInt(TerrainPos.Y);
+    int32 RadiusInIndices = FMath::CeilToInt(RadiusInTexels);
+    int32 CenterX = FMath::RoundToInt(TextureCoords.X);
+    int32 CenterY = FMath::RoundToInt(TextureCoords.Y);
     
     for (int32 Y = CenterY - RadiusInIndices; Y <= CenterY + RadiusInIndices; Y++)
     {
@@ -2894,7 +3538,7 @@ void ADynamicTerrain::UpdateGPUBrush(FVector WorldPosition, float Radius, float 
         {
             if (X >= 0 && X < TerrainWidth && Y >= 0 && Y < TerrainHeight)
             {
-                float Distance = FVector2D::Distance(FVector2D(X, Y), TerrainPos);
+                float Distance = FVector2D::Distance(FVector2D(X, Y), TextureCoords);
                 if (Distance <= RadiusInIndices)
                 {
                     int32 ChunkIndex = GetChunkIndexFromCoordinates(X, Y);
@@ -3146,13 +3790,36 @@ void ADynamicTerrain::ConnectToGPUAtmosphere(UAtmosphericSystem* AtmoSys)
 
 void ADynamicTerrain::ConnectToGPUWaterSystem(UWaterSystem* WaterSys)
 {
+    if (!WaterSys)
+    {
+        UE_LOG(LogTemp, Error, TEXT("Cannot connect to null water system"));
+        return;
+    }
+    
     ConnectedWaterSystem = WaterSys;
     
-    if (ConnectedWaterSystem)
+    // Let water system know about the terrain
+    WaterSys->ConnectToGPUTerrain(this);
+    
+    // Verify erosion textures were created
+    if (bEnableGPUErosion)
     {
-        UE_LOG(LogTemp, Warning, TEXT("Connected terrain to water system"));
+        if (!WaterSys->ErosionWaterDepthRT || !WaterSys->ErosionFlowVelocityRT)
+        {
+            UE_LOG(LogTemp, Error, TEXT("âŒ CRITICAL: Erosion textures not created after connection!"));
+            UE_LOG(LogTemp, Error, TEXT("   Water may need to be initialized first"));
+        }
+        else
+        {
+            UE_LOG(LogTemp, Warning, TEXT("âœ“ Erosion textures verified: %dx%d"),
+                   WaterSys->ErosionWaterDepthRT->SizeX,
+                   WaterSys->ErosionWaterDepthRT->SizeY);
+        }
     }
+    
+    UE_LOG(LogTemp, Warning, TEXT("âœ“ Terrain connected to GPU water system"));
 }
+
 
 void ADynamicTerrain::SyncGPUChunkVisuals()
 {
@@ -3246,5 +3913,150 @@ void ADynamicTerrain::ValidateChunkBoundary(int32 ChunkIndex)
         {
             UpdateGPUChunkMaterial(TerrainChunks[TopChunkIndex]);
         }
+    }
+}
+
+
+void ADynamicTerrain::DebugErosion()
+{
+    UE_LOG(LogTemp, Warning, TEXT("=== EROSION DEBUG ==="));
+    
+    // Check 1: Is system ready?
+    UE_LOG(LogTemp, Warning, TEXT("1. GPU Mode: %s"),
+           CurrentComputeMode == ETerrainComputeMode::GPU ? TEXT("âœ“ YES") : TEXT("âœ— NO (CPU mode)"));
+    UE_LOG(LogTemp, Warning, TEXT("2. Erosion Enabled: %s"),
+           bEnableGPUErosion ? TEXT("âœ“ YES") : TEXT("âœ— NO"));
+    
+    // Check 2: Water connection
+    bool bWaterConnected = (ConnectedWaterSystem != nullptr);
+    bool bWaterTexturesExist = bWaterConnected &&
+                               ConnectedWaterSystem->ErosionWaterDepthRT &&
+                               ConnectedWaterSystem->ErosionFlowVelocityRT;
+    
+    UE_LOG(LogTemp, Warning, TEXT("3. Water System: %s"),
+           bWaterConnected ? TEXT("âœ“ Connected") : TEXT("âœ— Not Connected"));
+    UE_LOG(LogTemp, Warning, TEXT("4. Water Textures: %s"),
+           bWaterTexturesExist ? TEXT("âœ“ Exist") : TEXT("âœ— Missing"));
+    
+    // Check 3: Water flow (if connected)
+    if (bWaterConnected && ConnectedWaterSystem->SimulationData.IsValid())
+    {
+        int32 WaterCells = 0;
+        float MaxFlow = 0.0f;
+        
+        for (int32 i = 0; i < ConnectedWaterSystem->SimulationData.WaterDepthMap.Num(); i++)
+        {
+            if (ConnectedWaterSystem->SimulationData.WaterDepthMap[i] > 0.01f)
+            {
+                WaterCells++;
+                float VelX = ConnectedWaterSystem->SimulationData.WaterVelocityX[i];
+                float VelY = ConnectedWaterSystem->SimulationData.WaterVelocityY[i];
+                float Flow = FMath::Sqrt(VelX * VelX + VelY * VelY);
+                MaxFlow = FMath::Max(MaxFlow, Flow);
+            }
+        }
+        
+        UE_LOG(LogTemp, Warning, TEXT("5. Water Cells: %d"), WaterCells);
+        UE_LOG(LogTemp, Warning, TEXT("6. Max Flow Speed: %.2f m/s"), MaxFlow);
+        
+        if (WaterCells == 0)
+        {
+            UE_LOG(LogTemp, Warning, TEXT("   âš ï¸  NO WATER - Add water to see erosion!"));
+        }
+        else if (MaxFlow < 0.1f)
+        {
+            UE_LOG(LogTemp, Warning, TEXT("   âš ï¸  WATER NOT FLOWING - Needs slope or more water!"));
+        }
+    }
+    
+    // Check 4: Erosion parameters
+    UE_LOG(LogTemp, Warning, TEXT("7. Erosion Rate: %.3f (default 0.1)"), GPUErosionRate);
+    
+    if (GPUErosionRate < 0.01f)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("   âš ï¸  TOO LOW - Try 0.5 or 1.0 for visible erosion"));
+    }
+    
+    // Final verdict
+    UE_LOG(LogTemp, Warning, TEXT(""));
+    if (CurrentComputeMode != ETerrainComputeMode::GPU)
+    {
+        UE_LOG(LogTemp, Error, TEXT("âŒ EROSION CANNOT WORK - Switch to GPU mode!"));
+    }
+    else if (!bEnableGPUErosion)
+    {
+        UE_LOG(LogTemp, Error, TEXT("âŒ EROSION DISABLED - Enable bEnableGPUErosion"));
+    }
+    else if (!bWaterTexturesExist)
+    {
+        UE_LOG(LogTemp, Error, TEXT("âŒ WATER TEXTURES MISSING - Need to create them!"));
+    }
+    else
+    {
+        UE_LOG(LogTemp, Warning, TEXT("âœ… EROSION SHOULD BE WORKING!"));
+        UE_LOG(LogTemp, Warning, TEXT("   Wait 30-60 seconds and check for terrain changes."));
+        UE_LOG(LogTemp, Warning, TEXT("   Increase GPUErosionRate to 1.0 for faster results."));
+    }
+    
+    UE_LOG(LogTemp, Warning, TEXT("===================="));
+}
+
+void ADynamicTerrain::DebugGPUTerrain()
+{
+    UE_LOG(LogTemp, Warning, TEXT("=== GPU TERRAIN DEBUG ==="));
+    UE_LOG(LogTemp, Warning, TEXT("GPU Initialized: %s"), bGPUInitialized ? TEXT("YES") : TEXT("NO"));
+    UE_LOG(LogTemp, Warning, TEXT("Compute Mode: %s"),
+           CurrentComputeMode == ETerrainComputeMode::GPU ? TEXT("GPU") : TEXT("CPU"));
+    UE_LOG(LogTemp, Warning, TEXT("GPU Texture: %dx%d"), GPUTextureWidth, GPUTextureHeight);
+    UE_LOG(LogTemp, Warning, TEXT("CPU Heightmap: %dx%d (%d elements)"),
+           TerrainWidth, TerrainHeight, HeightMap.Num());
+    
+    if (HeightRenderTexture)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("HeightRenderTexture: %dx%d, Format=%d"),
+               HeightRenderTexture->SizeX, HeightRenderTexture->SizeY,
+               (int32)HeightRenderTexture->GetFormat());
+    }
+    else
+    {
+        UE_LOG(LogTemp, Error, TEXT("HeightRenderTexture: NULL"));
+    }
+    
+    ValidateGPUUpload();
+}
+
+void ADynamicTerrain::DebugAuthority()
+{
+    UE_LOG(LogTemp, Warning, TEXT("=== TERRAIN AUTHORITY DEBUG ==="));
+    UE_LOG(LogTemp, Warning, TEXT("CPU Has Authority: %s"), bCPUHasAuthority ? TEXT("YES") : TEXT("NO"));
+    UE_LOG(LogTemp, Warning, TEXT("Compute Mode: %s"),
+           CurrentComputeMode == ETerrainComputeMode::GPU ? TEXT("GPU") : TEXT("CPU"));
+    UE_LOG(LogTemp, Warning, TEXT("GPU Initialized: %s"), bGPUInitialized ? TEXT("Yes") : TEXT("No"));
+    UE_LOG(LogTemp, Warning, TEXT("Pending GPU Init: %s"), bPendingGPUInit ? TEXT("Yes") : TEXT("No"));
+    
+    // Sample heights to verify terrain exists
+    if (HeightMap.Num() > 0)
+    {
+        float MinH = FLT_MAX, MaxH = -FLT_MAX;
+        for (const float& H : HeightMap)
+        {
+            if (!FMath::IsNaN(H))
+            {
+                MinH = FMath::Min(MinH, H);
+                MaxH = FMath::Max(MaxH, H);
+            }
+        }
+        
+        UE_LOG(LogTemp, Warning, TEXT("CPU Heights: Min=%.2f, Max=%.2f, Range=%.2f"),
+               MinH, MaxH, MaxH - MinH);
+        
+        if (MaxH - MinH < 1.0f)
+        {
+            UE_LOG(LogTemp, Error, TEXT("WARNING: CPU terrain appears flat!"));
+        }
+    }
+    else
+    {
+        UE_LOG(LogTemp, Error, TEXT("CPU HeightMap is EMPTY!"));
     }
 }

@@ -117,7 +117,7 @@ void UWaterSystem::Initialize(ADynamicTerrain* InTerrain, AMasterWorldController
     }
     
     OwnerTerrain = InTerrain;
-    CachedMasterController = InMasterController;  // Optional, not required
+    CachedMasterController = InMasterController;
     
     // Initialize simulation data
     SimulationData.Initialize(OwnerTerrain->TerrainWidth, OwnerTerrain->TerrainHeight);
@@ -127,6 +127,13 @@ void UWaterSystem::Initialize(ADynamicTerrain* InTerrain, AMasterWorldController
     {
         CreateWaterDepthTexture();
         CreateAdvancedWaterTexture();
+    }
+    
+    // NEW: Create erosion textures (always, for GPU terrain erosion)
+    if (SimulationData.IsValid())
+    {
+        CreateErosionTextures();
+        UE_LOG(LogTemp, Warning, TEXT("WaterSystem: Created erosion textures for GPU terrain"));
     }
     
     UE_LOG(LogTemp, Warning, TEXT("WaterSystem: Initialized %dx%d - MasterController: %s"),
@@ -157,10 +164,46 @@ bool UWaterSystem::IsSystemReady() const
 
 void UWaterSystem::UpdateWaterSimulation(float DeltaTime)
 {
+    // ===== VALIDATION: ENSURE SIMULATION IS READY =====
     if (!SimulationData.IsValid() || !OwnerTerrain)
     {
         return;
     }
+    
+    // ===== TEMPORAL PAUSE CHECK: RESPECT MASTER TIME CONTROL =====
+    UTemporalManager* TemporalManager = GetWorld() ?
+        GetWorld()->GetGameInstance()->GetSubsystem<UTemporalManager>() : nullptr;
+    
+    // When paused, skip physics but keep visual updates responsive
+    if (TemporalManager && TemporalManager->IsPaused())
+    {
+        // Update textures for visual feedback even when paused
+        if (bUseShaderWater)
+        {
+            UpdateWaterDepthTexture();
+            UpdateWaterShaderParameters();
+        }
+        return; // Skip all physics updates
+    }
+    
+    // ===== GET PROPERLY SCALED DELTA TIME =====
+    // Query TemporalManager for time-scaled delta (accounts for global time acceleration)
+    float EffectiveDeltaTime = DeltaTime;
+    if (TemporalManager)
+    {
+        EffectiveDeltaTime = TemporalManager->GetSystemDeltaTime(
+            ESystemType::WaterPhysics,
+            DeltaTime
+        );
+        
+        // Safety check: if temporal system returns 0 (shouldn't happen after IsPaused check)
+        if (EffectiveDeltaTime <= 0.0f)
+        {
+            return;
+        }
+    }
+    
+
     
     // Performance timing
     float SimulationStartTime = FPlatformTime::Seconds();
@@ -176,7 +219,7 @@ void UWaterSystem::UpdateWaterSimulation(float DeltaTime)
    // }
     
     // Step 3: Calculate water flow forces
-    CalculateWaterFlow(DeltaTime);
+    CalculateWaterFlow(EffectiveDeltaTime);
     
     if (bEnableSimulationSmoothing)
     {
@@ -189,10 +232,10 @@ void UWaterSystem::UpdateWaterSimulation(float DeltaTime)
     }
     
     // Step 4: Move water based on flow
-    ApplyWaterFlow(DeltaTime);
+    ApplyWaterFlow(EffectiveDeltaTime);
     
     // Step 5: Handle evaporation and absorption
-    ProcessWaterEvaporation(DeltaTime);
+    ProcessWaterEvaporation(EffectiveDeltaTime);
     
     // Step 6: Always maintain chunk list
         UpdateWaterSurfaceChunks();
@@ -285,6 +328,10 @@ void UWaterSystem::UpdateWaterSimulation(float DeltaTime)
         UpdateAllWaterVisuals(DeltaTime);
         UpdateWaterShaderParameters();
     }
+    if (ErosionWaterDepthRT && ErosionFlowVelocityRT)
+       {
+           UpdateErosionTextures();
+       }
 }
 
 // ===== VOLUMETRIC WATER IMPLEMENTATION =====
@@ -435,6 +482,36 @@ void UWaterSystem::ReturnMeshComponentToPool(UProceduralMeshComponent* Component
     ReturnComponentToValidatedPool(Component);
 }
 
+void UWaterSystem::ConnectToGPUTerrain(ADynamicTerrain* Terrain)
+{
+    if (!Terrain)
+    {
+        UE_LOG(LogTemp, Error, TEXT("Cannot connect to null terrain"));
+        return;
+    }
+    
+    OwnerTerrain = Terrain;
+    
+    // Ensure simulation data is valid
+    if (!SimulationData.IsValid())
+    {
+        UE_LOG(LogTemp, Error, TEXT("SimulationData not valid - cannot create erosion textures"));
+        return;
+    }
+    
+    // ===== CRITICAL: ENSURE EROSION TEXTURES EXIST =====
+    if (!ErosionWaterDepthRT || !ErosionFlowVelocityRT)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("Erosion textures missing - creating now"));
+        CreateErosionTextures();
+    }
+    else
+    {
+        UE_LOG(LogTemp, Log, TEXT("Erosion textures already exist"));
+    }
+    
+    UE_LOG(LogTemp, Warning, TEXT("✓ Water connected to GPU terrain"));
+}
 
 // ===== ENHANCED MESH GENERATION WITH LOD =====
 
@@ -2692,13 +2769,14 @@ void UWaterSystem::ResetWaterSystem()
         return;
     }
     
+    UE_LOG(LogTemp, Warning, TEXT("=== RESETTING WATER SYSTEM ==="));
+    
     // Reset all water data
     for (int32 i = 0; i < SimulationData.WaterDepthMap.Num(); i++)
     {
         SimulationData.WaterDepthMap[i] = 0.0f;
         SimulationData.WaterVelocityX[i] = 0.0f;
         SimulationData.WaterVelocityY[i] = 0.0f;
-      //  SimulationData.SedimentMap[i] = 0.0f;
     }
     
     // Reset weather
@@ -2709,7 +2787,16 @@ void UWaterSystem::ResetWaterSystem()
     ChunksWithWater.Empty();
     TotalWaterAmount = 0.0f;
     
-    UE_LOG(LogTemp, Warning, TEXT("WaterSystem: Reset complete"));
+    // ===== CRITICAL FIX: CLEANUP AND RECREATE EROSION TEXTURES =====
+    RecreateErosionTextures();
+    
+    // Force update of water textures
+    if (WaterDepthTexture)
+    {
+        UpdateWaterDepthTexture();
+    }
+    
+    UE_LOG(LogTemp, Warning, TEXT("✓ Water system reset complete (including erosion textures)"));
 }
 
 /**
@@ -2837,13 +2924,14 @@ void UWaterSystem::CalculateWaterFlow(float DeltaTime)
                             
                             float HeightDiff = WaterSurfaceHeight - NWaterHeight;
                             
+                            /*
                             // Edge drainage
                             if ((NX == 0 || NX == Width-1 || NY == 0 || NY == Height-1) &&
                                 HeightDiff > 0)
                             {
                                 HeightDiff *= 2.0f;
                             }
-                            
+                            */
                             if (HeightDiff > 0.001f)
                             {
                                 float Force = (HeightDiff * Weight) / Distance;
@@ -3152,7 +3240,7 @@ void UWaterSystem::ProcessWaterEvaporation(float DeltaTime)
         return;
     }
     
-    if (bPausedForTerrainEdit) return;
+   // if (bPausedForTerrainEdit) return;
     
     float TotalEvaporation = 0.0f;
     float TotalInfiltration = 0.0f;
@@ -6251,6 +6339,8 @@ void UWaterSystem::InitializeGPUDisplacement()
             UE_LOG(LogTemp, Warning, TEXT("Loaded GPU Water Material successfully"));
         }
     }
+ 
+       
     
     // Set initial state
     bGPUWaveSystemInitialized = true;
@@ -6428,9 +6518,17 @@ void UWaterSystem::ExecuteWaveComputeShader()
         WindStrength = FMath::Clamp(WindStrength, 0.0f, 100.0f);  // Max 100 units wind
     }
     
-    // Get terrain dimensions
-    float TerrainWidth = SimulationData.TerrainWidth * OwnerTerrain->TerrainScale;
-    float TerrainHeight = SimulationData.TerrainHeight * OwnerTerrain->TerrainScale;
+    // Get terrain dimensions from authoritative source
+    if (!CachedMasterController)
+    {
+        UE_LOG(LogTemp, Error, TEXT("ExecuteWaveComputeShader: No MasterController!"));
+        return;
+    }
+
+    FVector2D WorldDims = CachedMasterController->GetWorldDimensions();
+    float TerrainScale = CachedMasterController->GetTerrainScale();
+    float TerrainWidth = WorldDims.X * TerrainScale;   // Use authoritative values
+    float TerrainHeight = WorldDims.Y * TerrainScale;
     
     // Validate and clamp wave parameters
     float ClampedWaveScale = FMath::Clamp(GPUWaveScale, 0.0f, 2.0f);  // Limit wave scale multiplier
@@ -7787,4 +7885,161 @@ void UWaterSystem::SetPrecipitationInput(UTextureRenderTarget2D* PrecipTexture)
         // You can expand this to actually use precipitation in water flow
         UE_LOG(LogTemp, Verbose, TEXT("WaterSystem: Precipitation texture set"));
     }
+}
+
+void UWaterSystem::CreateErosionTextures()
+{
+    if (!SimulationData.IsValid())
+    {
+        UE_LOG(LogTemp, Error, TEXT("Cannot create erosion textures - simulation not ready"));
+        return;
+    }
+    
+    int32 Width = SimulationData.TerrainWidth;
+    int32 Height = SimulationData.TerrainHeight;
+    
+    // ===== CREATE WATER DEPTH RENDER TARGET (R32F) =====
+    ErosionWaterDepthRT = NewObject<UTextureRenderTarget2D>(this);
+    ErosionWaterDepthRT->RenderTargetFormat = RTF_R32f;
+    ErosionWaterDepthRT->InitCustomFormat(Width, Height, PF_R32_FLOAT, false);
+    ErosionWaterDepthRT->AddressX = TA_Clamp;
+    ErosionWaterDepthRT->AddressY = TA_Clamp;
+    ErosionWaterDepthRT->bCanCreateUAV = true;  // Enable compute shader writes
+    ErosionWaterDepthRT->UpdateResourceImmediate(true);
+    
+    // ===== CREATE FLOW VELOCITY RENDER TARGET (RG16F) =====
+    ErosionFlowVelocityRT = NewObject<UTextureRenderTarget2D>(this);
+    ErosionFlowVelocityRT->RenderTargetFormat = RTF_RG16f;
+    ErosionFlowVelocityRT->InitCustomFormat(Width, Height, PF_G16R16F, false);
+    ErosionFlowVelocityRT->AddressX = TA_Clamp;
+    ErosionFlowVelocityRT->AddressY = TA_Clamp;
+    ErosionFlowVelocityRT->bCanCreateUAV = true;  // Enable compute shader writes
+    ErosionFlowVelocityRT->UpdateResourceImmediate(true);
+    
+    UE_LOG(LogTemp, Warning, TEXT("✓ Created erosion textures: %dx%d (Depth: R32F, Velocity: RG16F)"),
+           Width, Height);
+    
+    // Initial population with current simulation data
+    UpdateErosionTextures();
+}
+
+void UWaterSystem::UpdateErosionTextures()
+{
+    if (!ErosionWaterDepthRT || !ErosionFlowVelocityRT || !SimulationData.IsValid())
+    {
+        return;
+    }
+    
+    int32 Width = SimulationData.TerrainWidth;
+    int32 Height = SimulationData.TerrainHeight;
+    
+    // Prepare data on game thread
+    TArray<float> DepthData;
+    TArray<FFloat16> VelocityData;
+    
+    DepthData.SetNumUninitialized(Width * Height);
+    VelocityData.SetNumUninitialized(Width * Height * 2); // 2 channels (X, Y)
+    
+    // Copy simulation data to upload buffers
+    for (int32 i = 0; i < SimulationData.WaterDepthMap.Num(); i++)
+    {
+        DepthData[i] = SimulationData.WaterDepthMap[i];
+        VelocityData[i * 2 + 0] = FFloat16(SimulationData.WaterVelocityX[i]);
+        VelocityData[i * 2 + 1] = FFloat16(SimulationData.WaterVelocityY[i]);
+    }
+    
+    // Enqueue render command for GPU upload
+    ENQUEUE_RENDER_COMMAND(UpdateErosionTextures)(
+        [this, DepthData = MoveTemp(DepthData), VelocityData = MoveTemp(VelocityData),
+         Width, Height](FRHICommandListImmediate& RHICmdList)
+        {
+            // ===== UPDATE WATER DEPTH TEXTURE =====
+            FTextureRenderTargetResource* DepthResource = ErosionWaterDepthRT->GetRenderTargetResource();
+            if (DepthResource)
+            {
+                // MODERN UE5: Use FTextureRHIRef instead of deprecated FTexture2DRHIRef
+                FTextureRHIRef DepthTexture = DepthResource->GetRenderTargetTexture();
+                
+                if (DepthTexture.IsValid())
+                {
+                    uint32 Stride = Width * sizeof(float);
+                    FUpdateTextureRegion2D Region(0, 0, 0, 0, Width, Height);
+                    
+                    // Modern RHI texture update
+                    RHICmdList.UpdateTexture2D(
+                        DepthTexture,
+                        0,  // Mip level
+                        Region,
+                        Stride,
+                        (const uint8*)DepthData.GetData()
+                    );
+                }
+            }
+            
+            // ===== UPDATE FLOW VELOCITY TEXTURE =====
+            FTextureRenderTargetResource* VelocityResource = ErosionFlowVelocityRT->GetRenderTargetResource();
+            if (VelocityResource)
+            {
+                // MODERN UE5: Use FTextureRHIRef instead of deprecated FTexture2DRHIRef
+                FTextureRHIRef VelocityTexture = VelocityResource->GetRenderTargetTexture();
+                
+                if (VelocityTexture.IsValid())
+                {
+                    uint32 Stride = Width * sizeof(FFloat16) * 2; // 2 channels
+                    FUpdateTextureRegion2D Region(0, 0, 0, 0, Width, Height);
+                    
+                    // Modern RHI texture update
+                    RHICmdList.UpdateTexture2D(
+                        VelocityTexture,
+                        0,  // Mip level
+                        Region,
+                        Stride,
+                        (const uint8*)VelocityData.GetData()
+                    );
+                }
+            }
+        }
+    );
+}
+
+void UWaterSystem::CleanupErosionTextures()
+{
+    UE_LOG(LogTemp, Verbose, TEXT("Cleaning up erosion textures..."));
+    
+    // Wait for any pending render commands
+    FlushRenderingCommands();
+    
+    // Release water depth texture
+    if (ErosionWaterDepthRT)
+    {
+        ErosionWaterDepthRT->ReleaseResource();
+        ErosionWaterDepthRT->ConditionalBeginDestroy();
+        ErosionWaterDepthRT = nullptr;
+    }
+    
+    // Release flow velocity texture
+    if (ErosionFlowVelocityRT)
+    {
+        ErosionFlowVelocityRT->ReleaseResource();
+        ErosionFlowVelocityRT->ConditionalBeginDestroy();
+        ErosionFlowVelocityRT = nullptr;
+    }
+    
+    UE_LOG(LogTemp, Log, TEXT("✓ Erosion textures cleaned up"));
+}
+
+void UWaterSystem::RecreateErosionTextures()
+{
+    UE_LOG(LogTemp, Warning, TEXT("Recreating erosion textures..."));
+    
+    // First cleanup any existing textures
+    CleanupErosionTextures();
+    
+    // Wait a frame for garbage collection
+    FlushRenderingCommands();
+    
+    // Now create fresh textures
+    CreateErosionTextures();
+    
+    UE_LOG(LogTemp, Warning, TEXT("✓ Erosion textures recreated"));
 }

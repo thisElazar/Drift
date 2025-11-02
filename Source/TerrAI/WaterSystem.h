@@ -420,13 +420,13 @@ public:
     // ===== EDGE DRAINAGE SETTINGS =====
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Edge Drainage")
-    bool bEnableEdgeDrainage = true;
+    bool bEnableEdgeDrainage = false;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Edge Drainage")
     float EdgeDrainageStrength = 0.2f;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Edge Drainage")
-    bool bEnhancedWaterfallEffect = true;
+    bool bEnhancedWaterfallEffect = false;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Edge Drainage")
     float WaterfallDrainageMultiplier = 0.3f;
@@ -1250,18 +1250,40 @@ public:
     
     void GenerateFlatBaseMesh(FWaterSurfaceChunk& Chunk);
     
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Erosion")
+    UTextureRenderTarget2D* ErosionWaterDepthRT = nullptr;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Erosion")
+    UTextureRenderTarget2D* ErosionFlowVelocityRT = nullptr;
+
+    UFUNCTION(BlueprintCallable, Category = "Erosion")
+    void CreateErosionTextures();
+
+    UFUNCTION(BlueprintCallable, Category = "Erosion")
+    void UpdateErosionTextures();
+    
+    // Cleanup function for erosion textures
+     UFUNCTION(BlueprintCallable, Category = "Erosion")
+     void CleanupErosionTextures();
+     
+     // Recreate erosion textures (cleanup + create)
+     UFUNCTION(BlueprintCallable, Category = "Erosion")
+     void RecreateErosionTextures();
+    
     UFUNCTION(BlueprintCallable)
     void DebugGPUWaterAlignment();
     
     UFUNCTION(BlueprintCallable)
     void DebugMasterControllerCoordinates();
     
+    void ConnectToGPUTerrain(ADynamicTerrain* Terrain);
     
     private:
         TMap<int32, float> ChunkWaterAreas;
         int32 FramesSinceLastMeshUpdate = 0;
     
     void UpdateGPUWaterChunks();
+    
     
 
 protected:

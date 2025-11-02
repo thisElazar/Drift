@@ -135,6 +135,12 @@ public:
 
     UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input")
     class UInputAction* ToggleRainAction;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input")
+    UInputAction* PauseAction = nullptr;
+
+    UFUNCTION(BlueprintCallable, Category = "Time Control")
+    void HandlePauseToggle();
 
     UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input")
     class UInputAction* ToggleEditingModeAction;
@@ -224,8 +230,8 @@ public:
     class UInputAction* LeftShiftAction;
 
     UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input")
-    class UInputAction* RightShiftAction;
-
+    UInputAction* ToggleControlPanelAction = nullptr;
+    
     // Atmospheric brush cycling
     UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input")
     class UInputAction* CycleBrushModeAction;
@@ -260,6 +266,9 @@ public:
     UFUNCTION()
     void HandleRainToggle();
     
+    UFUNCTION(BlueprintImplementableEvent, Category = "UI")
+    void OnToggleControlPanel();
+    
     // Spring editing functions
         UFUNCTION(BlueprintCallable, Category = "Spring Editing")
         void StartSpringEditing(bool bAdd);
@@ -293,6 +302,8 @@ public:
 protected:
     virtual void BeginPlay() override;
     virtual void PossessedBy(AController* NewController) override;
+    
+    void ToggleControlPanel();
 
     // Root Component
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
@@ -441,7 +452,7 @@ protected:
     float MinWaterBrushStrength = 1.0f;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Editing")
-    float MaxWaterBrushStrength = 100.0f;
+    float MaxWaterBrushStrength = 50000.0f;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Editing")
     float WaterStrengthChangeRate = 5.0f;
@@ -608,11 +619,6 @@ protected:
     void ToggleRainInput(const FInputActionValue& Value);
     void ToggleEditingModeInput(const FInputActionValue& Value);
 
-    // Enhanced Input functions - Shift key tracking
-    void OnLeftShiftPressed(const FInputActionValue& Value);
-    void OnLeftShiftReleased(const FInputActionValue& Value);
-    void OnRightShiftPressed(const FInputActionValue& Value);
-    void OnRightShiftReleased(const FInputActionValue& Value);
 
     // Performance and UI
     void UpdatePerformanceStats(float DeltaTime);
@@ -649,18 +655,14 @@ private:
     bool bIsAddingWater = false;
     bool bIsRemovingWater = false;
     FVector LastCursorPosition = FVector::ZeroVector;
-    
-    // Enhanced Input - Shift key state
-    bool bLeftShiftHeld = false;
-    bool bRightShiftHeld = false;
 
     // Camera transition state - simplified
     bool bTransitioning = false;
     FVector TargetLocation;
     FRotator TargetRotation;
     ECameraMode TargetCameraMode = ECameraMode::Overhead; // Explicit target mode tracking
-    float MinCameraHeight = 200.0f;
-    float MaxCameraHeight = 10000.0f;
+    float MinCameraHeight = -10000.0f;
+    float MaxCameraHeight = 100000.0f;
 
     // Chunk update priority system
     struct FChunkUpdateRequest

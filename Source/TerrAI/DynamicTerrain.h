@@ -4,6 +4,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "MasterController.h"
+#include "TerrAIGameInstance.h"
 #include "Shaders/TerrainComputeShader.h"
 #include "DynamicTerrain.generated.h"
 
@@ -302,6 +303,20 @@ public:
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "World Configuration")
     FWorldSizeConfig WorldConfig;
     
+    // ===== MAP DEFINITION =====
+    
+    UPROPERTY()
+    FTerrainMapDefinition CurrentMapDefinition;
+    
+    bool bHasMapDefinition = false;
+    
+    UFUNCTION(BlueprintCallable, Category = "Map Definition")
+    void SetMapDefinition(const FTerrainMapDefinition& MapDef);
+    
+    void ApplyMapDefinitionGeneration();
+    
+    void GenerateProceduralTerrainWithSettings(int32 Seed, float HeightVar, float NoiseScl, int32 Octaves);
+    
     // ===== TERRAIN DIMENSIONS - SYNCHRONIZED FROM MASTERCONTROLLER =====
     // These are working properties synchronized with MasterController authority (NO DEFAULTS)
     int32 TerrainWidth;  // Synchronized with MasterController
@@ -311,10 +326,35 @@ public:
     float TerrainScale = 100.0f;
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terrain Settings")
-    float MaxTerrainHeight = 10000.0f;
+    float MaxTerrainHeight = 8000.0f;
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terrain Settings")
-    float MinTerrainHeight = -10000.0f;
+    float MinTerrainHeight = -25000.0f;
+    
+    /** Height multiplier for procedural generation (2.0 = double intensity) */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terrain Generation",
+              meta = (ClampMin = "0.1", ClampMax = "20.0", UIMin = "0.5", UIMax = "20.0"))
+    float HeightMultiplier = 8.0f;
+
+    /** Whether to apply map-specific height multiplier override */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terrain Generation")
+    bool bUseMapHeightMultiplier = false;
+    
+    // ===== RUNTIME PARAMETER UPDATES =====
+
+    /**
+     * Update height multiplier and regenerate terrain
+     */
+    UFUNCTION(BlueprintCallable, Category = "Terrain Generation", meta = (DisplayName = "Set Height Multiplier"))
+    void SetHeightMultiplier(float NewMultiplier);
+
+    /**
+     * Get current effective height range
+     */
+    UFUNCTION(BlueprintPure, Category = "Terrain Generation")
+    FVector2D GetHeightRange() const;
+    
+    void RefreshAllChunkMaterials();
     
     // ===== SCALABLE CHUNK SYSTEM =====
     
@@ -344,7 +384,7 @@ public:
     bool bEnablePrecipitationOptimization = true;
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Performance")
-    int32 MaxWaterUpdatesPerFrame = 16; // Higher throughput for water-only updates
+    int32 MaxWaterUpdatesPerFrame = 24; // Higher throughput for water-only updates
     
     // ===== PUBLIC CHUNK ACCESS =====
     
@@ -412,8 +452,16 @@ public:
     float GetCachedFrameTime() const;
     
     
+    UFUNCTION(Exec)
+      void DebugErosion();
+    
+    
+    
     // ===== TERRAIN DATA =====
     TArray<float> HeightMap;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Terrain")
+        bool bEnableGPUErosion = true;
     
 private:
     // ===== INTERNAL COMPONENTS =====
@@ -525,8 +573,7 @@ private:
     FVector4f PendingBrushParams;
        bool bHasPendingBrush = false;
     
-    // GPU-only mode flags
-        bool bEnableGPUErosion = false;
+
         
         // Helper methods
         void TransferHeightmapToGPU();
@@ -657,6 +704,20 @@ public:
         
         UPROPERTY()
         class UAtmosphericSystem* ConnectedAtmosphere = nullptr;
+    
+    // Helper for safe neighbor averaging
+    float GetSafeNeighborAverage(int32 X, int32 Y) const;
+    
+    // Validate height data before applying
+    bool ValidateHeightData(const TArray<float>& Data) const;
+    
+    void DebugAuthority();
+    
+    // GPU Authority Management
+    bool bPendingGPUInit = false;
+    bool bCPUHasAuthority = true;  // CPU is authority until proven otherwise
+    
+
         
         // Internal GPU functions
         void CreateGPUResources();
@@ -671,10 +732,7 @@ public:
         TArray<float> GPUHeightReadbackBuffer;
         bool bPendingGPUReadback = false;
         
-    
-    // Add to DynamicTerrain.h
 
-    // Add to public section:
     public:
         // Precipitation input for enhanced erosion
         UFUNCTION(BlueprintCallable, Category = "GPU Terrain")
@@ -684,7 +742,16 @@ public:
         UFUNCTION(BlueprintPure, Category = "Terrain")
         float GetTerrainScale() const { return TerrainScale; }
     
+    // Validation function
+       UFUNCTION(BlueprintCallable, Category = "GPU Terrain")
+       void ValidateGPUUpload();
+       
+       // Console command
+       UFUNCTION(Exec, Category = "GPU Terrain")
+       void DebugGPUTerrain();
     
+    // New function for GPU init with data
+    void InitializeGPUTerrainWithData();
 
     // Add to protected section (if not already present):
     protected:
