@@ -24,6 +24,7 @@ public:
         // Input textures
         SHADER_PARAMETER_RDG_TEXTURE_SRV(Texture2D<float>, WaterDepthTexture)
         SHADER_PARAMETER_RDG_TEXTURE_SRV(Texture2D<float4>, FlowDataTexture)
+        SHADER_PARAMETER_RDG_TEXTURE_SRV(Texture2D<float4>, AtmosphereStateTexture)
         
         // Output texture
         SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, WaveOutputTexture)

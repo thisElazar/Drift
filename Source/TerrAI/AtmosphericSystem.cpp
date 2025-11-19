@@ -70,7 +70,7 @@ void UAtmosphericSystem::InitializeAtmosphericGrid()
             
             Cell.GridX = X;
             Cell.GridY = Y;
-            Cell.Temperature = 288.15f;  // 15°C
+            Cell.Temperature = 288.15f;  // 15Â°C
             Cell.Humidity = 0.5f;
             Cell.MoistureMass = 0.0f;
             Cell.CloudCover = 0.0f;
@@ -213,7 +213,7 @@ void UAtmosphericSystem::SetWeather(EWeatherType NewWeather, float TransitionTim
         TargetWeather.CloudCover = 0.8f;
         TargetWeather.PrecipitationRate = 2.0f;
         TargetWeather.Humidity = 0.7f;
-        TargetWeather.Temperature = 268.15f;  // -5°C
+        TargetWeather.Temperature = 268.15f;  // -5Â°C
         TargetWeather.Visibility = 2000.0f;
         TargetWeather.WindSpeed = 6.0f;
         break;
@@ -589,11 +589,14 @@ const FSimplifiedAtmosphericCell& UAtmosphericSystem::GetCell(int32 X, int32 Y) 
 
 FVector2D UAtmosphericSystem::WorldToGridCoordinates(FVector WorldPosition) const
 {
-    if (!TargetTerrain) return FVector2D::ZeroVector;
+    if (!TargetTerrain || !MasterController) return FVector2D::ZeroVector;
     
+    // AUTHORITY FIX: Use MasterController for authoritative world dimensions
     FVector TerrainOrigin = TargetTerrain->GetActorLocation();
-    float TerrainWidth = TargetTerrain->TerrainWidth * TargetTerrain->TerrainScale;
-    float TerrainHeight = TargetTerrain->TerrainHeight * TargetTerrain->TerrainScale;
+    FVector2D WorldDims = MasterController->GetWorldDimensions();
+    float TerrainScale = MasterController->GetTerrainScale();
+    float TerrainWidth = WorldDims.X * TerrainScale;
+    float TerrainHeight = WorldDims.Y * TerrainScale;
     
     float X = (WorldPosition.X - TerrainOrigin.X + TerrainWidth * 0.5f) / TerrainWidth;
     float Y = (WorldPosition.Y - TerrainOrigin.Y + TerrainHeight * 0.5f) / TerrainHeight;
@@ -606,11 +609,14 @@ FVector2D UAtmosphericSystem::WorldToGridCoordinates(FVector WorldPosition) cons
 
 FVector UAtmosphericSystem::GridToWorldCoordinates(int32 X, int32 Y) const
 {
-    if (!TargetTerrain) return FVector::ZeroVector;
+    if (!TargetTerrain || !MasterController) return FVector::ZeroVector;
     
+    // AUTHORITY FIX: Use MasterController
     FVector TerrainOrigin = TargetTerrain->GetActorLocation();
-    float TerrainWidth = TargetTerrain->TerrainWidth * TargetTerrain->TerrainScale;
-    float TerrainHeight = TargetTerrain->TerrainHeight * TargetTerrain->TerrainScale;
+    FVector2D WorldDims = MasterController->GetWorldDimensions();
+    float TerrainScale = MasterController->GetTerrainScale();
+    float TerrainWidth = WorldDims.X * TerrainScale;
+    float TerrainHeight = WorldDims.Y * TerrainScale;
     
     float WorldX = (X / (float)GridResolutionX) * TerrainWidth - TerrainWidth * 0.5f + TerrainOrigin.X;
     float WorldY = (Y / (float)GridResolutionY) * TerrainHeight - TerrainHeight * 0.5f + TerrainOrigin.Y;

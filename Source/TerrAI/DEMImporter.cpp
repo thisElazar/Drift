@@ -475,7 +475,18 @@ bool UDEMImporter::LoadTIFF(const FString& FilePath)
     }
     else if (BitDepth == 32)
     {
-        bSuccess = ImageWrapper->GetRaw(ERGBFormat::Gray, 32, RawData);
+        // Try RGBA first (some TIFFs store elevation in RGBA channels)
+        bSuccess = ImageWrapper->GetRaw(ERGBFormat::RGBA, 32, RawData);
+        if (!bSuccess)
+        {
+            // Try BGRA
+            bSuccess = ImageWrapper->GetRaw(ERGBFormat::BGRA, 32, RawData);
+        }
+        if (!bSuccess)
+        {
+            // Try Gray as last resort
+            bSuccess = ImageWrapper->GetRaw(ERGBFormat::Gray, 32, RawData);
+        }
     }
     else if (BitDepth == 8)
     {
