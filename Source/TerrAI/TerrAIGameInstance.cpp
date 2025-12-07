@@ -45,6 +45,14 @@ UTerrAIGameInstance::UTerrAIGameInstance()
     
     // Populate default maps on first run
     InitializeDefaultMaps();
+    
+    // SURGICAL FIX: Auto-select map 0 if starting from BaseMap directly
+      // This ensures we always have a valid map definition for direct BaseMap loads
+      if (AvailableMaps.Num() > 0)
+      {
+          SelectMap(0);  // Select first available map (Random Terrain)
+          UE_LOG(LogTemp, Warning, TEXT("TerrAIGameInstance: Auto-selected map 0 for direct BaseMap loads"));
+      }
 }
 
 void UTerrAIGameInstance::InitializeDefaultMaps()

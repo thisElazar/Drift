@@ -14,9 +14,9 @@
  * CRITICAL RESPONSIBILITIES:
  * - 8-Phase Sequential Initialization (eliminates race conditions)
  * - Coordinate System Authority (single source of truth)
- * - Water Conservation Tracking (atmosphere ↔ surface ↔ groundwater)
+ * - Water Conservation Tracking (atmosphere â†” surface â†” groundwater)
  * - Universal Brush System (multi-system editing coordination)
- * - Temporal Coordination (real-time → geological timescales)
+ * - Temporal Coordination (real-time â†’ geological timescales)
  * - World Scaling Configuration (map sizes, grid resolutions)
  * - System Performance Monitoring (frame time, update rates)
  *
@@ -288,12 +288,12 @@ public:
  *    - Coarse resolution (biomes are large-scale)
  *
  * COORDINATE CONVERSION EXAMPLE:
- * World Position → Water Grid:
+ * World Position â†’ Water Grid:
  * 1. Subtract WorldOrigin (get relative position)
  * 2. Divide by WaterCellScale (convert to grid units)
  * 3. Round to nearest integer (get grid index)
  *
- * World Position → Atmosphere Grid:
+ * World Position â†’ Atmosphere Grid:
  * 1. Subtract WorldOrigin
  * 2. Divide by AtmosphereCellSize (1000 instead of 100)
  * 3. Result: Multiple water cells per atmosphere cell
@@ -596,7 +596,7 @@ struct TERRAI_API FWorldCoordinateSystem
  * Phase 8: Final synchronization & validation
  *
  * WATER CONSERVATION CONSTANTS:
- * - WATER_DENSITY_KG_PER_M3: 1000 kg/m³ (standard water density)
+ * - WATER_DENSITY_KG_PER_M3: 1000 kg/mÂ³ (standard water density)
  * - SECONDS_PER_HOUR: 3600 (time conversion)
  * - MM_TO_M: 0.001 (precipitation unit conversion)
  * - WATER_DEPTH_SCALE: 0.01 (1 sim unit = 1cm water)
@@ -767,7 +767,7 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Budget")
     bool bShowWaterBudgetDebug = false;
     
-    // Surface Ã¢â€ â€ Atmosphere transfers
+    // Surface ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬Â Atmosphere transfers
         UFUNCTION(BlueprintCallable, Category = "Water Authority")
         void TransferSurfaceToAtmosphere(FVector WorldLocation, float Volume);
         
@@ -816,27 +816,13 @@ public:
     
     bool bHasMapDefinition = false;
     
-    /**
-     * Load DEM file and apply to terrain
-     * Usage: LoadDEMFile "C:/Path/To/File.hgt"
-     */
-    UFUNCTION(Exec, Category="DEM Testing")
-    void LoadDEMFile(const FString& FilePath);
-
-    /**
-     * Apply DEM with custom settings
-     * Usage: LoadDEMAdvanced "C:/Path/To/File.hgt" 2.0 true
-     */
-    UFUNCTION(Exec, Category="DEM Testing")
-    void LoadDEMAdvanced(const FString& FilePath, float VerticalScale = 1.0f,
-                         bool bNormalize = true);
     
     
     // ===== AUTHORITATIVE GPU BRUSH TRANSFORMS =====
 
     /**
      * Converts world-space brush position to GPU shader texture coordinates
-     * This is the SINGLE SOURCE OF TRUTH for all brushâ†’shader coordinate transforms
+     * This is the SINGLE SOURCE OF TRUTH for all brushÃ¢â€ â€™shader coordinate transforms
      *
      * @param WorldPosition - Brush position in world space (Unreal coordinates)
      * @param OutTextureCoords - Output texture space coordinates (0 to TerrainWidth-1)
@@ -1288,7 +1274,7 @@ public:
     // ===== WATER VOLUME CONVERSIONS =====
     
     /**
-     * Convert depth (meters) to moisture mass (kg/mÃ‚Â²)
+     * Convert depth (meters) to moisture mass (kg/mÃƒâ€šÃ‚Â²)
      */
     UFUNCTION(BlueprintPure, Category = "Water Authority")
     static float DepthToMoistureMass(float DepthMeters)
@@ -1297,7 +1283,7 @@ public:
     }
     
     /**
-     * Convert moisture mass (kg/mÃ‚Â²) to depth (meters)
+     * Convert moisture mass (kg/mÃƒâ€šÃ‚Â²) to depth (meters)
      */
     UFUNCTION(BlueprintPure, Category = "Water Authority")
     static float MoistureMassToDepth(float MassKgPerM2)
@@ -1500,6 +1486,143 @@ public:
     UFUNCTION(BlueprintPure, Category = "Map Loading")
     bool IsCurrentMapSeeded() const;
     
+    // ============================================================================
+    // SECTION 13: GPU PIPELINE COORDINATION (~250 lines, 19%)
+    // ============================================================================
+    /**
+     * PURPOSE:
+     * Orchestrates GPU compute pipeline for terrain, water, and atmosphere.
+     * Merged from GPUTerrainController to consolidate system authority.
+     *
+     * ARCHITECTURE RATIONALE:
+     * MasterController is the single authority for all system management.
+     * GPU coordination is a system management concern, not a separate actor.
+     * This eliminates dual ownership and simplifies the architecture.
+     *
+     * KEY RESPONSIBILITIES:
+     * - GPU pipeline initialization and lifecycle
+     * - Atmosphere GPU enable/disable with validation
+     * - Orographic feedback loop coordination
+     * - GPU↔CPU synchronization
+     * - Console command interface for GPU debugging
+     *
+     * CONSOLE COMMANDS:
+     * - gpu.EnableAtmosphereGPU: Enable atmosphere GPU compute
+     * - gpu.DisableAtmosphereGPU: Disable atmosphere GPU compute
+     * - gpu.CheckAtmosphereStatus: Query atmosphere GPU status
+     * - gpu.PipelineStatus: Full GPU pipeline diagnostics
+     */
+
+    // ===== GPU PIPELINE INITIALIZATION =====
+    
+    /**
+     * Initialize GPU compute pipeline for terrain/water/atmosphere
+     * Called during Phase 6 of 8-phase initialization
+     */
+    UFUNCTION(BlueprintCallable, Category = "GPU Pipeline")
+    void InitializeGPUPipeline();
+    
+    /**
+     * Validate all GPU system references are valid
+     * Uses IsValid() to catch garbage-collected actors
+     */
+    UFUNCTION(BlueprintPure, Category = "GPU Pipeline")
+    bool ValidateGPUSystemReferences() const;
+    
+    /**
+     * Get detailed validation status for debugging
+     */
+    UFUNCTION(BlueprintCallable, Category = "GPU Pipeline")
+    FString GetGPUValidationStatus() const;
+    
+    // ===== ATMOSPHERE GPU CONTROL =====
+    
+    UFUNCTION(BlueprintCallable, Category = "GPU Atmosphere")
+    void EnableAtmosphereGPU();
+    
+    UFUNCTION(BlueprintCallable, Category = "GPU Atmosphere")
+    void DisableAtmosphereGPU();
+    
+    UFUNCTION(BlueprintPure, Category = "GPU Atmosphere")
+    bool IsAtmosphereGPUEnabled() const;
+    
+    void EnableAtmosphereGPUDeferred();
+    
+    // ===== OROGRAPHIC FEEDBACK =====
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Orographic")
+    float HydraulicErosionStrength = 0.5f;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Orographic")
+    float OrographicLiftCoefficient = 1.0f;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Orographic")
+    float AdiabaticCoolingRate = 0.65f;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Orographic")
+    float RainShadowIntensity = 0.8f;
+    
+    void UpdateOrographicFeedback(float DeltaTime);
+    void UpdateOrographicParameters();
+    void UpdateErosionParameters();
+    
+    // ===== SYSTEM SYNCHRONIZATION =====
+    
+    UFUNCTION(BlueprintCallable, Category = "GPU Pipeline")
+    void SynchronizeGridDimensions();
+    
+    UFUNCTION(BlueprintCallable, Category = "GPU Pipeline")
+    void SynchronizeGPUSystems();
+    
+    // ===== GPU PIPELINE CONFIGURATION =====
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Pipeline")
+    bool bEnableGPUPipeline = true;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Pipeline")
+    bool bAutoSyncGPUCPU = true;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Pipeline")
+    float GPUSyncInterval = 0.1f; // Sync GPU→CPU every 100ms
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Pipeline")
+    bool bEnableAtmosphereOnStart = false;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Pipeline")
+    bool bShowGPUStats = false;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Pipeline")
+    bool bEnableDebugLogging = false;
+    
+    // ===== DEBUG & VISUALIZATION =====
+    
+    void DisplayGPUStats();
+    void LogGPUDebugInfo(const FString& Category, const FString& Message, bool bError = false);
+    
+    // ===== CONSOLE COMMANDS (static for UE5 console system) =====
+    
+    static void ConsoleEnableAtmosphereGPU();
+    static void ConsoleDisableAtmosphereGPU();
+    static void ConsoleCheckAtmosphereStatus();
+    static void ConsolePipelineStatus();
+
+private:
+    // ===== GPU PIPELINE STATE =====
+    
+    bool bGPUSystemsConnected = false;
+    bool bPendingAtmosphereGPUEnable = false;
+    
+    // ===== GPU TIMING & PERFORMANCE =====
+    
+    float GPUSyncAccumulator = 0.0f;
+    double LastGPUComputeTime = 0.0;
+    int32 GPUDispatchCount = 0;
+    
+    FTimerHandle AtmosphereEnableTimer;
+    
+    // ===== INTERNAL GPU METHODS =====
+    
+    void ExecuteGPUWatershedPipeline(float DeltaTime);
     
 };
 
@@ -1522,13 +1645,13 @@ public:
  * Section 4: Master Controller Class Declaration (865 lines, 73%)
  *
  * VALIDATION:
- * ✅ All enums present
- * ✅ All structs preserved
- * ✅ All interfaces intact
- * ✅ All UPROPERTYs preserved
- * ✅ All UFUNCTIONs preserved
- * ✅ Forward declarations complete
- * ✅ Ready for compilation
+ * âœ… All enums present
+ * âœ… All structs preserved
+ * âœ… All interfaces intact
+ * âœ… All UPROPERTYs preserved
+ * âœ… All UFUNCTIONs preserved
+ * âœ… Forward declarations complete
+ * âœ… Ready for compilation
  *
  * ARCHITECTURAL CLARITY:
  * The reorganization reveals MasterController's three primary roles:

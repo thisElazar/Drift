@@ -46,7 +46,7 @@
  * - Unreal Engine: Rendering (RDG, RHI, Shaders), Lighting, PostProcess
  * - TerrAI Systems: AtmosphericSystem, DynamicTerrain, WaterSystem
  * - GPU Compute: AtmosphereComputeShader, VolumetricCloudsComputeShader
- * - GPUTerrainController: Watershed pipeline coordination
+ * - MasterController: Watershed pipeline coordination (GPU functions merged)
  */
 
 // AtmosphereController.cpp - FIXED VERSION
@@ -74,7 +74,6 @@
 #include "RenderGraphBuilder.h"
 #include "RenderGraphUtils.h"
 #include "RenderTargetPool.h"
-#include "GPUTerrainController.h"
 #include "RHIStaticStates.h"
 #include "PixelShaderUtils.h"
 #include "ShaderCompilerCore.h"
@@ -901,7 +900,7 @@ void AAtmosphereController::DispatchAtmosphereCompute(float DeltaTime)
         InitializeGPUResources();
         return;
     }
-    
+    /*
     // Debug logging for dispatch coverage
     const int32 ThreadGroupSize = 8;
     int32 DispatchX = FMath::DivideAndRoundUp(GridSizeX, ThreadGroupSize);
@@ -917,7 +916,7 @@ void AAtmosphereController::DispatchAtmosphereCompute(float DeltaTime)
         UE_LOG(LogTemp, Warning, TEXT("  Texture Actual: %dx%d"),
                CloudRenderTexture->SizeX, CloudRenderTexture->SizeY);
     }
-    
+    */
     // Capture for render thread
     UTextureRenderTarget2D* LocalStateTexture = AtmosphereStateTexture;
     UTextureRenderTarget2D* LocalCloudTexture = CloudRenderTexture;
@@ -2966,6 +2965,8 @@ void AAtmosphereController::ResetAtmosphereSystem()
     bool bWasUsingGPU = bUseGPUCompute;
     bUseGPUCompute = false;
     bGPUResourcesInitialized = false;
+    
+    bInitializedWithAuthority = false; 
     
     // 2. Wait for any pending render commands to complete
     FlushRenderingCommands();

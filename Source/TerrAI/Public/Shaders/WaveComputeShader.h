@@ -23,14 +23,15 @@ public:
     BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
         // Input textures
         SHADER_PARAMETER_RDG_TEXTURE_SRV(Texture2D<float>, WaterDepthTexture)
-        SHADER_PARAMETER_RDG_TEXTURE_SRV(Texture2D<float4>, FlowDataTexture)
-        SHADER_PARAMETER_RDG_TEXTURE_SRV(Texture2D<float4>, AtmosphereStateTexture)
+        SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, FlowDataTexture)
+    
         
         // Output texture
         SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, WaveOutputTexture)
         
         // Simulation parameters
         SHADER_PARAMETER(float, Time)
+        SHADER_PARAMETER(float, DeltaTime)
         SHADER_PARAMETER(FVector4f, WindParams)  // xy = direction, z = strength, w = unused
         SHADER_PARAMETER(FVector4f, WaveParams)  // x = scale, y = speed, z = damping, w = terrain scale
         SHADER_PARAMETER(FVector4f, TerrainParams)  // xy = dimensions, zw = unused

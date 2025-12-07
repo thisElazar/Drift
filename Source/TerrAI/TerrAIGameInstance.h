@@ -149,7 +149,7 @@ struct FTerrainMapDefinition
     
     /** Initial spring flow rate */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment")
-    float SpringFlowRate = 1.0f;
+    float SpringFlowRate = 20000.0f;
     
     /** Enable weather simulation */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment")
@@ -227,7 +227,7 @@ public:
 
     /** Default spring flow rate (m³/s) */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Game Settings")
-    float SpringFlowRate = 1.0f;
+    float SpringFlowRate = 200000.0f;
 
     /** Default number of springs to generate */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Game Settings")

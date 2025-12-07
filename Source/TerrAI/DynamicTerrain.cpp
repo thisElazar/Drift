@@ -877,6 +877,8 @@ void ADynamicTerrain::ResetTerrainFully()
         // Reset the atmosphere system completely
         AtmoController->ResetAtmosphereSystem();
         
+        AtmoController->InitializeWithAuthority(CachedMasterController, this);
+        
         // Reinitialize with proper connections
         if (AtmosphericSystem)
         {

@@ -903,7 +903,7 @@ public:
     // ===== PHASE 1 & 2: FLOW DISPLACEMENT SYSTEM =====
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Displacement")
-    UTexture2D* FlowDisplacementTexture = nullptr;
+    UTextureRenderTarget2D* FlowDisplacementTexture = nullptr;
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Displacement")
     float DisplacementScale = 2.0f;
@@ -1340,11 +1340,11 @@ private:
     // Wave physics constants (no namespace, just class members)
     
 
-    static constexpr float WaveGravity = 981.0f;              // cm/sÃ‚Â² (UE units)
+    static constexpr float WaveGravity = 981.0f;              // cm/sÃƒâ€šÃ‚Â² (UE units)
     static constexpr float WaveMinWindForWaves = 0.1f;        // m/s
     static constexpr float WaveDeepWaterLimit = 0.5f;         // depth/wavelength ratio
     static constexpr float WaveTwoPi = 6.28318530718f;        // 2 * PI
-    static constexpr float WaveDensity = 1000.0f; // kg/mÃ‚Â³ for water
+    static constexpr float WaveDensity = 1000.0f; // kg/mÃƒâ€šÃ‚Â³ for water
     
     // Simple wave generation context (no forward declaration issues)
     struct FWaveContext
@@ -1611,11 +1611,11 @@ private:
  * Section 4: Main WaterSystem Class (960 lines, 71%)
  *
  * VALIDATION:
- * ✅ All structs present
- * ✅ All UPROPERTYs preserved
- * ✅ All UFUNCTIONs preserved
- * ✅ All enums intact
- * ✅ Forward declarations complete
- * ✅ Include statements unchanged
- * ✅ Ready for compilation
+ * âœ… All structs present
+ * âœ… All UPROPERTYs preserved
+ * âœ… All UFUNCTIONs preserved
+ * âœ… All enums intact
+ * âœ… Forward declarations complete
+ * âœ… Include statements unchanged
+ * âœ… Ready for compilation
  */

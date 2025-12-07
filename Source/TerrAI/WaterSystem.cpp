@@ -563,7 +563,7 @@ void UWaterSystem::ResetWaterSystem()
         UpdateWaterDepthTexture();
     }
     
-    UE_LOG(LogTemp, Warning, TEXT("Ã¢Å“â€œ Water system reset complete (including erosion textures)"));
+    UE_LOG(LogTemp, Warning, TEXT("ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ Water system reset complete (including erosion textures)"));
 }
 
 // END OF SECTION 1: SYSTEM LIFECYCLE
@@ -1123,8 +1123,8 @@ void UWaterSystem::ProcessWaterEvaporation(float DeltaTime)
 // - Foam data calculation (visual effects)
 //
 // Visual Pipeline:
-// [SimulationData] â†’ [Chunk LOD Selection] â†’ [Mesh Generation] â†’
-// â†’ [Flow Displacement] â†’ [GPU Shader Rendering]
+// [SimulationData] Ã¢â€ â€™ [Chunk LOD Selection] Ã¢â€ â€™ [Mesh Generation] Ã¢â€ â€™
+// Ã¢â€ â€™ [Flow Displacement] Ã¢â€ â€™ [GPU Shader Rendering]
 //
 // Authority Pattern:
 // - SimulationData.WaterDepthMap is ground truth for water presence
@@ -1155,11 +1155,11 @@ void UWaterSystem::ProcessWaterEvaporation(float DeltaTime)
  * PHASE 1-2: SYNCHRONIZED WATER SURFACE CHUNKS
  * Updates water surface chunks based EXCLUSIVELY on simulation data authority
  *
- * NEW DATA PIPELINE: [FWaterSimulationData] Ã¢â€ â€™ [Mesh Generation] Ã¢â€ â€™ [Procedural Surfaces]
+ * NEW DATA PIPELINE: [FWaterSimulationData] ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ [Mesh Generation] ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ [Procedural Surfaces]
  *
  * Algorithm:
  * 1. Query simulation state for each chunk (WaterDepthMap as ground truth)
- * 2. Calculate flow properties from velocity arrays (VelocityX/Y Ã¢â€ â€™ FlowDirection/Speed)
+ * 2. Calculate flow properties from velocity arrays (VelocityX/Y ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ FlowDirection/Speed)
  * 3. Generate visual effects based on FoamMap and simulation state
  * 4. Create surface meshes with simulation-driven parameters
  * 5. Apply materials with physically-based optical properties
@@ -1325,7 +1325,7 @@ void UWaterSystem::ConnectToGPUTerrain(ADynamicTerrain* Terrain)
         UE_LOG(LogTemp, Log, TEXT("Erosion textures already exist"));
     }
     
-    UE_LOG(LogTemp, Warning, TEXT("Ã¢Å“â€œ Water connected to GPU terrain"));
+    UE_LOG(LogTemp, Warning, TEXT("ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ Water connected to GPU terrain"));
 }
 
 
@@ -1339,7 +1339,7 @@ void UWaterSystem::ConnectToGPUTerrain(ADynamicTerrain* Terrain)
  * Replaces manual property setting with simulation-driven data extraction
  *
  * Implementation follows refactor strategy data pipeline:
- * [FWaterSimulationData] Ã¢â€ â€™ [WaterSurfaceChunk Properties] Ã¢â€ â€™ [Mesh Generation]
+ * [FWaterSimulationData] ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ [WaterSurfaceChunk Properties] ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ [Mesh Generation]
  */
 void UWaterSystem::SynchronizeChunkWithSimulation(FWaterSurfaceChunk& SurfaceChunk)
 {
@@ -1609,21 +1609,21 @@ void UWaterSystem::CreateFlowDisplacementTexture()
     const int32 Width = SimulationData.TerrainWidth;
     const int32 Height = SimulationData.TerrainHeight;
     
-    // Create RGBA texture for flow displacement
+    // Create RGBA render target for flow displacement
     // R: Flow displacement X, G: Flow displacement Y
     // B: Wave phase offset, A: Flow intensity
-    FlowDisplacementTexture = UTexture2D::CreateTransient(Width, Height, PF_FloatRGBA);
+    FlowDisplacementTexture = NewObject<UTextureRenderTarget2D>(this);
     
     if (FlowDisplacementTexture)
     {
-        FlowDisplacementTexture->Filter = TextureFilter::TF_Bilinear;
+        FlowDisplacementTexture->RenderTargetFormat = RTF_RGBA16f;
+        FlowDisplacementTexture->InitCustomFormat(Width, Height, PF_FloatRGBA, false);
         FlowDisplacementTexture->AddressX = TextureAddress::TA_Wrap;
         FlowDisplacementTexture->AddressY = TextureAddress::TA_Wrap;
-        FlowDisplacementTexture->SRGB = false;
-        FlowDisplacementTexture->UpdateResource();
+        FlowDisplacementTexture->bCanCreateUAV = true;  // CRITICAL: Enable UAV for compute shader write
+        FlowDisplacementTexture->UpdateResourceImmediate(false);
         
         UE_LOG(LogTemp, Warning, TEXT("Flow displacement texture created: %dx%d RGBA"), Width, Height);
-        
     }
     else
     {
@@ -1639,9 +1639,9 @@ void UWaterSystem::UpdateFlowDisplacementTexture()
     const int32 Width = SimulationData.TerrainWidth;
     const int32 Height = SimulationData.TerrainHeight;
     
-    // Create data array using FFloat16 (UE5 format)
-    TArray<uint8> TextureData;
-    TextureData.SetNum(Width * Height * 8); // 4 channels * 2 bytes per channel
+    // Create data array with FLinearColor for RGBA float texture
+    TArray<FLinearColor> TextureData;
+    TextureData.SetNum(Width * Height);
     
     // Fill with flow data
     for (int32 Y = 0; Y < Height; Y++)
@@ -1649,7 +1649,6 @@ void UWaterSystem::UpdateFlowDisplacementTexture()
         for (int32 X = 0; X < Width; X++)
         {
             int32 Index = Y * Width + X;
-            int32 DataIndex = Index * 8; // 8 bytes per pixel (4 float16s)
             
             if (Index < SimulationData.WaterVelocityX.Num())
             {
@@ -1658,27 +1657,40 @@ void UWaterSystem::UpdateFlowDisplacementTexture()
                 float Foam = SimulationData.FoamMap[Index];
                 float Depth = SimulationData.WaterDepthMap[Index];
                 
-                // Convert to FFloat16 and write to byte array
-                FFloat16 VelX16(VelX);
-                FFloat16 VelY16(VelY);
-                FFloat16 Depth16(Depth);
-                FFloat16 Foam16(Foam);
-                
-                FMemory::Memcpy(&TextureData[DataIndex], &VelX16, sizeof(FFloat16));
-                FMemory::Memcpy(&TextureData[DataIndex + 2], &VelY16, sizeof(FFloat16));
-                FMemory::Memcpy(&TextureData[DataIndex + 4], &Depth16, sizeof(FFloat16));
-                FMemory::Memcpy(&TextureData[DataIndex + 6], &Foam16, sizeof(FFloat16));
+                // Pack data into RGBA channels
+                TextureData[Index] = FLinearColor(VelX, VelY, Depth, Foam);
+            }
+            else
+            {
+                TextureData[Index] = FLinearColor(0, 0, 0, 0);
             }
         }
     }
     
-    // Update texture
-    FTexture2DMipMap& Mip = FlowDisplacementTexture->GetPlatformData()->Mips[0];
-    void* Data = Mip.BulkData.Lock(LOCK_READ_WRITE);
-    FMemory::Memcpy(Data, TextureData.GetData(), TextureData.Num());
-    Mip.BulkData.Unlock();
-    
-    FlowDisplacementTexture->UpdateResource();
+    // Update render target using RHI commands on render thread
+    FTextureRenderTargetResource* RenderTargetResource = FlowDisplacementTexture->GameThread_GetRenderTargetResource();
+    if (RenderTargetResource)
+    {
+        ENQUEUE_RENDER_COMMAND(UpdateFlowDisplacementTextureCommand)(
+            [RenderTargetResource, TextureData, Width, Height](FRHICommandListImmediate& RHICmdList)
+            {
+                FTextureRHIRef TextureRHI = RenderTargetResource->GetRenderTargetTexture();
+                if (TextureRHI.IsValid())
+                {
+                    uint32 Stride = Width * sizeof(FLinearColor);
+                    FUpdateTextureRegion2D Region(0, 0, 0, 0, Width, Height);
+                    
+                    RHICmdList.UpdateTexture2D(
+                        TextureRHI,
+                        0,  // Mip level
+                        Region,
+                        Stride,
+                        (const uint8*)TextureData.GetData()
+                    );
+                }
+            }
+        );
+    }
 }
 
 void UWaterSystem::UpdateWaterShaderForDisplacement(UMaterialInstanceDynamic* Material)
@@ -2348,22 +2360,22 @@ void UWaterSystem::ForceFullMeshRegeneration()
 
 void UWaterSystem::GenerateLocalizedWaterMeshes()
 {
-    // Ã°Å¸Å¡Â« SYSTEM DISABLED: This function created spiky triangles due to broken i+=3 triangle generation
-    UE_LOG(LogTemp, Error, TEXT("Ã°Å¸Å¡Â« BLOCKED: GenerateLocalizedWaterMeshes() disabled - prevents spiky triangles"));
+    // ÃƒÂ°Ã…Â¸Ã…Â¡Ã‚Â« SYSTEM DISABLED: This function created spiky triangles due to broken i+=3 triangle generation
+    UE_LOG(LogTemp, Error, TEXT("ÃƒÂ°Ã…Â¸Ã…Â¡Ã‚Â« BLOCKED: GenerateLocalizedWaterMeshes() disabled - prevents spiky triangles"));
     
     // Emergency cleanup if somehow regions exist
     for (FWaterMeshRegion& Region : WaterMeshRegions)
     {
         if (Region.MeshComponent)
         {
-            UE_LOG(LogTemp, Warning, TEXT("Ã°Å¸Â§Â¹ CLEANUP: Destroying localized mesh component"));
+            UE_LOG(LogTemp, Warning, TEXT("ÃƒÂ°Ã…Â¸Ã‚Â§Ã‚Â¹ CLEANUP: Destroying localized mesh component"));
             Region.MeshComponent->DestroyComponent();
             Region.MeshComponent = nullptr;
         }
     }
     WaterMeshRegions.Empty();
     
-    UE_LOG(LogTemp, Warning, TEXT("Ã¢Å“â€¦ SYSTEM: Using optimized chunk system instead"));
+    UE_LOG(LogTemp, Warning, TEXT("ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ SYSTEM: Using optimized chunk system instead"));
     return; // Function completely disabled
 }
 
@@ -2538,10 +2550,10 @@ void UWaterSystem::CreateWaterSurfaceMesh(FWaterSurfaceChunk& SurfaceChunk)
     }
     
     // Simulation authorizes mesh creation - proceed
-    UE_LOG(LogTemp, Log, TEXT("[PHASE 2] Ã¢Å“â€œ Simulation authorizes mesh creation for chunk %d (depth: %.2f)"),
+    UE_LOG(LogTemp, Log, TEXT("[PHASE 2] ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ Simulation authorizes mesh creation for chunk %d (depth: %.2f)"),
            SurfaceChunk.ChunkIndex, SimDepth);
     
-    UE_LOG(LogTemp, Warning, TEXT("[MESH DEBUG] Ã¢Å“â€œ Proceeding with mesh creation for chunk %d"), SurfaceChunk.ChunkIndex);
+    UE_LOG(LogTemp, Warning, TEXT("[MESH DEBUG] ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ Proceeding with mesh creation for chunk %d"), SurfaceChunk.ChunkIndex);
     
     FVector ChunkWorldPos = OwnerTerrain->GetChunkWorldPosition(SurfaceChunk.ChunkIndex);
     
@@ -3742,15 +3754,15 @@ void UWaterSystem::ApplyRain(float DeltaTime)
 //   4.1 - Water Manipulation: Add/remove water with radius-based distribution
 //   4.2 - Water Queries: Depth, volume, flow statistics, and debug info
 //   4.3 - Safe Accessors: Bounds-checked getters/setters and utilities
-//   4.4 - Coordinate Utilities: World â†” Terrain transformations
+//   4.4 - Coordinate Utilities: World Ã¢â€ â€ Terrain transformations
 //
 // KEY FEATURES:
-//   â€¢ Gaussian distribution for smooth water addition
-//   â€¢ Water conservation tracking (GetTotalWaterInSystem)
-//   â€¢ Chunk-aware updates (MarkChunkForUpdate)
-//   â€¢ Safe accessors with automatic bounds checking
-//   â€¢ World/terrain coordinate transformation
-//   â€¢ Debug visualization support
+//   Ã¢â‚¬Â¢ Gaussian distribution for smooth water addition
+//   Ã¢â‚¬Â¢ Water conservation tracking (GetTotalWaterInSystem)
+//   Ã¢â‚¬Â¢ Chunk-aware updates (MarkChunkForUpdate)
+//   Ã¢â‚¬Â¢ Safe accessors with automatic bounds checking
+//   Ã¢â‚¬Â¢ World/terrain coordinate transformation
+//   Ã¢â‚¬Â¢ Debug visualization support
 //
 // DEPENDENCIES:
 //   Internal:
@@ -3762,7 +3774,7 @@ void UWaterSystem::ApplyRain(float DeltaTime)
 //     - AMasterWorldController: Authority for water conservation
 //
 // PERFORMANCE NOTES:
-//   - AddWaterInRadius: O(RÂ²) where R is radius in cells
+//   - AddWaterInRadius: O(RÃ‚Â²) where R is radius in cells
 //   - Water queries: O(1) with bounds checking
 //   - Coordinate transforms: O(1) matrix operations
 //
@@ -4194,13 +4206,13 @@ void UWaterSystem::MarkChunkForUpdate(int32 X, int32 Y)
 //   5.7 - Advanced Mesh Generation: High-quality water surface generation
 //
 // KEY FEATURES:
-//   â€¢ GPU texture streaming for water depth and flow data
-//   â€¢ Real-time material parameter updates
-//   â€¢ UE5.4 feature integration (Lumen, Nanite, Enhanced Input)
-//   â€¢ Edge-preserving filtering for visual quality
-//   â€¢ Chunk boundary seamless interpolation
-//   â€¢ LOD-aware mesh generation
-//   â€¢ Underwater detection and player queries
+//   Ã¢â‚¬Â¢ GPU texture streaming for water depth and flow data
+//   Ã¢â‚¬Â¢ Real-time material parameter updates
+//   Ã¢â‚¬Â¢ UE5.4 feature integration (Lumen, Nanite, Enhanced Input)
+//   Ã¢â‚¬Â¢ Edge-preserving filtering for visual quality
+//   Ã¢â‚¬Â¢ Chunk boundary seamless interpolation
+//   Ã¢â‚¬Â¢ LOD-aware mesh generation
+//   Ã¢â‚¬Â¢ Underwater detection and player queries
 //
 // DEPENDENCIES:
 //   Internal:
@@ -4216,7 +4228,7 @@ void UWaterSystem::MarkChunkForUpdate(int32 X, int32 Y)
 //     - Nanite: Virtualized geometry compatibility
 //
 // PERFORMANCE NOTES:
-//   - Texture updates: 2-4ms for 513Ã—513 grids
+//   - Texture updates: 2-4ms for 513Ãƒâ€”513 grids
 //   - Material parameter updates: <0.1ms per chunk
 //   - Edge-preserving filter: ~1ms for active water areas
 //   - Mesh generation: 0.5-2ms per chunk depending on LOD
@@ -4225,14 +4237,14 @@ void UWaterSystem::MarkChunkForUpdate(int32 X, int32 Y)
 // UE5.4 INTEGRATION:
 //   This section consolidates all UE5.4-specific features that were
 //   previously scattered across 8 separate sections:
-//   â€¢ Enhanced Input System for better input handling
-//   â€¢ Lumen reflections for realistic water appearance
-//   â€¢ Nanite compatibility for high-poly water meshes
-//   â€¢ World Partition streaming for open-world support
-//   â€¢ Performance profiling integration
-//   â€¢ Initialization sequences
-//   â€¢ Async texture loading
-//   â€¢ Validation systems
+//   Ã¢â‚¬Â¢ Enhanced Input System for better input handling
+//   Ã¢â‚¬Â¢ Lumen reflections for realistic water appearance
+//   Ã¢â‚¬Â¢ Nanite compatibility for high-poly water meshes
+//   Ã¢â‚¬Â¢ World Partition streaming for open-world support
+//   Ã¢â‚¬Â¢ Performance profiling integration
+//   Ã¢â‚¬Â¢ Initialization sequences
+//   Ã¢â‚¬Â¢ Async texture loading
+//   Ã¢â‚¬Â¢ Validation systems
 //
 // =============================================================================
 
@@ -4687,7 +4699,7 @@ void UWaterSystem::UpdateWaterDepthTexture()
                 {
                     // Smooth transition zone - this prevents shoreline dancing
                     float t = (WaterDepth - TransitionStart) / (TransitionEnd - TransitionStart);
-                    // Smooth step function: 3tÃ‚Â² - 2tÃ‚Â³
+                    // Smooth step function: 3tÃƒâ€šÃ‚Â² - 2tÃƒâ€šÃ‚Â³
                     float smoothT = t * t * (3.0f - 2.0f * t);
                     ProcessedDepth = WaterDepth * smoothT;
                 }
@@ -5244,10 +5256,10 @@ FBox UWaterSystem::GetChunkWorldBounds(int32 ChunkIndex) const
 // comprehensive boundary validation for artifact-free water.
 //
 // KEY ALGORITHMS:
-//   â€¢ Seamless depth interpolation across chunk boundaries
-//   â€¢ Edge-aware filtering for quality preservation
-//   â€¢ Boundary continuity validation
-//   â€¢ Multi-resolution mesh generation (LOD support)
+//   Ã¢â‚¬Â¢ Seamless depth interpolation across chunk boundaries
+//   Ã¢â‚¬Â¢ Edge-aware filtering for quality preservation
+//   Ã¢â‚¬Â¢ Boundary continuity validation
+//   Ã¢â‚¬Â¢ Multi-resolution mesh generation (LOD support)
 // ============================================================
 
 void UWaterSystem::GenerateSmoothWaterSurface(FWaterSurfaceChunk& SurfaceChunk,
@@ -6019,28 +6031,28 @@ void UWaterSystem::CheckChunkBoundaryContinuity()
 //   6. Capillary Waves: Surface tension driven (small scale)
 //
 // KEY PHYSICS EQUATIONS:
-//   Deep Water Dispersion: Ï‰Â² = gk (where k = 2Ï€/Î»)
-//   Shallow Water Speed: c = âˆš(gh)
-//   Froude Number: Fr = v/âˆš(gh)
-//   Capillary Wavelength: Î»c = 2Ï€âˆš(Ïƒ/Ïg) â‰ˆ 17mm for water
-//   Wave Energy: E = (1/2)ÏgAÂ² (per unit area)
+//   Deep Water Dispersion: Ãâ€°Ã‚Â² = gk (where k = 2Ãâ‚¬/ÃŽÂ»)
+//   Shallow Water Speed: c = Ã¢Ë†Å¡(gh)
+//   Froude Number: Fr = v/Ã¢Ë†Å¡(gh)
+//   Capillary Wavelength: ÃŽÂ»c = 2Ãâ‚¬Ã¢Ë†Å¡(ÃÆ’/ÃÂg) Ã¢â€°Ë† 17mm for water
+//   Wave Energy: E = (1/2)ÃÂgAÃ‚Â² (per unit area)
 //   Group Velocity: cg = c/2 (deep water)
 //
 // PHYSICAL PARAMETERS:
-//   â€¢ g = 9.81 m/sÂ² (gravitational acceleration)
-//   â€¢ Ïƒ = 0.072 N/m (surface tension, water-air)
-//   â€¢ Ï = 1000 kg/mÂ³ (water density)
-//   â€¢ Typical wavelengths: 1cm - 100m
-//   â€¢ Typical periods: 0.1s - 10s
+//   Ã¢â‚¬Â¢ g = 9.81 m/sÃ‚Â² (gravitational acceleration)
+//   Ã¢â‚¬Â¢ ÃÆ’ = 0.072 N/m (surface tension, water-air)
+//   Ã¢â‚¬Â¢ ÃÂ = 1000 kg/mÃ‚Â³ (water density)
+//   Ã¢â‚¬Â¢ Typical wavelengths: 1cm - 100m
+//   Ã¢â‚¬Â¢ Typical periods: 0.1s - 10s
 //
 // WAVE SUPERPOSITION:
 //   Final wave height is linear combination of all wave types:
-//   h_total = Î£(h_i) where each h_i is a wave component
+//   h_total = ÃŽÂ£(h_i) where each h_i is a wave component
 //
 //   Amplitude limits ensure physically reasonable results:
-//   â€¢ Wind waves: Limited by fetch and wind duration
-//   â€¢ Gravity waves: Limited by breaking criterion (H/Î» < 1/7)
-//   â€¢ Capillary waves: Limited by surface tension
+//   Ã¢â‚¬Â¢ Wind waves: Limited by fetch and wind duration
+//   Ã¢â‚¬Â¢ Gravity waves: Limited by breaking criterion (H/ÃŽÂ» < 1/7)
+//   Ã¢â‚¬Â¢ Capillary waves: Limited by surface tension
 //
 // DEPENDENCIES:
 //   Internal:
@@ -6057,12 +6069,12 @@ void UWaterSystem::CheckChunkBoundaryContinuity()
 //   - LOD system reduces vertex count at distance
 //
 // REALISM FEATURES:
-//   â€¢ Froude number transitions (subcritical â†” supercritical)
-//   â€¢ Hydraulic jumps in supercritical flow
-//   â€¢ Wave breaking at shallow depth
-//   â€¢ Wind fetch effects
-//   â€¢ Terrain shadowing (wave blocking)
-//   â€¢ Amplitude modulation from flow
+//   Ã¢â‚¬Â¢ Froude number transitions (subcritical Ã¢â€ â€ supercritical)
+//   Ã¢â‚¬Â¢ Hydraulic jumps in supercritical flow
+//   Ã¢â‚¬Â¢ Wave breaking at shallow depth
+//   Ã¢â‚¬Â¢ Wind fetch effects
+//   Ã¢â‚¬Â¢ Terrain shadowing (wave blocking)
+//   Ã¢â‚¬Â¢ Amplitude modulation from flow
 //
 // =============================================================================
 
@@ -6154,12 +6166,12 @@ float UWaterSystem::CalculateNaturalWaveOffset(FVector2D WorldPos, float Time, f
 // wave phenomena with appropriate physical equations.
 //
 // WAVE TYPES:
-//   â€¢ Wind Waves: Wind stress on water surface
-//   â€¢ Gravity Waves: Restoration by gravity force
-//   â€¢ Turbulent Waves: Random chaotic motion
-//   â€¢ Collision Waves: Reflection/diffraction at obstacles
-//   â€¢ Flow Waves: Kelvin-Helmholtz instability
-//   â€¢ Capillary Waves: Surface tension ripples
+//   Ã¢â‚¬Â¢ Wind Waves: Wind stress on water surface
+//   Ã¢â‚¬Â¢ Gravity Waves: Restoration by gravity force
+//   Ã¢â‚¬Â¢ Turbulent Waves: Random chaotic motion
+//   Ã¢â‚¬Â¢ Collision Waves: Reflection/diffraction at obstacles
+//   Ã¢â‚¬Â¢ Flow Waves: Kelvin-Helmholtz instability
+//   Ã¢â‚¬Â¢ Capillary Waves: Surface tension ripples
 //
 // Each generator returns wave height contribution (meters).
 // ============================================================
@@ -6592,7 +6604,7 @@ void UWaterSystem::DebugWaterCoordinates(FVector WorldPos)
     
     if (SimMeshDiff <= 0.1f && SimShaderDiff <= 0.1f && CoordDiff <= 0.1f)
     {
-        UE_LOG(LogTemp, Warning, TEXT("Ã¢Å“â€¦ All systems aligned within tolerance"));
+        UE_LOG(LogTemp, Warning, TEXT("ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ All systems aligned within tolerance"));
     }
     
     UE_LOG(LogTemp, Warning, TEXT("================================"));
@@ -6725,12 +6737,12 @@ float UWaterSystem::MeasureVolumeChange(TFunctionRef<void()> Operation)
 //   7.4 - Parameter Updates: Real-time GPU parameter updates
 //
 // KEY FEATURES:
-//   â€¢ GPU-accelerated wave generation via compute shaders
-//   â€¢ Real-time vertex displacement on GPU
-//   â€¢ Flow data visualization through GPU textures
-//   â€¢ RDG-based rendering pipeline integration
-//   â€¢ Async GPU execution (non-blocking)
-//   â€¢ Dynamic parameter updates (wind, wave scale, etc.)
+//   Ã¢â‚¬Â¢ GPU-accelerated wave generation via compute shaders
+//   Ã¢â‚¬Â¢ Real-time vertex displacement on GPU
+//   Ã¢â‚¬Â¢ Flow data visualization through GPU textures
+//   Ã¢â‚¬Â¢ RDG-based rendering pipeline integration
+//   Ã¢â‚¬Â¢ Async GPU execution (non-blocking)
+//   Ã¢â‚¬Â¢ Dynamic parameter updates (wind, wave scale, etc.)
 //
 // GPU PIPELINE:
 //   CPU Side:
@@ -6749,19 +6761,19 @@ float UWaterSystem::MeasureVolumeChange(TFunctionRef<void()> Operation)
 // COMPUTE SHADER DETAILS:
 //   File: WaveCompute.usf
 //   Thread Group Size: 8x8 (64 threads per group)
-//   Dispatch Grid: ceil(Width/8) Ã— ceil(Height/8)
-//   Execution Time: ~0.5-1.5ms for 513Ã—513 grid
+//   Dispatch Grid: ceil(Width/8) Ãƒâ€” ceil(Height/8)
+//   Execution Time: ~0.5-1.5ms for 513Ãƒâ€”513 grid
 //
 // TEXTURE FORMATS:
-//   â€¢ WaterDepthTexture: PF_R32_FLOAT (depth in meters)
-//   â€¢ FlowDataTexture: PF_G16R16F (2D flow vector)
-//   â€¢ WaveOutputTexture: PF_FloatRGBA (wave height + normals)
+//   Ã¢â‚¬Â¢ WaterDepthTexture: PF_R32_FLOAT (depth in meters)
+//   Ã¢â‚¬Â¢ FlowDataTexture: PF_G16R16F (2D flow vector)
+//   Ã¢â‚¬Â¢ WaveOutputTexture: PF_FloatRGBA (wave height + normals)
 //
 // SHADER PARAMETERS:
-//   â€¢ Time: Current simulation time (float)
-//   â€¢ WindParams: (direction.x, direction.y, strength, unused)
-//   â€¢ WaveParams: (scale, speed, damping, terrain_scale)
-//   â€¢ TerrainParams: (width, height, unused, unused)
+//   Ã¢â‚¬Â¢ Time: Current simulation time (float)
+//   Ã¢â‚¬Â¢ WindParams: (direction.x, direction.y, strength, unused)
+//   Ã¢â‚¬Â¢ WaveParams: (scale, speed, damping, terrain_scale)
+//   Ã¢â‚¬Â¢ TerrainParams: (width, height, unused, unused)
 //
 // DEPENDENCIES:
 //   Internal:
@@ -6774,22 +6786,22 @@ float UWaterSystem::MeasureVolumeChange(TFunctionRef<void()> Operation)
 //     - UMaterialInstanceDynamic: Material integration
 //
 // PERFORMANCE BENEFITS:
-//   â€¢ 10-100x speedup over CPU wave calculations
-//   â€¢ Enables 1000+ vertex water meshes at 60 FPS
-//   â€¢ Parallel execution across all water vertices
-//   â€¢ Frees CPU for other game systems
+//   Ã¢â‚¬Â¢ 10-100x speedup over CPU wave calculations
+//   Ã¢â‚¬Â¢ Enables 1000+ vertex water meshes at 60 FPS
+//   Ã¢â‚¬Â¢ Parallel execution across all water vertices
+//   Ã¢â‚¬Â¢ Frees CPU for other game systems
 //
 // FALLBACK BEHAVIOR:
 //   If GPU compute is disabled (bUseVertexDisplacement = false):
-//   â€¢ System falls back to CPU wave generation (Section 6)
-//   â€¢ Meshes regenerated on CPU when depth changes
-//   â€¢ Lower vertex count for performance
+//   Ã¢â‚¬Â¢ System falls back to CPU wave generation (Section 6)
+//   Ã¢â‚¬Â¢ Meshes regenerated on CPU when depth changes
+//   Ã¢â‚¬Â¢ Lower vertex count for performance
 //
 // SYNCHRONIZATION:
-//   â€¢ GPU execution is async (non-blocking)
-//   â€¢ Render thread handles compute dispatch
-//   â€¢ Game thread updates parameters safely
-//   â€¢ No explicit synchronization needed (RDG handles it)
+//   Ã¢â‚¬Â¢ GPU execution is async (non-blocking)
+//   Ã¢â‚¬Â¢ Render thread handles compute dispatch
+//   Ã¢â‚¬Â¢ Game thread updates parameters safely
+//   Ã¢â‚¬Â¢ No explicit synchronization needed (RDG handles it)
 //
 // THREAD SAFETY:
 //   All GPU functions must be called from game thread.
@@ -6866,21 +6878,24 @@ void UWaterSystem::InitializeGPUDisplacement()
     // Create flow displacement texture with proper initial data
     if (!FlowDisplacementTexture)
     {
-        FlowDisplacementTexture = UTexture2D::CreateTransient(
-            SimulationData.TerrainWidth,
-            SimulationData.TerrainHeight,
-            PF_FloatRGBA
-        );
+        FlowDisplacementTexture = NewObject<UTextureRenderTarget2D>(this);
         
         if (FlowDisplacementTexture)
         {
-            FlowDisplacementTexture->CompressionSettings = TC_HDR;
-            FlowDisplacementTexture->SRGB = false;
+            FlowDisplacementTexture->RenderTargetFormat = RTF_RGBA16f;
+            FlowDisplacementTexture->InitCustomFormat(
+                SimulationData.TerrainWidth,
+                SimulationData.TerrainHeight,
+                PF_FloatRGBA,
+                false
+            );
+            FlowDisplacementTexture->AddressX = TextureAddress::TA_Wrap;
+            FlowDisplacementTexture->AddressY = TextureAddress::TA_Wrap;
+            FlowDisplacementTexture->bCanCreateUAV = true;  // CRITICAL: Enable UAV for compute shader write
+            FlowDisplacementTexture->UpdateResourceImmediate(false);
             
             // Initialize with flow data
             UpdateFlowDataTexture();
-            
-            FlowDisplacementTexture->UpdateResource();
             
             UE_LOG(LogTemp, Warning, TEXT("Created Flow Displacement Texture"));
         }
@@ -6943,55 +6958,72 @@ void UWaterSystem::UpdateFlowDataTexture()
     if (!FlowDisplacementTexture)
         return;
     
-    // Lock texture for writing
-    FTexture2DMipMap& Mip = FlowDisplacementTexture->GetPlatformData()->Mips[0];
-    FColor* TextureData = (FColor*)Mip.BulkData.Lock(LOCK_READ_WRITE);
+    const int32 Width = SimulationData.TerrainWidth;
+    const int32 Height = SimulationData.TerrainHeight;
     
-    if (TextureData)
+    // Create data array with FLinearColor for RGBA float texture
+    TArray<FLinearColor> TextureData;
+    TextureData.SetNum(Width * Height);
+    
+    // Fill with flow data
+    for (int32 Y = 0; Y < Height; Y++)
     {
-        // Fill with flow data
-        for (int32 Y = 0; Y < SimulationData.TerrainHeight; Y++)
+        for (int32 X = 0; X < Width; X++)
         {
-            for (int32 X = 0; X < SimulationData.TerrainWidth; X++)
+            int32 Index = Y * Width + X;
+            
+            // Get flow vector at this position
+            FVector2D FlowVector = FVector2D::ZeroVector;
+            if (Index < SimulationData.WaterVelocityX.Num() &&
+                Index < SimulationData.WaterVelocityY.Num())
             {
-                int32 Index = Y * SimulationData.TerrainWidth + X;
-                
-                // Get flow vector at this position
-                FVector2D FlowVector = FVector2D::ZeroVector;
-                if (Index < SimulationData.WaterVelocityX.Num() &&
-                    Index < SimulationData.WaterVelocityY.Num())
-                {
-                    FlowVector.X = SimulationData.WaterVelocityX[Index];
-                    FlowVector.Y = SimulationData.WaterVelocityY[Index];
-                }
-                
-                // Get water depth for foam calculation
-                float WaterDepth = 0.0f;
-                if (Index < SimulationData.WaterDepthMap.Num())
-                {
-                    WaterDepth = SimulationData.WaterDepthMap[Index];
-                }
-                
-                // Calculate foam intensity (placeholder - you can enhance this)
-                float FoamIntensity = 0.0f;
-                if (WaterDepth > MinWaterDepth)
-                {
-                    float FlowSpeed = FlowVector.Size();
-                    FoamIntensity = FMath::Clamp(FlowSpeed / 10.0f, 0.0f, 1.0f);
-                }
-                
-                // Pack into color (R=FlowX, G=FlowY, B=Reserved, A=Foam)
-                TextureData[Index] = FColor(
-                    FMath::Clamp(FlowVector.X * 127.5f + 127.5f, 0.0f, 255.0f),
-                    FMath::Clamp(FlowVector.Y * 127.5f + 127.5f, 0.0f, 255.0f),
-                    0,
-                    FMath::Clamp(FoamIntensity * 255.0f, 0.0f, 255.0f)
-                );
+                FlowVector.X = SimulationData.WaterVelocityX[Index];
+                FlowVector.Y = SimulationData.WaterVelocityY[Index];
             }
+            
+            // Get water depth for foam calculation
+            float WaterDepth = 0.0f;
+            if (Index < SimulationData.WaterDepthMap.Num())
+            {
+                WaterDepth = SimulationData.WaterDepthMap[Index];
+            }
+            
+            // Calculate foam intensity
+            float FoamIntensity = 0.0f;
+            if (WaterDepth > MinWaterDepth)
+            {
+                float FlowSpeed = FlowVector.Size();
+                FoamIntensity = FMath::Clamp(FlowSpeed / 10.0f, 0.0f, 1.0f);
+            }
+            
+            // Pack into RGBA (R=FlowX, G=FlowY, B=Depth, A=Foam)
+            TextureData[Index] = FLinearColor(FlowVector.X, FlowVector.Y, WaterDepth, FoamIntensity);
         }
-        
-        Mip.BulkData.Unlock();
-        FlowDisplacementTexture->UpdateResource();
+    }
+    
+    // Update render target using RHI commands on render thread
+    FTextureRenderTargetResource* RenderTargetResource = FlowDisplacementTexture->GameThread_GetRenderTargetResource();
+    if (RenderTargetResource)
+    {
+        ENQUEUE_RENDER_COMMAND(UpdateFlowDataTextureCommand)(
+            [RenderTargetResource, TextureData, Width, Height](FRHICommandListImmediate& RHICmdList)
+            {
+                FTextureRHIRef TextureRHI = RenderTargetResource->GetRenderTargetTexture();
+                if (TextureRHI.IsValid())
+                {
+                    uint32 Stride = Width * sizeof(FLinearColor);
+                    FUpdateTextureRegion2D Region(0, 0, 0, 0, Width, Height);
+                    
+                    RHICmdList.UpdateTexture2D(
+                        TextureRHI,
+                        0,  // Mip level
+                        Region,
+                        Stride,
+                        (const uint8*)TextureData.GetData()
+                    );
+                }
+            }
+        );
     }
 }
 
@@ -7008,7 +7040,7 @@ void UWaterSystem::UpdateFlowDataTexture()
 //   2. Get render thread access via ENQUEUE_RENDER_COMMAND
 //   3. Build RDG graph with input/output textures
 //   4. Set shader parameters
-//   5. Dispatch compute shader (ceil(W/8) Ã— ceil(H/8) groups)
+//   5. Dispatch compute shader (ceil(W/8) Ãƒâ€” ceil(H/8) groups)
 //   6. Execute graph (async on render thread)
 // ============================================================
 
@@ -7096,6 +7128,10 @@ void UWaterSystem::ExecuteWaveComputeShader()
     
     // Calculate shader parameters with proper limits
     float CurrentTime = World->GetTimeSeconds();
+    float DeltaTime = World->GetDeltaSeconds();
+    
+    // Clamp DeltaTime to prevent instability from long frames
+    DeltaTime = FMath::Clamp(DeltaTime, 0.001f, 0.1f);  // 1ms to 100ms
     
     // Get wind data with safety limits
     FVector2D WindDirection = FVector2D(1.0f, 0.0f);  // Default direction
@@ -7117,13 +7153,6 @@ void UWaterSystem::ExecuteWaveComputeShader()
     float TerrainWidth = SimulationData.TerrainWidth * OwnerTerrain->TerrainScale;
     float TerrainHeight = SimulationData.TerrainHeight * OwnerTerrain->TerrainScale;
     
-    // Capture atmosphere texture for ice physics
-    UTextureRenderTarget2D* AtmosphereTexture = nullptr;
-    if (CachedMasterController && CachedMasterController->AtmosphereController)
-    {
-        AtmosphereTexture = CachedMasterController->AtmosphereController->AtmosphereStateTexture;
-    }
-    
     // Validate and clamp wave parameters
     float ClampedWaveScale = FMath::Clamp(GPUWaveScale, 0.0f, 2.0f);  // Limit wave scale multiplier
     float ClampedWaveSpeed = FMath::Clamp(GPUWaveSpeed, 0.0f, 10.0f);  // Limit animation speed
@@ -7140,8 +7169,8 @@ void UWaterSystem::ExecuteWaveComputeShader()
     
     // Enqueue render command
     ENQUEUE_RENDER_COMMAND(FWaveComputeCommand)(
-        [this, World, CurrentTime, WindDirection, WindStrength,
-         TerrainWidth, TerrainHeight, ClampedWaveScale, ClampedWaveSpeed, WaveDamping, AtmosphereTexture]
+        [this, World, CurrentTime, DeltaTime, WindDirection, WindStrength,
+         TerrainWidth, TerrainHeight, ClampedWaveScale, ClampedWaveSpeed, WaveDamping]
         (FRHICommandListImmediate& RHICmdList)
         {
             // Verify shader is compiled and available
@@ -7172,16 +7201,19 @@ void UWaterSystem::ExecuteWaveComputeShader()
                     FRDGTextureRef DepthTextureRDG = GraphBuilder.RegisterExternalTexture(
                         CreateRenderTarget(DepthTextureRHI, TEXT("WaterDepthTexture")));
 
-                    FRHITexture* FlowTextureRHI = FlowDisplacementTexture->GetResource()->GetTexture2DRHI();
-                    // Flow data texture (create dummy if not available)
+                    // Flow data texture (from RenderTarget)
                     FRDGTextureRef FlowTextureRDG = nullptr;
                     if (FlowDisplacementTexture && FlowDisplacementTexture->GetResource())
                     {
-                        FRHITexture* DepthTextureRHI = WaterDepthTexture->GetResource()->GetTexture2DRHI();
-                        if (FlowTextureRHI)
+                        FTextureRenderTargetResource* FlowRTResource = FlowDisplacementTexture->GetRenderTargetResource();
+                        if (FlowRTResource)
                         {
-                            FlowTextureRDG = GraphBuilder.RegisterExternalTexture(
-                                CreateRenderTarget(FlowTextureRHI, TEXT("FlowDataTexture")));
+                            FRHITexture* FlowTextureRHI = FlowRTResource->GetRenderTargetTexture();
+                            if (FlowTextureRHI)
+                            {
+                                FlowTextureRDG = GraphBuilder.RegisterExternalTexture(
+                                    CreateRenderTarget(FlowTextureRHI, TEXT("FlowDataTexture")));
+                            }
                         }
                     }
                     
@@ -7192,35 +7224,10 @@ void UWaterSystem::ExecuteWaveComputeShader()
                             FIntPoint(SimulationData.TerrainWidth, SimulationData.TerrainHeight),
                             PF_FloatRGBA,
                             FClearValueBinding::Black,
-                            TexCreate_ShaderResource | TexCreate_UAV);
+                            TexCreate_ShaderResource | TexCreate_UAV);  // UAV needed for read/write
                         FlowTextureRDG = GraphBuilder.CreateTexture(FlowDesc, TEXT("DummyFlowTexture"));
                     }
                     
-                    // Register atmosphere texture for ice physics (or create dummy)
-                    FRDGTextureRef AtmosphereTextureRDG = nullptr;
-                    if (AtmosphereTexture && AtmosphereTexture->GetResource())
-                    {
-                        FRHITexture* AtmosphereTextureRHI = AtmosphereTexture->GetResource()->GetTexture2DRHI();
-                        if (AtmosphereTextureRHI)
-                        {
-                            AtmosphereTextureRDG = GraphBuilder.RegisterExternalTexture(
-                                CreateRenderTarget(AtmosphereTextureRHI, TEXT("AtmosphereStateTexture")));
-                        }
-                    }
-
-                    // Create dummy atmosphere texture if not available
-                    if (!AtmosphereTextureRDG)
-                    {
-                        FRDGTextureDesc AtmosphereDesc = FRDGTextureDesc::Create2D(
-                            FIntPoint(SimulationData.TerrainWidth, SimulationData.TerrainHeight),
-                            PF_FloatRGBA,
-                            FClearValueBinding::Black,
-                            TexCreate_ShaderResource | TexCreate_UAV);
-                        AtmosphereTextureRDG = GraphBuilder.CreateTexture(AtmosphereDesc, TEXT("DummyAtmosphereTexture"));
-                        // Clear to default temperature (room temp ~293K = 0.73 in [0-400K] range)
-                        AddClearUAVPass(GraphBuilder, GraphBuilder.CreateUAV(AtmosphereTextureRDG),
-                            FVector4f(0.0f, 0.0f, 0.73f, 0.0f));
-                    }
                     // Setup shader parameters
                     FWaveComputeCS::FParameters* PassParameters =
                         GraphBuilder.AllocParameters<FWaveComputeCS::FParameters>();
@@ -7228,15 +7235,14 @@ void UWaterSystem::ExecuteWaveComputeShader()
                     // Bind textures
                     PassParameters->WaterDepthTexture = GraphBuilder.CreateSRV(
                         FRDGTextureSRVDesc::Create(DepthTextureRDG));
-                    PassParameters->FlowDataTexture = GraphBuilder.CreateSRV(
-                        FRDGTextureSRVDesc::Create(FlowTextureRDG));
-                    PassParameters->AtmosphereStateTexture = GraphBuilder.CreateSRV(       
-                        FRDGTextureSRVDesc::Create(AtmosphereTextureRDG));
+                    PassParameters->FlowDataTexture = GraphBuilder.CreateUAV(
+                        FRDGTextureUAVDesc(FlowTextureRDG));
                     PassParameters->WaveOutputTexture = GraphBuilder.CreateUAV(
                         FRDGTextureUAVDesc(WaveOutputRDG));
                     
                     // Set simulation parameters with validated values
                     PassParameters->Time = CurrentTime;
+                    PassParameters->DeltaTime = DeltaTime;
                     PassParameters->WindParams = FVector4f(
                         WindDirection.X,
                         WindDirection.Y,
@@ -7297,9 +7303,9 @@ void UWaterSystem::ExecuteWaveComputeShader()
 // materials each frame.
 //
 // PARAMETERS UPDATED:
-//   â€¢ Wave texture (output from compute shader)
-//   â€¢ Displacement scale (amplitude multiplier)
-//   â€¢ Time (for wave animation)
+//   Ã¢â‚¬Â¢ Wave texture (output from compute shader)
+//   Ã¢â‚¬Â¢ Displacement scale (amplitude multiplier)
+//   Ã¢â‚¬Â¢ Time (for wave animation)
 // ============================================================
 
 void UWaterSystem::UpdateGPUWaveParameters(float DeltaTime)
@@ -7387,7 +7393,7 @@ void UWaterSystem::UpdateGPUWaveParameters(float DeltaTime)
 // COORDINATE ALIGNMENT:
 // Critical for seamless water surfaces across chunks:
 // - MasterController is coordinate authority (Section 1)
-// - Terrain coordinates â†’ World coordinates â†’ Shader UVs
+// - Terrain coordinates Ã¢â€ â€™ World coordinates Ã¢â€ â€™ Shader UVs
 // - Chunk overlap handled at boundaries
 // - UV mapping aligned with wave texture sampling
 //
@@ -7431,7 +7437,7 @@ void UWaterSystem::UpdateGPUWaveParameters(float DeltaTime)
 // - Neighbor propagation ensures seamless chunk boundaries
 //
 // PERFORMANCE:
-// - Area calculation: O(ChunkSizeÂ²) = O(256) for 16x16 chunk
+// - Area calculation: O(ChunkSizeÃ‚Â²) = O(256) for 16x16 chunk
 // - Typical regeneration: 2-5 chunks/frame (10-20 with neighbors)
 // ============================================================================
 
@@ -7988,7 +7994,7 @@ void UWaterSystem::InitializeGPUChunkMesh(FWaterSurfaceChunk& Chunk)
 //
 // COORDINATE ALIGNMENT:
 // Critical for seamless water across chunks:
-// 1. Chunk world position â†’ Material parameter
+// 1. Chunk world position Ã¢â€ â€™ Material parameter
 // 2. UV coordinates aligned with wave texture sampling
 // 3. Shader uses world position to sample global wave texture
 // 4. Result: Waves propagate seamlessly across chunk boundaries
@@ -8176,7 +8182,7 @@ float UWaterSystem::GetConsistentWaterSurfaceHeight(int32 GridX, int32 GridY)
 // Water simulation with GPU acceleration involves complex coordinate
 // transformations, async GPU operations, and multi-threaded rendering.
 // This section provides tools to validate correctness at every stage:
-// - Coordinate space transformations (Terrain â†’ World â†’ Simulation â†’ GPU)
+// - Coordinate space transformations (Terrain Ã¢â€ â€™ World Ã¢â€ â€™ Simulation Ã¢â€ â€™ GPU)
 // - Wave generation and parameter validation
 // - GPU pipeline state inspection
 // - Visual debugging and on-screen displays
@@ -8209,11 +8215,11 @@ float UWaterSystem::GetConsistentWaterSurfaceHeight(int32 GridX, int32 GridY)
 // Debug functions inspect state at each stage.
 //
 // COMMON DEBUG SCENARIOS:
-// 1. Water not appearing â†’ Check coordinate alignment, mesh generation
-// 2. Waves not animating â†’ Validate GPU parameters, shader execution
-// 3. Chunk boundaries visible â†’ Check UV alignment, neighbor updates
-// 4. Performance issues â†’ Monitor update counts, regeneration frequency
-// 5. Coordinate mismatches â†’ Validate MasterController authority
+// 1. Water not appearing Ã¢â€ â€™ Check coordinate alignment, mesh generation
+// 2. Waves not animating Ã¢â€ â€™ Validate GPU parameters, shader execution
+// 3. Chunk boundaries visible Ã¢â€ â€™ Check UV alignment, neighbor updates
+// 4. Performance issues Ã¢â€ â€™ Monitor update counts, regeneration frequency
+// 5. Coordinate mismatches Ã¢â€ â€™ Validate MasterController authority
 //
 // PERFORMANCE IMPACT:
 // Debug functions are designed for development/testing only:
@@ -8886,7 +8892,7 @@ void UWaterSystem::ResetGPUWaveSystem()
 // - Terrain: Updated with erosion results
 //
 // DATA FLOW:
-// AtmosphericSystem â†’ WaterSystem â†’ ErosionTextures â†’ GeologyController â†’ Terrain
+// AtmosphericSystem Ã¢â€ â€™ WaterSystem Ã¢â€ â€™ ErosionTextures Ã¢â€ â€™ GeologyController Ã¢â€ â€™ Terrain
 //     (precipitation)    (flow calc)    (GPU textures)    (erosion calc)   (height update)
 //
 // INTEGRATION STATUS:
@@ -8903,14 +8909,14 @@ void UWaterSystem::ResetGPUWaveSystem()
 //
 // 1. WATER DEPTH TEXTURE (ErosionWaterDepthRT)
 //    Format: R32_FLOAT (single channel, 32-bit float)
-//    Dimensions: TerrainWidth Ã— TerrainHeight (e.g., 513Ã—513)
+//    Dimensions: TerrainWidth Ãƒâ€” TerrainHeight (e.g., 513Ãƒâ€”513)
 //    Content: Water depth in world units (0.0 = dry, >0.0 = wet)
 //    Usage: Erosion rate proportional to water depth
 //    Update: Every simulation frame (~60 Hz)
 //
 // 2. FLOW VELOCITY TEXTURE (ErosionFlowVelocityRT)
 //    Format: RG16F (two channels, 16-bit float each)
-//    Dimensions: TerrainWidth Ã— TerrainHeight
+//    Dimensions: TerrainWidth Ãƒâ€” TerrainHeight
 //    Content: Flow velocity vector (R=X velocity, G=Y velocity)
 //    Units: World units per second (e.g., cm/s)
 //    Usage: Sediment transport direction and magnitude
@@ -8928,7 +8934,7 @@ void UWaterSystem::ResetGPUWaveSystem()
 // - FTextureRHIRef (modern) instead of FTexture2DRHIRef (deprecated)
 // - ENQUEUE_RENDER_COMMAND for thread-safe GPU uploads
 // - UAV (Unordered Access View) flags for compute shader writes
-// - Proper resource lifecycle (Release â†’ ConditionalBeginDestroy)
+// - Proper resource lifecycle (Release Ã¢â€ â€™ ConditionalBeginDestroy)
 //
 // THREAD SAFETY:
 // GPU texture uploads must be thread-safe:
@@ -8947,8 +8953,8 @@ void UWaterSystem::ResetGPUWaveSystem()
 //
 // PERFORMANCE:
 // - Texture creation: ~1ms one-time cost
-// - Texture update: ~0.5ms per frame (CPUâ†’GPU upload)
-// - Memory: ~2MB for 513Ã—513 textures (R32F + RG16F)
+// - Texture update: ~0.5ms per frame (CPUÃ¢â€ â€™GPU upload)
+// - Memory: ~2MB for 513Ãƒâ€”513 textures (R32F + RG16F)
 // - GPU overhead: Minimal (textures resident in VRAM)
 //
 // DEPENDENCIES:
@@ -8987,7 +8993,7 @@ void UWaterSystem::ResetGPUWaveSystem()
 //
 // USAGE:
 // - GeologyController reads precipitation for erosion intensity
-// - Higher precipitation â†’ higher erosion rates
+// - Higher precipitation Ã¢â€ â€™ higher erosion rates
 // - Spatially-varying rain creates realistic erosion patterns
 // ============================================================================
 
@@ -9030,7 +9036,7 @@ void UWaterSystem::SetPrecipitationInput(UTextureRenderTarget2D* PrecipTexture)
 //
 // 4. RecreateErosionTextures(): Rebuild after changes
 //    - Called after terrain resolution changes
-//    - Cleanup â†’ Flush â†’ Create sequence
+//    - Cleanup Ã¢â€ â€™ Flush Ã¢â€ â€™ Create sequence
 //
 // THREAD SAFETY:
 // GPU uploads MUST be thread-safe:
@@ -9075,7 +9081,7 @@ void UWaterSystem::CreateErosionTextures()
     ErosionFlowVelocityRT->bCanCreateUAV = true;  // Enable compute shader writes
     ErosionFlowVelocityRT->UpdateResourceImmediate(true);
     
-    UE_LOG(LogTemp, Warning, TEXT("Ã¢Å“â€œ Created erosion textures: %dx%d (Depth: R32F, Velocity: RG16F)"),
+    UE_LOG(LogTemp, Warning, TEXT("ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ Created erosion textures: %dx%d (Depth: R32F, Velocity: RG16F)"),
            Width, Height);
     
     // Initial population with current simulation data
@@ -9185,7 +9191,7 @@ void UWaterSystem::CleanupErosionTextures()
         ErosionFlowVelocityRT = nullptr;
     }
     
-    UE_LOG(LogTemp, Log, TEXT("Ã¢Å“â€œ Erosion textures cleaned up"));
+    UE_LOG(LogTemp, Log, TEXT("ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ Erosion textures cleaned up"));
 }
 
 
@@ -9200,5 +9206,5 @@ void UWaterSystem::RecreateErosionTextures()
     // Create fresh textures immediately (saves ~3-5ms)
     CreateErosionTextures();
     
-    UE_LOG(LogTemp, Warning, TEXT("Ã¢Å“â€œ Erosion textures recreated"));
+    UE_LOG(LogTemp, Warning, TEXT("ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ Erosion textures recreated"));
 }

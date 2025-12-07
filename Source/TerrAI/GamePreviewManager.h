@@ -1,20 +1,27 @@
-// GamePreviewManager.h - Procedural Menu World Generation
+// GamePreviewManager.h - Menu World Preview with Authority Pattern
+// CLEANED: November 2025 - Removed legacy patterns, pure authority delegation
 #pragma once
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
+#include "TerrAIGameInstance.h"
 #include "GamePreviewManager.generated.h"
 
 // Forward declarations
 class ADynamicTerrain;
 class UAtmosphericSystem;
 class UWaterSystem;
+class AMasterWorldController;
+class AGeologyController;
 
-// Forward declare enums to avoid circular dependency
-enum class EWorldSize : uint8;
-enum class EDefaultTexture : uint8;
+// ============================================================================
+// CONFIGURATION STRUCTURES
+// ============================================================================
 
-// Configuration structure for preview settings
+/**
+ * Configuration structure for menu preview behavior
+ * Centralizes all timing and performance parameters
+ */
 USTRUCT(BlueprintType)
 struct TERRAI_API FMenuPreviewConfig
 {
@@ -40,122 +47,201 @@ struct TERRAI_API FMenuPreviewConfig
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sensitivity")
     float NoiseScaleThreshold = 0.0005f;
+    
+    // Spring system configuration
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Springs")
+    float InitialGroundwaterVolume = 100000000000000.0f; // m³ - enough for sustained preview
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Springs")
+    int32 NumberOfSprings = 5;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Springs")
+    float MinSpringFlow = 15000.0f; // m³/s - weakest spring
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Springs")
+    float MaxSpringFlow = 3333333.0f; // m³/s - strongest spring
 
     FMenuPreviewConfig() = default;
 };
 
+/**
+ * Time mode for preview world (Pulse/Trace/Drift)
+ */
 UENUM(BlueprintType)
 enum class EDriftTimeMode : uint8
 {
     Pulse   UMETA(DisplayName = "Pulse Mode"),
-    Trace   UMETA(DisplayName = "Trace Mode"), 
+    Trace   UMETA(DisplayName = "Trace Mode"),
     Drift   UMETA(DisplayName = "Drift Mode"),
-    Epoch   UMETA(DisplayName = "Epoch Mode"),
-    Myth    UMETA(DisplayName = "Myth Mode")
 };
 
+/**
+ * Game settings bundle for transition to main game
+ */
 USTRUCT(BlueprintType)
 struct TERRAI_API FGameSettings
 {
     GENERATED_BODY()
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    UPROPERTY(BlueprintReadWrite, Category = "Settings")
     EWorldSize WorldSize;
     
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    UPROPERTY(BlueprintReadWrite, Category = "Settings")
     EDefaultTexture DefaultTexture;
     
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    UPROPERTY(BlueprintReadWrite, Category = "Settings")
     EDriftTimeMode StartingTimeMode;
     
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    UPROPERTY(BlueprintReadWrite, Category = "Settings")
     bool bEnableWeather;
     
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    UPROPERTY(BlueprintReadWrite, Category = "Settings")
     float TimeAcceleration;
     
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    UPROPERTY(BlueprintReadWrite, Category = "Settings")
     bool bAdvancedAtmosphere;
 
     FGameSettings();
 };
 
-UCLASS(BlueprintType, Blueprintable, ClassGroup=(Custom), meta=(BlueprintSpawnableComponent))
+// ============================================================================
+// GAME PREVIEW MANAGER - AUTHORITY-BASED MENU SYSTEM
+// ============================================================================
+/**
+ * PURPOSE:
+ * Manages interactive terrain preview in main menu with proper authority delegation.
+ *
+ * ARCHITECTURE PATTERN: Authority Delegation
+ * - BeginPlay: Waits for MasterController authority
+ * - InitializeWithAuthority: Called after MasterController completes 8-phase init
+ * - Does NOT spawn its own systems - uses level-placed MasterController/Terrain
+ *
+ * MODERNIZATION (November 2025 - CLEANED):
+ * - Replaced manual spawning with authority pattern
+ * - Eliminated timer-based initialization soup
+ * - Removed stub functions and deprecated ownership tracking
+ * - Aligned with AtmosphereController/TerrainController patterns
+ * - Proper dependency guarantees through authority chain
+ *
+ * RESPONSIBILITIES:
+ * - Generate procedural preview terrain for menu
+ * - Apply visual settings (texture, weather effects)
+ * - Handle UI-triggered setting changes
+ * - Provide settings bundle for game transition
+ * - Manage preview-specific optimizations
+ */
+UCLASS(ClassGroup=(Custom), meta=(BlueprintSpawnableComponent))
 class TERRAI_API UGamePreviewManager : public UActorComponent
 {
     GENERATED_BODY()
 
 public:
+    // ========================================================================
+    // SECTION 1: CONSTRUCTION & LIFECYCLE
+    // ========================================================================
+    
     UGamePreviewManager();
 
-    // Core Settings
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Preview")
-    EWorldSize PreviewWorldSize;
-    
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Preview") 
-    EDefaultTexture PreviewTexture;
-    
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Preview")
-    EDriftTimeMode PreviewTimeMode = EDriftTimeMode::Pulse;
-    
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Preview")
-    bool bRainEnabled = true;
-    
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Preview")
-    float TimeScale = 1.0f;
-    
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Preview")
-    bool bUseCustomWorldSize = false;
-    
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Preview")
-    int32 CustomTerrainWidth = 257;
-    
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Preview")
-    int32 CustomTerrainHeight = 257;
+    virtual void BeginPlay() override;
+    virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+    virtual void TickComponent(float DeltaTime, ELevelTick TickType,
+                              FActorComponentTickFunction* ThisTickFunction) override;
 
-    // System References
-    UPROPERTY()
-    ADynamicTerrain* PreviewTerrain = nullptr;
+    // ========================================================================
+    // SECTION 2: AUTHORITY-BASED INITIALIZATION ⭐
+    // ========================================================================
     
-    UPROPERTY()
-    UAtmosphericSystem* PreviewAtmosphere = nullptr;
-    
-    UPROPERTY()
-    class AMasterWorldController* CachedMasterController = nullptr;
+    /**
+     * Initialize with MasterController authority
+     * Called after MasterController completes its 8-phase initialization
+     *
+     * @param Master - Authority reference to MasterController
+     * @param Terrain - Terrain reference from authority (NOT owned by GamePreviewManager)
+     */
+    UFUNCTION(BlueprintCallable, Category = "Menu Preview")
+    void InitializeWithAuthority(AMasterWorldController* Master, ADynamicTerrain* Terrain);
 
-    // Live Updates
-    UFUNCTION(BlueprintCallable, Category = "Preview")
+    // ========================================================================
+    // SECTION 3: UI-TRIGGERED ACTIONS
+    // ========================================================================
+    
+    /**
+     * Update world size setting (triggered from menu UI)
+     */
+    UFUNCTION(BlueprintCallable, Category = "Menu Preview")
     void UpdateWorldSize(EWorldSize NewSize);
     
-    UFUNCTION(BlueprintCallable, Category = "Preview") 
+    /**
+     * Update visual texture mode (triggered from menu UI)
+     */
+    UFUNCTION(BlueprintCallable, Category = "Menu Preview")
     void UpdateVisualMode(EDefaultTexture NewTexture);
     
-    UFUNCTION(BlueprintCallable, Category = "Preview")
+    /**
+     * Update time mode setting (triggered from menu UI)
+     */
+    UFUNCTION(BlueprintCallable, Category = "Menu Preview")
     void UpdateTimeMode(EDriftTimeMode NewMode);
     
-    UFUNCTION(BlueprintCallable, Category = "Preview")
+    /**
+     * Update weather settings (triggered from menu UI)
+     */
+    UFUNCTION(BlueprintCallable, Category = "Menu Preview")
     void UpdateWeatherSettings(bool bEnableRain);
     
-    UFUNCTION(BlueprintCallable, Category = "Preview")
+    /**
+     * Generate completely new random preview world
+     */
+    UFUNCTION(BlueprintCallable, Category = "Menu Preview")
     void GenerateNewPreviewWorld();
     
-    UFUNCTION(BlueprintCallable, Category = "Preview")
+    /**
+     * Reset preview world to default parameters
+     */
+    UFUNCTION(BlueprintCallable, Category = "Menu Preview")
     void ResetPreviewWorld();
     
-    UFUNCTION(BlueprintCallable, Category = "Preview")
+    /**
+     * Regenerate preview with current settings (UI refresh button)
+     */
+    UFUNCTION(BlueprintCallable, Category = "Menu Preview")
     void RegenerateWithCurrentSettings();
-
-    // Settings Transfer
-    UFUNCTION(BlueprintCallable, Category = "Preview")
-    FGameSettings GetCurrentSettings() const;
     
-    // Real-time Blueprint properties with automatic C++ sync
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rotation", meta = (CallInEditor = true))
+    /**
+     * Get current settings bundle for game transition
+     */
+    UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Menu Preview")
+    FGameSettings GetCurrentSettings() const;
+
+    // ========================================================================
+    // SECTION 4: PUBLIC PROPERTIES
+    // ========================================================================
+    
+    // Current preview settings
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Preview State")
+    EWorldSize PreviewWorldSize;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Preview State")
+    EDefaultTexture PreviewTexture;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Preview State")
+    EDriftTimeMode PreviewTimeMode;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Preview State")
+    bool bRainEnabled = true;
+    
+    // Time scaling for preview
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Preview Animation")
+    float TimeScale = 1.0f;
+    
+    // Camera rotation settings
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Preview Animation", meta = (CallInEditor = true))
     bool bEnableRotation = true;
     
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rotation", meta = (CallInEditor = true))
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Preview Animation", meta = (CallInEditor = true))
     float RotationSpeed = 15.0f;
     
+    // Procedural generation parameters
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Procedural", meta = (CallInEditor = true))
     int32 PreviewChunkSize = 8;
     
@@ -170,35 +256,71 @@ public:
     FMenuPreviewConfig PreviewConfig;
 
 protected:
-    virtual void BeginPlay() override;
-    virtual void TickComponent(float DeltaTime, ELevelTick TickType, 
-                              FActorComponentTickFunction* ThisTickFunction) override;
+    // ========================================================================
+    // SECTION 5: INTERNAL SYSTEMS
+    // ========================================================================
+    
+    /**
+     * Generate procedural terrain through authority
+     */
+    void GenerateProceduralTerrain();
+    
+    /**
+     * Apply material/texture settings to terrain
+     */
+    void ApplySettingsToTerrain();
+    
+    /**
+     * Update visual feedback (rotation, effects)
+     */
+    void UpdateVisualFeedback();
+    
+    /**
+     * Add water features to preview terrain
+     */
+    void AddWaterFeatures();
+    
+    /**
+     * Seed atmospheric patterns
+     */
+    void SeedAtmosphericPatterns();
 
 private:
-    void InitializePreviewSystems();
-    void GenerateProceduralTerrain();
-    void ApplySettingsToTerrain();
-    void UpdateVisualFeedback();
+    // ========================================================================
+    // SECTION 6: AUTHORITY REFERENCES
+    // ========================================================================
+    
+    /**
+     * Authority reference to MasterController
+     * Set via InitializeWithAuthority()
+     */
+    UPROPERTY()
+    AMasterWorldController* CachedMasterController = nullptr;
+    
+    /**
+     * Terrain reference from authority
+     * NOT owned by GamePreviewManager - authority manages lifecycle
+     */
+    UPROPERTY()
+    ADynamicTerrain* PreviewTerrain = nullptr;
+    
+    /**
+     * Atmospheric system reference (from terrain)
+     */
+    UPROPERTY()
+    UAtmosphericSystem* PreviewAtmosphere = nullptr;
+    
+    // ========================================================================
+    // SECTION 7: STATE FLAGS
+    // ========================================================================
+    
+    /**
+     * Initialization state flag
+     * Prevents operations before authority setup
+     */
+    bool bInitializedWithAuthority = false;
     
     // Visual feedback timers
     float TimeModePulseTimer = 0.0f;
     float WeatherEffectTimer = 0.0f;
-    
-    // Terrain generation functions
-    void AddWaterFeatures();
-    void SeedAtmosphericPatterns();
-    
-    // Visual feedback systems
-    void ShowWorldSizeOverlay(EWorldSize Size);
-    void TriggerTimeModeTransition(EDriftTimeMode Mode);
-    void EnableFlowVisualization(bool bEnable);
-    void EnableErosionPreview(bool bEnable);
-    
-    // Terrain ownership tracking
-    bool bOwnsTerrain = false;
-    
-protected:
-    virtual void BeginDestroy() override;
-    
-public:
 };

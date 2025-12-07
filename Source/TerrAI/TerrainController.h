@@ -15,10 +15,10 @@
  * - IBrushReceiver: Universal brush system integration (from MasterController)
  *
  * ARCHITECTURE PATTERNS:
- * â­ Authority Delegation: Registered with MasterController for coordination
- * â­ State Machine Camera: Overhead/FirstPerson with smooth transitions
- * â­ Enhanced Input System: Modern UE5.5 input handling
- * â­ Unified Cursor: Single consistent cursor across all systems
+ * ÃƒÂ¢Ã‚Â­Ã‚Â Authority Delegation: Registered with MasterController for coordination
+ * ÃƒÂ¢Ã‚Â­Ã‚Â State Machine Camera: Overhead/FirstPerson with smooth transitions
+ * ÃƒÂ¢Ã‚Â­Ã‚Â Enhanced Input System: Modern UE5.5 input handling
+ * ÃƒÂ¢Ã‚Â­Ã‚Â Unified Cursor: Single consistent cursor across all systems
  *
  * SECTION STRUCTURE (matches TerrainController.cpp 15 sections):
  * Organized to mirror reorganized .cpp file for easy cross-reference navigation.
@@ -148,7 +148,7 @@ class IBrushReceiver;
  * - APawn: UE5 player controller base
  * - IBrushReceiver: Universal brush system interface
  *
- * â­ IBRUSHRECEIVER INTERFACE:
+ * ÃƒÂ¢Ã‚Â­Ã‚Â IBRUSHRECEIVER INTERFACE:
  * Implements ApplyBrush(), UpdateBrushSettings(), CanReceiveBrush() to
  * participate in Universal Brush System without tight coupling.
  *
@@ -230,6 +230,12 @@ public:
     // Input action for V key
     UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input")
     class UInputAction* ToggleVisualizationAction;
+    
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input")
+        class UInputAction* PrimaryAction;
+
+        UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input")
+        class UInputAction* SecondaryAction;
 
     // Water system input actions
     UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input")
@@ -397,10 +403,10 @@ public:
 
         // Spring editing properties
         UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Spring Editing")
-        float MinSpringFlowRate = 0.1f;  // mÃ‚Â³/s for smallest brush
+        float MinSpringFlowRate = 0.1f;  // mÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³/s for smallest brush
 
         UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Spring Editing")
-        float MaxSpringFlowRate = 10.0f;  // mÃ‚Â³/s for largest brush
+        float MaxSpringFlowRate = 10.0f;  // mÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³/s for largest brush
 
         // Spring editing material for cursor preview
         UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Materials")
@@ -733,6 +739,15 @@ protected:
     void StopRemoveWater(const FInputActionValue& Value);
     void ToggleRainInput(const FInputActionValue& Value);
 
+    // ===== UNIFIED INPUT HANDLERS =====
+    // State-driven input routing for context-sensitive actions
+    void HandlePrimaryAction(const FInputActionValue& Value);
+    void HandleSecondaryAction(const FInputActionValue& Value);
+    void StartPrimaryAction();
+    void StopPrimaryAction();
+    void StartSecondaryAction();
+    void StopSecondaryAction();
+
     // Hierarchical mode system - Direct mode selection (1-4 keys)
     void SelectTerrainMode(const FInputActionValue& Value);
     void SelectWaterMode(const FInputActionValue& Value);
@@ -811,6 +826,15 @@ private:
     float CursorUpdateTimer = 0.0f;
     float CursorUpdateRate = 0.033f; // 30fps cursor updates
     bool bUnifiedCursorValid = false;
+
+    // Dual-mode cursor system
+    float NavigationCursorTimer = 0.0f;
+
+    // Unified input authority state
+    bool bIsPrimaryActionActive = false;
+    bool bIsSecondaryActionActive = false;
+    bool bJustStartedEditing = false; // First frame of editing - ignore mouse position
+    
     
     // Authority caching
     bool bMasterControllerValid = false;
@@ -860,6 +884,14 @@ private:
     void SetupInputMapping();
     bool PerformCursorTrace(FVector& OutHitLocation) const;
 
+    // ===== DUAL-MODE CURSOR SYSTEM =====
+    // Navigation mode: cursor frozen at last position (efficient)
+    // Editing mode: cursor traces to world every frame (precise)
+    bool IsEditingToolActive() const;
+    void UpdateNavigationModeCursor(float DeltaTime);
+    void FallbackToScreenCenter();
+    bool GetScreenCenterWorldPosition(FVector& OutPosition) const;
+
 };
 
 // ============================================================================
@@ -874,15 +906,15 @@ private:
  * - Section headers added for navigation
  *
  * VALIDATION:
- * âœ… All UPROPERTY preserved (95)
- * âœ… All UFUNCTION preserved (41)
- * âœ… All UENUM preserved (4)
- * âœ… Forward declarations intact
- * âœ… Includes unchanged
- * âœ… IBrushReceiver implementation preserved
- * âœ… Public/protected/private access unchanged
- * âœ… Ready for compilation
+ * ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ All UPROPERTY preserved (95)
+ * ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ All UFUNCTION preserved (41)
+ * ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ All UENUM preserved (4)
+ * ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ Forward declarations intact
+ * ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ Includes unchanged
+ * ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ IBrushReceiver implementation preserved
+ * ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ Public/protected/private access unchanged
+ * ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ Ready for compilation
  *
- * QUALITY: â­â­â­â­â­
+ * QUALITY: ÃƒÂ¢Ã‚Â­Ã‚ÂÃƒÂ¢Ã‚Â­Ã‚ÂÃƒÂ¢Ã‚Â­Ã‚ÂÃƒÂ¢Ã‚Â­Ã‚ÂÃƒÂ¢Ã‚Â­Ã‚Â
  * Comprehensive documentation, clear architecture, perfect integrity.
  */

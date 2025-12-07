@@ -54,7 +54,6 @@
 class UAtmosphericSystem;
 class ADynamicTerrain;
 class UWaterSystem;
-class AGPUTerrainController;
 class UTextureRenderTarget2D;
 struct IPooledRenderTarget;
 class UPostProcessComponent;
@@ -619,9 +618,7 @@ public:
         int32 GetGridSizeY() const { return GridSizeY; }
     
 protected:
-    // Cached reference to GPU terrain controller
-    UPROPERTY()
-    AGPUTerrainController* CachedGPUController = nullptr;
+
     
     
     
