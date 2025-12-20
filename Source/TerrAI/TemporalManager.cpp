@@ -10,7 +10,7 @@ void UTemporalManager::Initialize(FSubsystemCollectionBase& Collection)
 {
     Super::Initialize(Collection);
     
-    UE_LOG(LogTemp, Warning, TEXT("TemporalManager: Initializing temporal coordination system"));
+    UE_LOG(LogTemp, Log, TEXT("TemporalManager: Initializing temporal coordination system"));
     
     // Initialize temporal state
     TemporalState.GameStartTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
@@ -20,12 +20,12 @@ void UTemporalManager::Initialize(FSubsystemCollectionBase& Collection)
     // Set up default time scales for all systems
     InitializeDefaultTimeScales();
     
-    UE_LOG(LogTemp, Warning, TEXT("TemporalManager: Initialization complete"));
+    UE_LOG(LogTemp, Log, TEXT("TemporalManager: Initialization complete"));
 }
 
 void UTemporalManager::Deinitialize()
 {
-    UE_LOG(LogTemp, Warning, TEXT("TemporalManager: Shutting down temporal coordination"));
+    UE_LOG(LogTemp, Log, TEXT("TemporalManager: Shutting down temporal coordination"));
     
     // Clean up temporal state
     TemporalState.SystemTimes.Empty();
@@ -74,7 +74,7 @@ float UTemporalManager::GetSystemTime(ESystemType SystemType) const
     const float* SystemTime = TemporalState.SystemTimes.Find(SystemType);
     if (!SystemTime)
     {
-        UE_LOG(LogTemp, Warning, TEXT("TemporalManager: System %d not registered in GetSystemTime"), (int32)SystemType);
+        UE_LOG(LogTemp, Log, TEXT("TemporalManager: System %d not registered in GetSystemTime"), (int32)SystemType);
         return 0.0f;
     }
     
@@ -142,14 +142,14 @@ bool UTemporalManager::ShouldSystemUpdate(ESystemType SystemType, float UpdateFr
 {
     if (!IsSystemTypeValid(SystemType) || bPauseAllSystems)
     {
-        UE_LOG(LogTemp, Warning, TEXT("TemporalManager: Fail 145"));
+        UE_LOG(LogTemp, Log, TEXT("TemporalManager: Fail 145"));
         return false;
     }
     
     // Performance throttling - limit systems per frame
     if (ShouldThrottleSystemUpdates())
     {
-        UE_LOG(LogTemp, Warning, TEXT("TemporalManager: Fail 152"));
+        UE_LOG(LogTemp, Log, TEXT("TemporalManager: Fail 152"));
         return false;
     }
     
@@ -198,7 +198,7 @@ void UTemporalManager::RegisterSystem(ESystemType SystemType, float InitialTimeS
     TemporalState.LastUpdateTimes.Add(SystemType, GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f);
     TemporalState.UpdateFrequencies.Add(SystemType, 1.0f); // Default 1Hz
     
-    UE_LOG(LogTemp, Warning, TEXT("TemporalManager: Registered system %d with time scale %.2f"), 
+    UE_LOG(LogTemp, Log, TEXT("TemporalManager: Registered system %d with time scale %.2f"), 
            (int32)SystemType, InitialTimeScale);
 }
 
@@ -504,7 +504,7 @@ FString UTemporalManager::CreateTemporalSnapshot() const
 bool UTemporalManager::RestoreFromSnapshot(const FString& SnapshotData)
 {
     // Basic snapshot restoration - in production you'd want proper JSON parsing
-    UE_LOG(LogTemp, Warning, TEXT("TemporalManager: Restoring from snapshot (basic implementation)"));
+    UE_LOG(LogTemp, Log, TEXT("TemporalManager: Restoring from snapshot (basic implementation)"));
     
     // Reset all systems first
     ResetAllTemporalSystems();
@@ -533,7 +533,7 @@ void UTemporalManager::ResetAllTemporalSystems()
         LastUpdatePair.Value = CurrentTime;
     }
     
-    UE_LOG(LogTemp, Warning, TEXT("TemporalManager: Reset all temporal systems"));
+    UE_LOG(LogTemp, Log, TEXT("TemporalManager: Reset all temporal systems"));
 }
 
 void UTemporalManager::MarkSystemUpdated(ESystemType SystemType)

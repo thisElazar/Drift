@@ -813,16 +813,8 @@ public:
     // Helper for safe neighbor averaging
     float GetSafeNeighborAverage(int32 X, int32 Y) const;
     
-  
-    
     void DebugAuthority();
-    
-    // GPU Authority Management
-    bool bPendingGPUInit = false;
-    bool bCPUHasAuthority = true;  // CPU is authority until proven otherwise
-    
 
-        
         // Internal GPU functions
         void CreateGPUResources();
         void ReleaseGPUResources();
@@ -838,6 +830,11 @@ public:
         
 
     public:
+    
+    // GPU Authority Management
+    bool bPendingGPUInit = false;
+    bool bCPUHasAuthority = true;  // CPU is authority until proven otherwise
+    
         // Precipitation input for enhanced erosion
         UFUNCTION(BlueprintCallable, Category = "GPU Terrain")
         void SetPrecipitationTexture(UTextureRenderTarget2D* PrecipitationTex);
@@ -852,7 +849,6 @@ public:
        
        // Console command
        UFUNCTION(Exec, Category = "GPU Terrain")
-       void DebugGPUTerrain();
     
     // New function for GPU init with data
     void InitializeGPUTerrainWithData();

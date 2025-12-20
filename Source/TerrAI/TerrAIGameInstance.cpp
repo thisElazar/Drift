@@ -51,7 +51,7 @@ UTerrAIGameInstance::UTerrAIGameInstance()
       if (AvailableMaps.Num() > 0)
       {
           SelectMap(0);  // Select first available map (Random Terrain)
-          UE_LOG(LogTemp, Warning, TEXT("TerrAIGameInstance: Auto-selected map 0 for direct BaseMap loads"));
+          UE_LOG(LogTemp, Log, TEXT("TerrAIGameInstance: Auto-selected map 0 for direct BaseMap loads"));
       }
 }
 
@@ -65,7 +65,7 @@ void UTerrAIGameInstance::InitializeDefaultMaps()
         return;
     }
     
-    UE_LOG(LogTemp, Warning, TEXT("TerrAIGameInstance: Initializing default map configurations (513x513 grid)"));
+    UE_LOG(LogTemp, Log, TEXT("TerrAIGameInstance: Initializing default map configurations (513x513 grid)"));
     
     // Default Map 1: Random Procedural (always available)
     FTerrainMapDefinition RandomMap;
@@ -88,7 +88,7 @@ void UTerrAIGameInstance::InitializeDefaultMaps()
     ValleyMap.ProceduralSeed = -1; // Fixed seed
     ValleyMap.HeightVariation = 300.0f;
     ValleyMap.NoiseScale = 0.008f;
-    ValleyMap.TerrainScale = 50.0f; // 25.65km world (smaller scale)
+    ValleyMap.TerrainScale = 100.0f; // 25.65km world (smaller scale)
     ValleyMap.DefaultLatitude = 40.0f;
     ValleyMap.NumProceduralSprings = 3;
     AvailableMaps.Add(ValleyMap);
@@ -102,7 +102,7 @@ void UTerrAIGameInstance::InitializeDefaultMaps()
     MountainMap.HeightVariation = 1200.0f;
     MountainMap.NoiseScale = 0.015f;
     MountainMap.NoiseOctaves = 6;
-    MountainMap.TerrainScale = 200.0f; // 102.6km world (larger scale)
+    MountainMap.TerrainScale = 100.0f; // 102.6km world (larger scale)
     MountainMap.DefaultLatitude = 50.0f;
     MountainMap.NumProceduralSprings = 8;
     AvailableMaps.Add(MountainMap);
@@ -121,7 +121,7 @@ void UTerrAIGameInstance::InitializeDefaultMaps()
     PlainsMap.NumProceduralSprings = 4;
     AvailableMaps.Add(PlainsMap);
     
-    UE_LOG(LogTemp, Warning, TEXT("TerrAIGameInstance: Initialized %d default maps (all 513x513 grid)"),
+    UE_LOG(LogTemp, Log, TEXT("TerrAIGameInstance: Initialized %d default maps (all 513x513 grid)"),
            AvailableMaps.Num());
 }
 
@@ -136,7 +136,7 @@ void UTerrAIGameInstance::SelectMap(int32 MapIndex)
     if (MapIndex < 0)
     {
         // Random map
-        UE_LOG(LogTemp, Warning, TEXT("TerrAIGameInstance: Selected RANDOM map generation"));
+        UE_LOG(LogTemp, Log, TEXT("TerrAIGameInstance: Selected RANDOM map generation"));
         CurrentMapDefinition = GenerateRandomMapDefinition();
         bHasCurrentMapDefinition = true;
     }
@@ -145,7 +145,7 @@ void UTerrAIGameInstance::SelectMap(int32 MapIndex)
         // Specific map
         CurrentMapDefinition = AvailableMaps[MapIndex];
         bHasCurrentMapDefinition = true;
-        UE_LOG(LogTemp, Warning, TEXT("TerrAIGameInstance: Selected map %d: %s (%.1fkm, scale=%.1f)"),
+        UE_LOG(LogTemp, Log, TEXT("TerrAIGameInstance: Selected map %d: %s (%.1fkm, scale=%.1f)"),
                MapIndex,
                *CurrentMapDefinition.DisplayName.ToString(),
                CurrentMapDefinition.GetWorldSizeKm(),
@@ -166,7 +166,7 @@ void UTerrAIGameInstance::SelectMap(int32 MapIndex)
 void UTerrAIGameInstance::SetWorldSize(EWorldSize NewSize)
 {
     WorldSize = NewSize;
-    UE_LOG(LogTemp, Warning, TEXT("TerrAIGameInstance: World size set to %d"), (int32)NewSize);
+    UE_LOG(LogTemp, Log, TEXT("TerrAIGameInstance: World size set to %d"), (int32)NewSize);
     
     // If we're in a game world, update the MasterController immediately
     //ApplyWorldSizeToMasterController();
@@ -175,7 +175,7 @@ void UTerrAIGameInstance::SetWorldSize(EWorldSize NewSize)
 
 void UTerrAIGameInstance::StartNewWorldWithMap(int32 MapIndex)
 {
-    UE_LOG(LogTemp, Warning, TEXT("TerrAIGameInstance: Starting new world with map index %d"), MapIndex);
+    UE_LOG(LogTemp, Verbose, TEXT("TerrAIGameInstance: Starting new world with map index %d"), MapIndex);
     
     // Select and prepare the map
     SelectMap(MapIndex);
@@ -221,7 +221,7 @@ FTerrainMapDefinition UTerrAIGameInstance::GenerateRandomMapDefinition()
     RandomDef.SpringFlowRate = SpringFlowRate;
     RandomDef.bEnableWeather = bEnableWaterPhysics;
     
-    UE_LOG(LogTemp, Warning, TEXT("Generated random map: Height=%.1f, Scale=%.4f, TerrainScale=%.1f (%.1fkm), Springs=%d"),
+    UE_LOG(LogTemp, Log, TEXT("Generated random map: Height=%.1f, Scale=%.4f, TerrainScale=%.1f (%.1fkm), Springs=%d"),
            RandomDef.HeightVariation,
            RandomDef.NoiseScale,
            RandomDef.TerrainScale,
@@ -258,7 +258,7 @@ FTerrainMapDefinition UTerrAIGameInstance::GetMapDefinitionByIndex(int32 Index) 
 
 void UTerrAIGameInstance::StartNewWorld()
 {
-    UE_LOG(LogTemp, Warning, TEXT("TerrAIGameInstance: Starting new world (legacy method - using default procedural)"));
+    UE_LOG(LogTemp, Verbose, TEXT("TerrAIGameInstance: Starting new world (legacy method - using default procedural)"));
     
     // Legacy method - create default procedural definition
     CurrentMapDefinition = CreateDefaultProceduralDefinition();
@@ -297,12 +297,12 @@ void UTerrAIGameInstance::SetPreviewSettings(EDefaultTexture InTexture, bool bIn
     bEnableWaterPhysics = bInWeather;
     bHasPreviewSettings = true;
     
-    UE_LOG(LogTemp, Warning, TEXT("TerrAIGameInstance: Preview settings stored"));
+    UE_LOG(LogTemp, Log, TEXT("TerrAIGameInstance: Preview settings stored"));
 }
 
 void UTerrAIGameInstance::StartGameWithPreviewSettings()
 {
-    UE_LOG(LogTemp, Warning, TEXT("TerrAIGameInstance: Starting game with preview settings"));
+    UE_LOG(LogTemp, Verbose, TEXT("TerrAIGameInstance: Starting game with preview settings"));
     
     // Apply settings before level transition
     if (bHasPreviewSettings)
@@ -323,14 +323,14 @@ void UTerrAIGameInstance::StartGameWithPreviewSettings()
 
 void UTerrAIGameInstance::ReturnToMainMenu()
 {
-    UE_LOG(LogTemp, Warning, TEXT("TerrAIGameInstance: Returning to main menu"));
+    UE_LOG(LogTemp, Log, TEXT("TerrAIGameInstance: Returning to main menu"));
     UGameplayStatics::OpenLevel(this, FName("MainMenu"));
 }
 
 void UTerrAIGameInstance::ApplyPreviewSettingsToGame()
 {
     // Apply texture and weather settings
-    UE_LOG(LogTemp, Warning, TEXT("TerrAIGameInstance: Applying preview settings to game"));
+    UE_LOG(LogTemp, Log, TEXT("TerrAIGameInstance: Applying preview settings to game"));
     
     // These are already stored in member variables, ready for MasterController to read
     bHasPreviewSettings = false; // Clear flag after applying

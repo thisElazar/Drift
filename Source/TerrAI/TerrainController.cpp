@@ -24,13 +24,13 @@
  *   input handling to prevent conflicts
  *
  * KEY FEATURES:
- * ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ Interactive terrain modification (raise/lower)
- * ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ Interactive water editing (add/remove)
- * ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ Groundwater spring management
- * ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ Atmospheric parameter modification
- * ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ Smooth camera transitions between modes
- * ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ Performance monitoring and HUD display
- * ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ Real-time brush preview with material feedback
+ *   Interactive terrain modification (raise/lower)
+ *   Interactive water editing (add/remove)
+ *   Groundwater spring management
+ *   Atmospheric parameter modification
+ *   Smooth camera transitions between modes
+ *   Performance monitoring and HUD display
+ *   Real-time brush preview with material feedback
  *
  * SYSTEM DEPENDENCIES:
  * - MasterController: Central authority for brush system and coordinates
@@ -172,12 +172,7 @@ ATerrainController::ATerrainController()
     CameraZoomSpeed = 1000.0f;
     MinZoomDistance = 500.0f;
     MaxZoomDistance = 20000.0f;
-    
-    WaterBrushStrength = 10.0f;
-    MinWaterBrushStrength = 1.0f;
-    MaxWaterBrushStrength = 100.0f;
-    WaterStrengthChangeRate = 5.0f;
-    
+ 
     CurrentVisualMode = ETerrainVisualMode::Wireframe;
     CurrentMainMode = EMainEditingMode::Terrain;
     CurrentTerrainSubMode = ETerrainSubMode::Raise;
@@ -205,7 +200,7 @@ ATerrainController::ATerrainController()
 
 
 // ============================================================================
-// SECTION 2: UNIVERSAL BRUSH RECEIVER SYSTEM ÃƒÂ¢Ã‚Â­Ã‚Â (~70 lines, 3%)
+// SECTION 2: UNIVERSAL BRUSH RECEIVER SYSTEM   (~70 lines, 3%)
 // ============================================================================
 /**
  * PURPOSE:
@@ -224,9 +219,9 @@ ATerrainController::ATerrainController()
  *
  * PATTERN:
  *   MasterController (Authority)
- *        ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬Å“
+ *         
  *   IBrushReceiver Interface
- *        ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬Å“
+ *         
  *   TerrainController (Implementation)
  *
  * The ApplyBrush() method receives commands but doesn't make decisions about
@@ -364,7 +359,7 @@ void ATerrainController::BeginPlay()
         return;
     }
     
-    UE_LOG(LogTemp, Warning, TEXT("TerrainController: MasterController already set, but waiting for authority call"));
+    UE_LOG(LogTemp, Log, TEXT("TerrainController: MasterController already set, but waiting for authority call"));
 }
 
 
@@ -392,13 +387,23 @@ void ATerrainController::InitializeControllerWithAuthority()
     // Initialize current brush settings from MasterController
     CurrentBrushSettings = MasterController->GetUniversalBrushSettings();
     
-    // Set initial camera rotation
-    FRotator InitialCameraRotation = FRotator(0.0f, 0.0f, 0.0f); //
-    SpringArm->SetWorldRotation(InitialCameraRotation);
-    
+    // In InitializeControllerWithAuthority() around line 390-396
     // Ensure FirstPersonCamera starts with level rotation
     FirstPersonCamera->SetWorldRotation(FRotator(0.0f, 0.0f, 0.0f));
+
+    // CRITICAL FIX: Explicitly enforce camera states after level load
+    // Unreal's pawn possession can activate both cameras during SetViewTarget
+    Camera->SetActive(true);
+    FirstPersonCamera->SetActive(false);
+    CurrentCameraMode = ECameraMode::Overhead;
+
+    UE_LOG(LogTemp, Log, TEXT("TerrainController: Camera states enforced - Overhead active, FirstPerson inactive"));
+
+    // Set initial camera rotation
+    FRotator InitialCameraRotation = FRotator(0.0f, 0.0f, 0.0f);
+    SpringArm->SetWorldRotation(InitialCameraRotation);
     
+   
     // Get terrain from MasterController authority
     TargetTerrain = MasterController->MainTerrain;
     if (!TargetTerrain)
@@ -499,7 +504,7 @@ void ATerrainController::UpdateAtmosphericFog()
     GetWorld()->Exec(GetWorld(), *FString::Printf(TEXT("r.Fog.Density %.4f"), FogDensity));
     
     // Adjust fog color based on temperature (cooler = bluer, warmer = whiter)
-    float TempRatio = FMath::Clamp((Temperature - 263.15f) / 30.0f, 0.0f, 1.0f); // -10Ãƒâ€šÃ‚Â°C to 20Ãƒâ€šÃ‚Â°C range
+    float TempRatio = FMath::Clamp((Temperature - 263.15f) / 30.0f, 0.0f, 1.0f); // -10 C to 20 C range
     FLinearColor FogColor = FLinearColor::LerpUsingHSV(
         FLinearColor(0.7f, 0.8f, 1.0f, 1.0f), // Cool blue-white
         FLinearColor(1.0f, 1.0f, 0.95f, 1.0f), // Warm white
@@ -521,7 +526,7 @@ float ATerrainController::CalculateFogDensity(FVector Position) const
     float HumidityFactor = FMath::Clamp((Humidity - 0.7f) * HumidityFogMultiplier, 0.0f, 2.0f);
     
     // Temperature differential enhances fog (around freezing point)
-    float TempDiff = FMath::Abs(Temperature - 273.15f); // Distance from 0Ãƒâ€šÃ‚Â°C
+    float TempDiff = FMath::Abs(Temperature - 273.15f); // Distance from 0 C
     float TempFactor = 1.0f + (1.0f / (1.0f + TempDiff * 0.1f)) * TemperatureFogMultiplier;
     
     // Combine factors for final fog intensity
@@ -747,7 +752,7 @@ void ATerrainController::Tick(float DeltaTime)
     // Update performance stats
     if (bShowPerformanceStats)
     {
-        UpdatePerformanceStats(DeltaTime);
+        
     }
 }
 
@@ -970,7 +975,11 @@ void ATerrainController::SetupPlayerInputComponent(UInputComponent* PlayerInputC
             EnhancedInputComponent->BindAction(ToggleControlPanelAction,
                 ETriggerEvent::Started,
                 this,
-                &ATerrainController::ToggleControlPanel);
+                &ATerrainController::ShowControlPanel);
+            EnhancedInputComponent->BindAction(ToggleControlPanelAction,
+                ETriggerEvent::Completed,
+                this,
+                &ATerrainController::HideControlPanel);
         }
     }
 }
@@ -1060,7 +1069,7 @@ void ATerrainController::ToggleControlPanel()
 
 
 // ============================================================================
-// SECTION 7: TERRAIN EDITING SYSTEM ÃƒÂ°Ã…Â¸Ã¢â‚¬â„¢Ã‚Â§ (~225 lines, 9%)
+// SECTION 7: TERRAIN EDITING SYSTEM   (~225 lines, 9%)
 // ============================================================================
 /**
  * PURPOSE:
@@ -1146,7 +1155,7 @@ void ATerrainController::StartTerrainEditing(bool bRaise)
         TargetTerrain->WaterSystem->bPausedForTerrainEdit = true;
     }
     
-    UE_LOG(LogTemp, Warning, TEXT("Started %s terrain"), bRaise ?
+    UE_LOG(LogTemp, Verbose, TEXT("Started %s terrain"), bRaise ?
            TEXT("raising") : TEXT("lowering"));
 }
 
@@ -1162,7 +1171,7 @@ void ATerrainController::StopTerrainEditing()
         TargetTerrain->WaterSystem->ForceTerrainSync();
     }
     
-    UE_LOG(LogTemp, Warning, TEXT("Stopped terrain editing"));
+    UE_LOG(LogTemp, Verbose, TEXT("Stopped terrain editing"));
 }
 
 void ATerrainController::UpdateTerrainModification(float DeltaTime)
@@ -1229,7 +1238,7 @@ void ATerrainController::StartWaterEditing(bool bAdd)
     bIsAddingWater = bAdd;
     bIsRemovingWater = !bAdd;
   
-    UE_LOG(LogTemp, Warning, TEXT("Started %s water"), bAdd ?
+    UE_LOG(LogTemp, Verbose, TEXT("Started %s water"), bAdd ?
            TEXT("adding") : TEXT("removing"));
 }
 
@@ -1240,7 +1249,7 @@ void ATerrainController::StopWaterEditing()
     bIsAddingWater = false;
     bIsRemovingWater = false;
     
-    UE_LOG(LogTemp, Warning, TEXT("Stopped water editing"));
+    UE_LOG(LogTemp, Verbose, TEXT("Stopped water editing"));
 }
 
 void ATerrainController::UpdateWaterModification(float DeltaTime)
@@ -1249,25 +1258,29 @@ void ATerrainController::UpdateWaterModification(float DeltaTime)
     
     FVector CursorWorldPos = GetCursorWorldPosition();
     
+    // Get brush radius from MasterController
+    float BrushRadius = MasterController->GetBrushRadius();
+    float TerrainScale = MasterController->GetTerrainScale();
+    float RadiusInCells = BrushRadius / TerrainScale;
+    
+    // Convert world position to terrain coordinates
+    FVector2D TerrainCoords = MasterController->WorldToTerrainCoordinates(CursorWorldPos);
+    int32 X = FMath::FloorToInt(TerrainCoords.X);
+    int32 Y = FMath::FloorToInt(TerrainCoords.Y);
+    
     if (bIsAddingWater)
     {
-        float AmountToAdd = WaterBrushStrength * WaterAdditionRate * DeltaTime;
+        float AmountToAdd = MasterController->GetBrushStrength() * WaterAdditionRate * DeltaTime;
         
-        // Measure exact volume change
-        float VolumeChange = TargetTerrain->WaterSystem->MeasureVolumeChange([&]()
-        {
-            TargetTerrain->WaterSystem->AddWater(CursorWorldPos, AmountToAdd);
-        });
+        // Use radius-based addition with MasterController brush radius
+        TargetTerrain->WaterSystem->AddWaterInRadius(X, Y, RadiusInCells, AmountToAdd);
     }
     else if (bIsRemovingWater)
     {
-        float AmountToRemove = WaterBrushStrength * DeltaTime;
+        float AmountToRemove = MasterController->GetBrushStrength() * DeltaTime;
         
-        // Measure exact volume change
-        float VolumeChange = TargetTerrain->WaterSystem->MeasureVolumeChange([&]()
-        {
-            TargetTerrain->WaterSystem->RemoveWater(CursorWorldPos, AmountToRemove);
-        });
+        // Use radius-based removal with MasterController brush radius
+        TargetTerrain->WaterSystem->RemoveWaterInRadius(X, Y, RadiusInCells, AmountToRemove);
     }
 }
 
@@ -1293,32 +1306,17 @@ void ATerrainController::DecreaseBrushSize(const FInputActionValue& Value)
 
 void ATerrainController::IncreaseBrushStrength(const FInputActionValue& Value)
 {
-    if (CurrentMainMode == EMainEditingMode::Terrain)
-    {
-        float CurrentStrength = GetBrushStrength();
-        float ChangeRate = 50.0f; // Hardcoded since we removed the property
-        SetBrushStrength(CurrentStrength + ChangeRate);
-    }
-    else if (CurrentMainMode == EMainEditingMode::Water)
-    {
-        SetWaterBrushStrength(WaterBrushStrength + WaterStrengthChangeRate);
-    }
+    float CurrentStrength = GetBrushStrength();
+    float ChangeRate = 50.0f;
+    SetBrushStrength(CurrentStrength + ChangeRate);
 }
 
 void ATerrainController::DecreaseBrushStrength(const FInputActionValue& Value)
 {
-    if (CurrentMainMode == EMainEditingMode::Terrain)
-    {
-        float CurrentStrength = GetBrushStrength();
-        float ChangeRate = 50.0f; // Hardcoded since we removed the property
-        SetBrushStrength(CurrentStrength - ChangeRate);
-    }
-    else if (CurrentMainMode == EMainEditingMode::Water)
-    {
-        SetWaterBrushStrength(WaterBrushStrength - WaterStrengthChangeRate);
-    }
+    float CurrentStrength = GetBrushStrength();
+    float ChangeRate = 50.0f;
+    SetBrushStrength(CurrentStrength - ChangeRate);
 }
-// REMOVED: All duplicate function definitions that were causing linker errors
 
 void ATerrainController::ApplyAtmosphericBrush(FVector Position)
 {
@@ -1360,11 +1358,7 @@ void ATerrainController::ApplyAtmosphericBrush(FVector Position)
     }
  */
 }
-void ATerrainController::SetWaterBrushStrength(float NewStrength)
-{
-    WaterBrushStrength = FMath::Clamp(NewStrength, MinWaterBrushStrength, MaxWaterBrushStrength);
-    UE_LOG(LogTemp, Warning, TEXT("Water brush strength: %.1f"), WaterBrushStrength);
-}
+
 
 // ===== SYSTEM CONTROL FUNCTIONS =====
 
@@ -1459,7 +1453,7 @@ void ATerrainController::SelectTerrainMode(const FInputActionValue& Value)
     CurrentMainMode = EMainEditingMode::Terrain;
     StopAllEditing();
     
-    UE_LOG(LogTemp, Warning, TEXT("Ã°Å¸Ââ€Ã¯Â¸Â TERRAIN mode | Sub-mode: %s (T to cycle)"),
+    UE_LOG(LogTemp, Warning, TEXT("  TERRAIN mode | Sub-mode: %s (T to cycle)"),
         *GetCurrentSubModeDisplayName());
 }
 
@@ -1468,7 +1462,7 @@ void ATerrainController::SelectWaterMode(const FInputActionValue& Value)
     CurrentMainMode = EMainEditingMode::Water;
     StopAllEditing();
     
-    UE_LOG(LogTemp, Warning, TEXT("Ã°Å¸â€™Â§ WATER mode | Sub-mode: %s (T to cycle)"),
+    UE_LOG(LogTemp, Warning, TEXT("  WATER mode | Sub-mode: %s (T to cycle)"),
         *GetCurrentSubModeDisplayName());
     
     // Show controls for spring placement mode
@@ -1483,7 +1477,7 @@ void ATerrainController::SelectAtmosphereMode(const FInputActionValue& Value)
     CurrentMainMode = EMainEditingMode::Atmosphere;
     StopAllEditing();
     
-    UE_LOG(LogTemp, Warning, TEXT("Ã¢ËœÂÃ¯Â¸Â ATMOSPHERE mode | Sub-mode: %s (T to cycle)"),
+    UE_LOG(LogTemp, Warning, TEXT("  ATMOSPHERE mode | Sub-mode: %s (T to cycle)"),
         *GetCurrentSubModeDisplayName());
 }
 
@@ -1492,7 +1486,7 @@ void ATerrainController::SelectEcosystemMode(const FInputActionValue& Value)
     CurrentMainMode = EMainEditingMode::Ecosystem;
     StopAllEditing();
     
-    UE_LOG(LogTemp, Warning, TEXT("Ã°Å¸Å’Â¿ ECOSYSTEM mode - Coming Soon!"));
+    UE_LOG(LogTemp, Warning, TEXT("  ECOSYSTEM mode - Coming Soon!"));
     UE_LOG(LogTemp, Warning, TEXT("  Future: Vegetation placement, growth simulation, and ecosystem dynamics"));
 }
 
@@ -1540,7 +1534,7 @@ void ATerrainController::CycleSubMode(const FInputActionValue& Value)
         {
             // Use existing atmospheric brush cycling
             CycleAtmosphericBrush();
-            UE_LOG(LogTemp, Warning, TEXT("Atmosphere: %s"), *GetCurrentSubModeDisplayName());
+            UE_LOG(LogTemp, Log, TEXT("Atmosphere: %s"), *GetCurrentSubModeDisplayName());
             break;
         }
         
@@ -1595,36 +1589,12 @@ FString ATerrainController::GetCurrentSubModeDisplayName() const
 // END HIERARCHICAL MODE SYSTEM
 // ============================================================================
 
-void ATerrainController::HandleRainToggle()
-{
-    if (WaterController)
-    {
-        WaterController->ToggleRain();
-        UE_LOG(LogTemp, Log, TEXT("TerrainController: Delegated rain toggle to WaterController"));
-    }
-    else
-    {
-        UE_LOG(LogTemp, Warning, TEXT("TerrainController: No WaterController to delegate rain toggle"));
-    }
-}
 
 // Keep legacy rain function for backwards compatibility - now delegates to WaterController
-void ATerrainController::ToggleRain()
-{
-    if (WaterController)
-    {
-        WaterController->ToggleRain();
-        UE_LOG(LogTemp, Log, TEXT("TerrainController: Legacy ToggleRain() delegated to WaterController"));
-    }
-    else
-    {
-        UE_LOG(LogTemp, Warning, TEXT("TerrainController: No WaterController for legacy rain toggle"));
-    }
-}
 
 void ATerrainController::ToggleRainInput(const FInputActionValue& Value)
 {
-    HandleRainToggle();
+   
 }
 
 
@@ -1998,12 +1968,11 @@ float ATerrainController::CalculateSpringFlowFromBrushSize() const
 {
     if (!MasterController) return 1.0f;
     
-    // Get current brush radius from the Universal Brush System
+    // Get both radius and strength from Universal Brush System
     float BrushRadius = MasterController->GetBrushRadius();
+    float BrushStrength = MasterController->GetBrushStrength();
     
-    // Map brush radius to flow rate
-    // Default brush radius range is typically 100-5000 units
-    // Map this to flow rate of 0.1-10.0 mÃƒâ€šÃ‚Â³/s
+    // Map brush radius to base flow rate
     float MinBrushRadius = 100.0f;
     float MaxBrushRadius = 5000.0f;
     
@@ -2013,12 +1982,14 @@ float ATerrainController::CalculateSpringFlowFromBrushSize() const
         BrushRadius
     );
     
-    // Use a power curve for more intuitive scaling
-    // Small brushes = weak springs, large brushes = strong springs
-    float FlowRate = FMath::Lerp(MinSpringFlowRate, MaxSpringFlowRate,
-                                  FMath::Pow(NormalizedRadius, 1.5f));
+    // Calculate base flow from radius (0.1-10.0 m³/s)
+    float BaseFlowRate = FMath::Lerp(MinSpringFlowRate, MaxSpringFlowRate,
+                                      FMath::Pow(NormalizedRadius, 1.5f));
     
-    return FlowRate;
+    // Scale by brush strength (normalized to 200.0 default)
+    float StrengthMultiplier = BrushStrength / 200.0f;
+    
+    return BaseFlowRate * StrengthMultiplier;
 }
 
 // Update function for spring editing
@@ -2583,125 +2554,7 @@ void ATerrainController::SetupInputMapping()
     }
 }
 
-void ATerrainController::UpdatePerformanceStats(float DeltaTime)
-{
-    StatUpdateTimer += DeltaTime;
-    
-    if (StatUpdateTimer >= 0.25f && GEngine)
-    {
-        // Show hierarchical editing mode: "Mode: Terrain | Raise [1-4: modes, T: cycle]"
-        FString ModeText = FString::Printf(TEXT("Mode: %s | %s [1-4: modes, T: cycle]"),
-            *GetCurrentModeDisplayName(), *GetCurrentSubModeDisplayName());
-        GEngine->AddOnScreenDebugMessage(30, 0.5f, FColor::Cyan, ModeText);
-        
-        // Show context-specific info
-        if (CurrentMainMode == EMainEditingMode::Terrain && MasterController)
-        {
-            float BrushRadius = GetBrushRadius();
-            float BrushStrength = GetBrushStrength();
-            GEngine->AddOnScreenDebugMessage(31, 0.5f, FColor::White,
-                FString::Printf(TEXT("Brush: %.0f radius, %.0f strength [L:Raise R:Lower]"), BrushRadius, BrushStrength));
-        }
-        else if (CurrentMainMode == EMainEditingMode::Water)
-        {
-            if (CurrentWaterSubMode == EWaterSubMode::WaterBrush)
-            {
-                GEngine->AddOnScreenDebugMessage(31, 0.5f, FColor::White,
-                    FString::Printf(TEXT("Water Brush: %.1f strength"), WaterBrushStrength));
-            }
-            else if (CurrentWaterSubMode == EWaterSubMode::SpringPlacement)
-            {
-                float CurrentFlowRate = CalculateSpringFlowFromBrushSize();
-                float BrushRadius = MasterController ? MasterController->GetBrushRadius() : 200.0f;
-                
-                GEngine->AddOnScreenDebugMessage(31, 0.5f, FColor::White,
-                    FString::Printf(TEXT("Spring: %.2f mÃ‚Â³/s flow, %.0f radius"),
-                        CurrentFlowRate, BrushRadius));
-                
-                if (GeologyController)
-                {
-                    int32 SpringCount = GeologyController->UserSprings.Num();
-                    GEngine->AddOnScreenDebugMessage(32, 0.5f, FColor::Cyan,
-                        FString::Printf(TEXT("Active Springs: %d"), SpringCount));
-                }
-            }
-        }
-        else if (CurrentMainMode == EMainEditingMode::Atmosphere)
-        {
-            GEngine->AddOnScreenDebugMessage(31, 0.5f, FColor::White,
-                FString::Printf(TEXT("Atmospheric Brush: %s (Y to cycle)"), *GetCurrentBrushDisplayName()));
-        }
-        
-        // Show current visual mode
-        FString VisualModeText;
-        switch (CurrentVisualMode)
-        {
-            case ETerrainVisualMode::Wireframe:
-                VisualModeText = TEXT("Digital Wireframe");
-                break;
-            case ETerrainVisualMode::Naturalistic:
-                VisualModeText = TEXT("Natural Landscape");
-                break;
-            case ETerrainVisualMode::Hybrid:
-                VisualModeText = TEXT("Hybrid Mode");
-                break;
-            case ETerrainVisualMode::Chrome:
-                VisualModeText = TEXT("Chrome");
-                break;
-            case ETerrainVisualMode::Glass:
-                VisualModeText = TEXT("Glass");
-                break;
-            default:
-                VisualModeText = TEXT("Unknown Mode");
-                break;
-        }
-        
-        GEngine->AddOnScreenDebugMessage(32, 0.5f, FColor::White,
-            FString::Printf(TEXT("Visual Mode: %s (V to toggle)"), *VisualModeText));
-        
-        // Camera mode info with enhanced debugging
-        FString CurrentModeText = (CurrentCameraMode == ECameraMode::Overhead) ? TEXT("OH") : TEXT("FP");
-        FString TargetModeText = (TargetCameraMode == ECameraMode::Overhead) ? TEXT("OH") : TEXT("FP");
-        FString TransitionText = bTransitioning ? FString::Printf(TEXT(" (%s->%s)"), *CurrentModeText, *TargetModeText) : TEXT("");
-        
-        // Camera active state debugging
-        FString CameraStateText = FString::Printf(TEXT(" [OH:%s FP:%s]"),
-            Camera->IsActive() ? TEXT("ON") : TEXT("off"),
-            FirstPersonCamera->IsActive() ? TEXT("ON") : TEXT("off"));
-        
-        // Current rotation debugging (only show current active camera)
-        FRotator CurrentRotation;
-        FString ActiveCameraText;
-        if (Camera->IsActive())
-        {
-            CurrentRotation = Camera->GetComponentRotation();
-            ActiveCameraText = TEXT("OH-Active");
-        }
-        else if (FirstPersonCamera->IsActive())
-        {
-            CurrentRotation = FirstPersonCamera->GetComponentRotation();
-            ActiveCameraText = TEXT("FP-Active");
-        }
-        else
-        {
-            CurrentRotation = FRotator::ZeroRotator;
-            ActiveCameraText = TEXT("NONE-Active");
-        }
-        
-        FString RotationText = FString::Printf(TEXT(" %.0fÃƒâ€šÃ‚Â°,%.0fÃƒâ€šÃ‚Â°"),
-            CurrentRotation.Pitch, CurrentRotation.Yaw);
-        
-        GEngine->AddOnScreenDebugMessage(33, 0.5f, FColor::Yellow,
-            FString::Printf(TEXT("Camera: %s%s%s %s%s (C=Warp, TAB=Cycle)"),
-                           *CurrentModeText, *TransitionText, *CameraStateText, *ActiveCameraText, *RotationText));
-        
-        // Water mode info now handled by WaterController
-        GEngine->AddOnScreenDebugMessage(34, 0.5f, FColor::Cyan,
-            TEXT("Water Mode: Controlled by WaterController (Shift+V to toggle)"));
-        
-        StatUpdateTimer = 0.0f;
-    }
-}
+
 
 void ATerrainController::UpdateTerrainInfo(float DeltaTime)
 {
@@ -2769,7 +2622,7 @@ void ATerrainController::ResetTimeSpeed()
 
 
 // ============================================================================
-// SECTION 12: CAMERA SYSTEM ÃƒÂ¢Ã‚Â­Ã‚Â (~405 lines, 16%)
+// SECTION 12: CAMERA SYSTEM   (~405 lines, 16%)
 // ============================================================================
 /**
  * PURPOSE:
@@ -2789,7 +2642,7 @@ void ATerrainController::ResetTimeSpeed()
  * 2. FirstPerson Mode:
  *    - Ground-level perspective at FirstPersonHeight (152.4 cm / 5 feet)
  *    - WASD movement in camera-facing direction
- *    - Free mouse look (pitch clamped to -80Ãƒâ€šÃ‚Â° to +80Ãƒâ€šÃ‚Â°)
+ *    - Free mouse look (pitch clamped to -80  to +80Ãƒâ€šÃ‚Â°)
  *    - Automatic terrain following with smooth height interpolation
  *    - Periodic height validation to catch terrain edits
  *    - Uses FirstPersonCamera component
@@ -2800,14 +2653,14 @@ void ATerrainController::ResetTimeSpeed()
  * C Key (WarpToFirstPerson):
  * - Teleports to cursor position
  * - Always targets FirstPerson mode
- * - Maintains current camera yaw, sets pitch to 0Ãƒâ€šÃ‚Â°
+ * - Maintains current camera yaw, sets pitch to 0 
  * - Instant horizontal movement + smooth transition
  *
  * TAB Key (CycleCameraMode):
- * - Cycles Overhead ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬Â FirstPerson
+ * - Cycles Overhead   FirstPerson
  * - Smooth in-place transitions (no teleporting)
- * - OverheadÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢FirstPerson: Descends straight down, pitch 0Ãƒâ€šÃ‚Â°
- * - FirstPersonÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢Overhead: Ascends straight up, pitch -45Ãƒâ€šÃ‚Â°
+ * - Overhead -> FirstPerson: Descends straight down, pitch 0 
+ * - FirstPerson -> Overhead: Ascends straight up, pitch -45 
  * - Preserves current XY position
  *
  * TRANSITION MECHANICS:
@@ -2827,8 +2680,8 @@ void ATerrainController::ResetTimeSpeed()
  *
  * CAMERA CONFLICT RESOLUTION:
  * Active prevention of invalid camera states:
- * - Both cameras active ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ Deactivate based on CurrentCameraMode
- * - Neither camera active ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ Activate based on CurrentCameraMode
+ * - Both cameras active  ->  Deactivate based on CurrentCameraMode
+ * - Neither camera active  ->  Activate based on CurrentCameraMode
  * - Runs every frame in Tick() as safety check
  * - Prevents "black screen" bug from race conditions
  *
@@ -3195,7 +3048,6 @@ void ATerrainController::UpdateOverheadCamera(float DeltaTime)
         SetActorLocation(CurrentLocation);
     }
     
-    // REMOVED: All input resets - now handled in UpdateCameraPosition()
 }
 
 void ATerrainController::UpdateFirstPersonCamera(float DeltaTime)
@@ -3338,7 +3190,6 @@ void ATerrainController::CycleAtmosphericBrush()
     CurrentAtmosphericBrush = static_cast<EAtmosphericBrushType>(CurrentBrushInt);
     
     UE_LOG(LogTemp, Warning, TEXT("Atmospheric brush: %s"), *GetCurrentBrushDisplayName());
-    // UpdateBrushPreview(); // REMOVED: Function handled by Universal Brush System
 }
 
 FString ATerrainController::GetCurrentBrushDisplayName() const
@@ -3441,22 +3292,22 @@ void ATerrainController::TestUniversalBrushConnection()
     // Test 1: Check MasterController connection
     if (!MasterController)
     {
-        UE_LOG(LogTemp, Error, TEXT("ÃƒÂ¢Ã‚ÂÃ…â€™ FAILED: No MasterController reference"));
+        UE_LOG(LogTemp, Error, TEXT("  FAILED: No MasterController reference"));
         return;
     }
-    UE_LOG(LogTemp, Warning, TEXT("ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ PASS: MasterController connected"));
+    UE_LOG(LogTemp, Verbose, TEXT(" PASS: MasterController connected"));
     
     // Test 2: Check IBrushReceiver implementation
     if (!CanReceiveBrush())
     {
-        UE_LOG(LogTemp, Error, TEXT("ÃƒÂ¢Ã‚ÂÃ…â€™ FAILED: CanReceiveBrush() returned false"));
+        UE_LOG(LogTemp, Error, TEXT("  FAILED: CanReceiveBrush() returned false"));
         UE_LOG(LogTemp, Error, TEXT("  - CurrentMainMode: %d (0=Terrain, 1=Water, 2=Atmosphere, 3=Ecosystem)"), (int32)CurrentMainMode);
         UE_LOG(LogTemp, Error, TEXT("  - CurrentTerrainSubMode: %d (0=Raise, 1=Lower)"), (int32)CurrentTerrainSubMode);
         UE_LOG(LogTemp, Error, TEXT("  - TargetTerrain: %s"), TargetTerrain ? TEXT("valid") : TEXT("null"));
         UE_LOG(LogTemp, Error, TEXT("  - bInitializationComplete: %s"), bInitializationComplete ? TEXT("true") : TEXT("false"));
         return;
     }
-    UE_LOG(LogTemp, Warning, TEXT("ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ PASS: CanReceiveBrush() = true"));
+    UE_LOG(LogTemp, Warning, TEXT(" PASS: CanReceiveBrush() = true"));
     
     // Test 3: Check brush settings delegation
     float MasterRadius = MasterController->GetBrushRadius();
@@ -3464,11 +3315,11 @@ void ATerrainController::TestUniversalBrushConnection()
     
     if (FMath::Abs(MasterRadius - LocalRadius) > 0.1f)
     {
-        UE_LOG(LogTemp, Error, TEXT("ÃƒÂ¢Ã‚ÂÃ…â€™ FAILED: Brush radius mismatch - Master: %.1f, Local: %.1f"),
+        UE_LOG(LogTemp, Error, TEXT("  FAILED: Brush radius mismatch - Master: %.1f, Local: %.1f"),
                MasterRadius, LocalRadius);
         return;
     }
-    UE_LOG(LogTemp, Warning, TEXT("ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ PASS: Brush radius delegation working (%.1f)"), MasterRadius);
+    UE_LOG(LogTemp, Log, TEXT(" PASS: Brush radius delegation working (%.1f)"), MasterRadius);
     
     // Test 4: Check brush settings cache
     const FUniversalBrushSettings& CachedSettings = GetCurrentBrushSettings();
@@ -3476,10 +3327,10 @@ void ATerrainController::TestUniversalBrushConnection()
     
     if (FMath::Abs(CachedSettings.BrushRadius - MasterSettings.BrushRadius) > 0.1f)
     {
-        UE_LOG(LogTemp, Error, TEXT("ÃƒÂ¢Ã‚ÂÃ…â€™ FAILED: Cached settings out of sync"));
+        UE_LOG(LogTemp, Error, TEXT("  FAILED: Cached settings out of sync"));
         return;
     }
-    UE_LOG(LogTemp, Warning, TEXT("ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ PASS: Brush settings cache synchronized"));
+    UE_LOG(LogTemp, Warning, TEXT(" PASS: Brush settings cache synchronized"));
     
     // Test 5: Simulate brush application (dry run)
     FVector TestPos(1000.0f, 1000.0f, 0.0f);
@@ -3504,9 +3355,9 @@ void ATerrainController::TestUniversalBrushConnection()
     CurrentMainMode = OriginalMainMode;
     CurrentTerrainSubMode = OriginalTerrainSubMode;
     
-    UE_LOG(LogTemp, Warning, TEXT("ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ PASS: ApplyBrush simulation completed"));
+    UE_LOG(LogTemp, Warning, TEXT(" PASS: ApplyBrush simulation completed"));
     
-    UE_LOG(LogTemp, Warning, TEXT("ÃƒÂ°Ã…Â¸Ã…Â½Ã¢â‚¬Â° SUCCESS: Universal Brush System fully connected!"));
+    UE_LOG(LogTemp, Warning, TEXT("  SUCCESS: Universal Brush System fully connected!"));
     UE_LOG(LogTemp, Warning, TEXT("TerrainController is ready to receive brush commands from MasterController"));
 }
 
@@ -3635,7 +3486,7 @@ void ATerrainController::SetTerrainResetting(bool bResetting)
     }
     else
     {
-        UE_LOG(LogTemp, Warning, TEXT("Terrain reset complete - height validation re-enabled"));
+        UE_LOG(LogTemp, Log, TEXT("Terrain reset complete - height validation re-enabled"));
     }
 }
 

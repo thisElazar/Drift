@@ -70,7 +70,7 @@ ADynamicTerrain::ADynamicTerrain()
     
     // If that fails, will use wireframe as fallback in InitializeChunks
     if (!DefaultTerrainMaterial) {
-        UE_LOG(LogTemp, Warning, TEXT("Could not load BasicShapeMaterial, will use wireframe fallback"));
+        UE_LOG(LogTemp, Log, TEXT("Could not load BasicShapeMaterial, will use wireframe fallback"));
     }
     
     // Initialize scalable world configuration FIRST
@@ -155,7 +155,7 @@ void ADynamicTerrain::BeginPlay()
 {
     Super::BeginPlay();
     
-    UE_LOG(LogTemp, Warning, TEXT("DynamicTerrain: Beginning initialization"));
+    UE_LOG(LogTemp, Verbose, TEXT("DynamicTerrain: Beginning initialization"));
     
     // PHASE 1: Initialize basic data structures ONLY
     InitializeTerrainData();
@@ -164,7 +164,7 @@ void ADynamicTerrain::BeginPlay()
     // GPU initialization must happen AFTER terrain generation
     if (bUseGPUTerrain)
     {
-        UE_LOG(LogTemp, Warning, TEXT("GPU Terrain will be initialized AFTER terrain generation"));
+        UE_LOG(LogTemp, Verbose, TEXT("GPU Terrain will be initialized AFTER terrain generation"));
         // Set a flag to initialize GPU later
         bPendingGPUInit = true;
     }
@@ -253,7 +253,7 @@ void ADynamicTerrain::InitializeWaterSystem()
     // Prevent Duplicate Water System Creation
     if (WaterSystem && WaterSystem->IsSystemReady())
         {
-            UE_LOG(LogTemp, Warning, TEXT("WaterSystem already initialized"));
+            UE_LOG(LogTemp, Verbose, TEXT("WaterSystem already initialized"));
             return;
         }
     // Ensure terrain dimensions are finalized FIRST
@@ -266,7 +266,7 @@ void ADynamicTerrain::InitializeWaterSystem()
     if (!WaterSystem)
     {
         WaterSystem = NewObject<UWaterSystem>(this, UWaterSystem::StaticClass(), TEXT("WaterSystem"));
-        UE_LOG(LogTemp, Warning, TEXT("DynamicTerrain: WaterSystem created"));
+        UE_LOG(LogTemp, Log, TEXT("DynamicTerrain: WaterSystem created"));
     }
     
     if (WaterSystem)
@@ -275,7 +275,7 @@ void ADynamicTerrain::InitializeWaterSystem()
         if (CachedMasterController)
         {
             WaterSystem->RegisterWithMasterController(CachedMasterController);
-            UE_LOG(LogTemp, Warning, TEXT("DynamicTerrain: WaterSystem registered with MasterController"));
+            UE_LOG(LogTemp, Log, TEXT("DynamicTerrain: WaterSystem registered with MasterController"));
         }
         
         // Pass validated dimensions explicitly
@@ -284,11 +284,11 @@ void ADynamicTerrain::InitializeWaterSystem()
         // Validate initialization completed successfully
         if (WaterSystem->IsSystemReady())
         {
-            UE_LOG(LogTemp, Warning, TEXT("DynamicTerrain: WaterSystem fully initialized and ready"));
+            UE_LOG(LogTemp, Log, TEXT("DynamicTerrain: WaterSystem fully initialized and ready"));
         }
         else
         {
-            UE_LOG(LogTemp, Warning, TEXT("DynamicTerrain: WaterSystem initialized but not ready yet"));
+            UE_LOG(LogTemp, Log, TEXT("DynamicTerrain: WaterSystem initialized but not ready yet"));
         }
     }
     else
@@ -336,7 +336,7 @@ void ADynamicTerrain::ValidateGPUUpload()
     const float MaxAllowedHeight = 10000.0f;
     if (MaxHeight > MaxAllowedHeight || MinHeight < -MaxAllowedHeight)
     {
-        UE_LOG(LogTemp, Warning, TEXT("Clamping extreme heights: Min=%.2f, Max=%.2f"),
+        UE_LOG(LogTemp, Log, TEXT("Clamping extreme heights: Min=%.2f, Max=%.2f"),
                MinHeight, MaxHeight);
         
         for (int32 i = 0; i < HeightMap.Num(); i++)
@@ -365,20 +365,20 @@ void ADynamicTerrain::InitializeAtmosphericSystem()
         bool bWaterSystemConnected = (AtmosphericSystem->WaterSystem != nullptr);
         bool bTerrainSystemConnected = (AtmosphericSystem->TerrainSystem != nullptr);
         
-        UE_LOG(LogTemp, Warning, TEXT("[ATMOSPHERIC INTEGRATION] System initialization:"));
-        UE_LOG(LogTemp, Warning, TEXT("  - WaterSystem connection: %s"), bWaterSystemConnected ? TEXT(" CONNECTED") : TEXT(" FAILED"));
-        UE_LOG(LogTemp, Warning, TEXT("  - TerrainSystem connection: %s"), bTerrainSystemConnected ? TEXT(" CONNECTED") : TEXT(" FAILED"));
+        UE_LOG(LogTemp, Log, TEXT("[ATMOSPHERIC INTEGRATION] System initialization:"));
+        UE_LOG(LogTemp, Log, TEXT("  - WaterSystem connection: %s"), bWaterSystemConnected ? TEXT(" CONNECTED") : TEXT(" FAILED"));
+        UE_LOG(LogTemp, Log, TEXT("  - TerrainSystem connection: %s"), bTerrainSystemConnected ? TEXT(" CONNECTED") : TEXT(" FAILED"));
         
         if (bWaterSystemConnected && bTerrainSystemConnected)
         {
-            UE_LOG(LogTemp, Warning, TEXT("[ATMOSPHERIC INTEGRATION]  READY FOR PRECIPITATION TRANSFER"));
+            UE_LOG(LogTemp, Log, TEXT("[ATMOSPHERIC INTEGRATION]  READY FOR PRECIPITATION TRANSFER"));
             
             // AUTHORITY FIX: Use CachedMasterController for terrain scale
             float AuthScale = CachedMasterController ? CachedMasterController->GetTerrainScale() : TerrainScale;
             FVector2D TerrainCenter(TerrainWidth * AuthScale * 0.5f, TerrainHeight * AuthScale * 0.5f);
 
-            UE_LOG(LogTemp, Warning, TEXT("[ATMOSPHERIC INTEGRATION]  Created initial weather patterns"));
-            UE_LOG(LogTemp, Warning, TEXT("[ATMOSPHERIC INTEGRATION]  Precipitation should begin within 30-60 seconds"));
+            UE_LOG(LogTemp, Log, TEXT("[ATMOSPHERIC INTEGRATION]  Created initial weather patterns"));
+            UE_LOG(LogTemp, Verbose, TEXT("[ATMOSPHERIC INTEGRATION]  Precipitation should begin within 30-60 seconds"));
         }
         else
         {
@@ -400,7 +400,7 @@ void ADynamicTerrain::InitializeWithMasterController(AMasterWorldController* Mas
     // Prevent duplicate initialization
     if (CachedMasterController == Master && HeightMap.Num() > 0)
     {
-        UE_LOG(LogTemp, Warning, TEXT("DynamicTerrain: Already initialized with this MasterController"));
+        UE_LOG(LogTemp, Log, TEXT("DynamicTerrain: Already initialized with this MasterController"));
         return;
     }
     
@@ -423,7 +423,7 @@ void ADynamicTerrain::InitializeWithMasterController(AMasterWorldController* Mas
     int32 TotalSize = TerrainWidth * TerrainHeight;
     HeightMap.SetNumZeroed(TotalSize);
     
-    UE_LOG(LogTemp, Warning, TEXT("DynamicTerrain: Authority established - %dx%d terrain, %dx%d chunks"),
+    UE_LOG(LogTemp, Verbose, TEXT("DynamicTerrain: Authority established - %dx%d terrain, %dx%d chunks"),
            TerrainWidth, TerrainHeight, ChunksX, ChunksY);
     
     // CRITICAL: Generate terrain BEFORE GPU initialization
@@ -433,12 +433,12 @@ void ADynamicTerrain::InitializeWithMasterController(AMasterWorldController* Mas
     // NOW initialize GPU with actual terrain data
     if (bPendingGPUInit)
     {
-        UE_LOG(LogTemp, Warning, TEXT("Initializing GPU Terrain with generated data..."));
+        UE_LOG(LogTemp, Log, TEXT("Initializing GPU Terrain with generated data..."));
         InitializeGPUTerrainWithData();
         bPendingGPUInit = false;
     }
     
-    UE_LOG(LogTemp, Warning, TEXT("DynamicTerrain: Terrain generation complete, awaiting system initialization"));
+    UE_LOG(LogTemp, Log, TEXT("DynamicTerrain: Terrain generation complete, awaiting system initialization"));
 }
 
 bool ADynamicTerrain::ValidateMasterControllerAuthority() const
@@ -488,7 +488,7 @@ void ADynamicTerrain::InitializeTerrainData()
 
 void ADynamicTerrain::InitializeChunks()
 {
-    UE_LOG(LogTemp, Warning, TEXT("Initializing chunk system with %dx%d chunks"), ChunksX, ChunksY);
+    UE_LOG(LogTemp, Log, TEXT("Initializing chunk system with %dx%d chunks"), ChunksX, ChunksY);
     
     // Clear existing chunks
     TerrainChunks.Empty();
@@ -558,7 +558,7 @@ void ADynamicTerrain::InitializeChunks()
     // Batch logging
     if (FallbackMaterialCount > 0)
     {
-        UE_LOG(LogTemp, Warning, TEXT("Using fallback wireframe material for %d/%d chunks"),
+        UE_LOG(LogTemp, Log, TEXT("Using fallback wireframe material for %d/%d chunks"),
                FallbackMaterialCount, TerrainChunks.Num());
     }
     
@@ -567,7 +567,7 @@ void ADynamicTerrain::InitializeChunks()
         UE_LOG(LogTemp, Error, TEXT("Failed to create %d chunks"), FailedChunkCount);
     }
     
-    UE_LOG(LogTemp, Warning, TEXT("ÃƒÆ’Ã‚Â¢Ãƒâ€¦Ã¢â‚¬Å“ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ Created %d chunks with validated materials"), TerrainChunks.Num());
+    UE_LOG(LogTemp, Log, TEXT(" Created %d chunks with validated materials"), TerrainChunks.Num());
 }
 
 
@@ -595,12 +595,12 @@ void ADynamicTerrain::GenerateProceduralTerrain()
     // CRITICAL FIX: Check if we have map definition with specific parameters
     if (bHasMapDefinition)
     {
-        UE_LOG(LogTemp, Warning, TEXT("=== USING MAP DEFINITION FOR TERRAIN GENERATION ==="));
-        UE_LOG(LogTemp, Warning, TEXT("Map: %s"), *CurrentMapDefinition.DisplayName.ToString());
-        UE_LOG(LogTemp, Warning, TEXT("Seed: %d"), CurrentMapDefinition.ProceduralSeed);
-        UE_LOG(LogTemp, Warning, TEXT("Height Variation: %.1f"), CurrentMapDefinition.HeightVariation);
-        UE_LOG(LogTemp, Warning, TEXT("Noise Scale: %.4f"), CurrentMapDefinition.NoiseScale);
-        UE_LOG(LogTemp, Warning, TEXT("Octaves: %d"), CurrentMapDefinition.NoiseOctaves);
+        UE_LOG(LogTemp, Verbose, TEXT("=== USING MAP DEFINITION FOR TERRAIN GENERATION ==="));
+        UE_LOG(LogTemp, Log, TEXT("Map: %s"), *CurrentMapDefinition.DisplayName.ToString());
+        UE_LOG(LogTemp, Log, TEXT("Seed: %d"), CurrentMapDefinition.ProceduralSeed);
+        UE_LOG(LogTemp, Log, TEXT("Height Variation: %.1f"), CurrentMapDefinition.HeightVariation);
+        UE_LOG(LogTemp, Log, TEXT("Noise Scale: %.4f"), CurrentMapDefinition.NoiseScale);
+        UE_LOG(LogTemp, Log, TEXT("Octaves: %d"), CurrentMapDefinition.NoiseOctaves);
         
         // Use the map definition parameters
         GenerateProceduralTerrainWithSettings(
@@ -613,7 +613,7 @@ void ADynamicTerrain::GenerateProceduralTerrain()
     }
     
     // FALLBACK: Default procedural generation (no map definition)
-    UE_LOG(LogTemp, Warning, TEXT("Generating default sinusoidal terrain (no map definition)..."));
+    UE_LOG(LogTemp, Log, TEXT("Generating default sinusoidal terrain (no map definition)..."));
     
     // Create sinusoidal terrain with multiple wave frequencies for interesting water flow
     for (int32 Y = 0; Y < TerrainHeight; Y++)
@@ -639,7 +639,7 @@ void ADynamicTerrain::GenerateProceduralTerrain()
         }
     }
     
-    UE_LOG(LogTemp, Warning, TEXT("Sinusoidal terrain generation complete - ready for water flow"));
+    UE_LOG(LogTemp, Log, TEXT("Sinusoidal terrain generation complete - ready for water flow"));
 }
 
 // 2.2 SIMPLE GENERATION
@@ -657,30 +657,30 @@ void ADynamicTerrain::GenerateSimpleTerrain()
     }
     
     // FIXED: Don't mark ALL chunks - they get updated automatically during generation
-    UE_LOG(LogTemp, Warning, TEXT("Simple terrain generated - chunks will update as needed"));
+    UE_LOG(LogTemp, Log, TEXT("Simple terrain generated - chunks will update as needed"));
 }
 
 // 2.3 ADVANCED PROCEDURAL
 
 void ADynamicTerrain::GenerateProceduralTerrainWithSettings(int32 Seed, float HeightVar, float NoiseScl, int32 Octaves)
 {
-    UE_LOG(LogTemp, Warning, TEXT("=== GENERATING TERRAIN WITH SETTINGS ==="));
-    UE_LOG(LogTemp, Warning, TEXT("Seed=%d, Height=%.1f, Noise=%.4f, Octaves=%d"),
+    UE_LOG(LogTemp, Verbose, TEXT("=== GENERATING TERRAIN WITH SETTINGS ==="));
+    UE_LOG(LogTemp, Log, TEXT("Seed=%d, Height=%.1f, Noise=%.4f, Octaves=%d"),
            Seed, HeightVar, NoiseScl, Octaves);
-    UE_LOG(LogTemp, Warning, TEXT("HeightMultiplier=%.2f"), HeightMultiplier);
+    UE_LOG(LogTemp, Log, TEXT("HeightMultiplier=%.2f"), HeightMultiplier);
     
     // Use Seed if >= 0, otherwise random
     FRandomStream RandomStream;
     if (Seed >= 0)
     {
         RandomStream.Initialize(Seed);
-        UE_LOG(LogTemp, Warning, TEXT("Using FIXED SEED %d for reproducible terrain"), Seed);
+        UE_LOG(LogTemp, Log, TEXT("Using FIXED SEED %d for reproducible terrain"), Seed);
     }
     else
     {
         Seed = FMath::Rand();
         RandomStream.Initialize(Seed);
-        UE_LOG(LogTemp, Warning, TEXT("Generated RANDOM seed %d"), Seed);
+        UE_LOG(LogTemp, Log, TEXT("Generated RANDOM seed %d"), Seed);
     }
     
     // Generate with parameters
@@ -716,15 +716,15 @@ void ADynamicTerrain::GenerateProceduralTerrainWithSettings(int32 Seed, float He
         }
     }
     
-    UE_LOG(LogTemp, Warning, TEXT("=== TERRAIN GENERATION COMPLETE ==="));
-    UE_LOG(LogTemp, Warning, TEXT("Effective max height: ~%.0f meters"), HeightVar * HeightMultiplier * 2.0f);
+    UE_LOG(LogTemp, Verbose, TEXT("=== TERRAIN GENERATION COMPLETE ==="));
+    UE_LOG(LogTemp, Verbose, TEXT("Effective max height: ~%.0f meters"), HeightVar * HeightMultiplier * 2.0f);
 }
 
 // 2.4 RESET & CLEAN GENERATION
 
 void ADynamicTerrain::ResetTerrainFully()
 {
-    UE_LOG(LogTemp, Warning, TEXT("Performing full terrain reset..."));
+    UE_LOG(LogTemp, Log, TEXT("Performing full terrain reset..."));
 
     // CRITICAL: Clear ALL queues first to prevent zombie chunks
     PendingChunkUpdates.Empty();
@@ -766,7 +766,7 @@ void ADynamicTerrain::ResetTerrainFully()
     
     if (WaterSystem)
     {
-        UE_LOG(LogTemp, Warning, TEXT("Resetting water system with erosion texture cleanup..."));
+        UE_LOG(LogTemp, Log, TEXT("Resetting water system with erosion texture cleanup..."));
         WaterSystem->ResetWaterSystem();  // This now includes erosion texture recreation
         
         // Re-register with MasterController
@@ -820,11 +820,11 @@ void ADynamicTerrain::ResetTerrainFully()
         
         if (WaterSystem->IsSystemReady())
         {
-            UE_LOG(LogTemp, Warning, TEXT("Water system ready after %.1f seconds"), WaitTime);
+            UE_LOG(LogTemp, Log, TEXT("Water system ready after %.1f seconds"), WaitTime);
         }
         else
         {
-            UE_LOG(LogTemp, Warning, TEXT("Water system taking longer than expected (%.1f seconds) - continuing with initialization"), WaitTime);
+            UE_LOG(LogTemp, Log, TEXT("Water system taking longer than expected (%.1f seconds) - continuing with initialization"), WaitTime);
         }
     
     
@@ -851,7 +851,7 @@ void ADynamicTerrain::ResetTerrainFully()
                     
                     if (bTerrainConnected && bWaterSystemConnected)
                     {
-                        UE_LOG(LogTemp, Warning, TEXT("WaterController successfully reconnected after reset"));
+                        UE_LOG(LogTemp, Verbose, TEXT("WaterController successfully reconnected after reset"));
                     }
                     else
                     {
@@ -883,14 +883,28 @@ void ADynamicTerrain::ResetTerrainFully()
         if (AtmosphericSystem)
         {
             AtmosphericSystem->Initialize(this, WaterSystem);
-            UE_LOG(LogTemp, Warning, TEXT("Atmospheric system reset and reinitialized"));
+            UE_LOG(LogTemp, Verbose, TEXT("Atmospheric system reset and reinitialized"));
         }
     }
     else if (AtmosphericSystem)
     {
         // Fallback if no MasterController
         AtmosphericSystem->Initialize(this, WaterSystem);
-        UE_LOG(LogTemp, Warning, TEXT("Atmospheric system reinitialized (no controller reset)"));
+        UE_LOG(LogTemp, Log, TEXT("Atmospheric system reinitialized (no controller reset)"));
+    }
+    
+    // Step 6.5: RESET GEOLOGY SYSTEM 
+    if (CachedMasterController && CachedMasterController->GeologyController)
+    {
+        AGeologyController* GeoController = CachedMasterController->GeologyController;
+        
+        // Reset geology system completely
+        GeoController->ResetGeologySystem();
+        
+        // Reinitialize with fresh terrain and water system
+        GeoController->Initialize(this, WaterSystem);
+        
+        UE_LOG(LogTemp, Warning, TEXT("Geology system reset and reinitialized"));
     }
     
     // Step 7: Force material refresh to ensure water shaders are properly connected
@@ -1006,7 +1020,7 @@ void ADynamicTerrain::SetHeightMultiplier(float NewMultiplier)
         return; // No significant change
     }
     
-    UE_LOG(LogTemp, Warning, TEXT("Updating HeightMultiplier: %.2f Ã¢â€ â€™ %.2f"),
+    UE_LOG(LogTemp, Warning, TEXT("Updating HeightMultiplier: %.2f   %.2f"),
            HeightMultiplier, NewMultiplier);
     
     HeightMultiplier = NewMultiplier;
@@ -2289,7 +2303,7 @@ void ADynamicTerrain::SetActiveMaterial(UMaterialInterface* Material)
         }
     }
     
-    UE_LOG(LogTemp, Log, TEXT("ÃƒÆ’Ã‚Â¢Ãƒâ€¦Ã¢â‚¬Å“ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ Material applied to %d chunks, %d enhanced with water shaders"),
+    UE_LOG(LogTemp, Log, TEXT(" Material applied to %d chunks, %d enhanced with water shaders"),
            MaterialsApplied, WaterShadersApplied);
 }
 
@@ -2377,7 +2391,7 @@ float ADynamicTerrain::GetTemperatureAt(FVector WorldPosition) const
     {
         return AtmosphericSystem->GetTemperatureAt(WorldPosition);
     }
-    return 288.15f; // 15ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â°C default
+    return 288.15f; // 15 C default
 }
 
 
@@ -2548,12 +2562,7 @@ void ADynamicTerrain::UpdatePerformanceStats(float DeltaTime)
             
            // CachedDebugStringBuffer = FString::Printf(TEXT("Chunk Size: %dx%d, Scale: %.1f"), ChunkSize, ChunkSize, TerrainScale);
            // GEngine->AddOnScreenDebugMessage(13, 0.5f, FColor::Orange, CachedDebugStringBuffer);
-            
-            // Show water system statistics
-            if (WaterSystem && WaterSystem->bShowWaterStats)
-            {
-                WaterSystem->DrawDebugInfo();
-            }
+    
         }
         StatUpdateTimer = 0.0f;
     }
@@ -3182,10 +3191,6 @@ void ADynamicTerrain::UpdateChunkLOD(int32 ChunkIndex, int32 NewLOD)
 // Eliminated fallback patterns, validation overhead, and retry logic
 // Authority is established once and trusted throughout execution
 
-// REMOVED: TryConnectToMasterController - no retry logic needed
-// REMOVED: ValidateMasterControllerAuthority - authority is trusted
-// REMOVED: InitializeStandaloneMode - undermines authority chain
-// REMOVED: All "if (!CachedMasterController)" checks in core functions
 
 
 
@@ -3210,7 +3215,7 @@ void ADynamicTerrain::SetComputeMode(ETerrainComputeMode NewMode)
         }
         TransferHeightmapToGPU();
         CurrentComputeMode = ETerrainComputeMode::GPU;
-        UE_LOG(LogTemp, Warning, TEXT("Switched to GPU mode"));
+        UE_LOG(LogTemp, Verbose, TEXT("Switched to GPU mode"));
     }
     else
     {
@@ -3368,7 +3373,7 @@ void ADynamicTerrain::InitializeGPUTerrainWithData()
     GPUTextureWidth = TerrainWidth;
     GPUTextureHeight = TerrainHeight;
     
-    UE_LOG(LogTemp, Warning, TEXT("Initializing GPU Terrain with existing data: %dx%d"),
+    UE_LOG(LogTemp, Log, TEXT("Initializing GPU Terrain with existing data: %dx%d"),
            GPUTextureWidth, GPUTextureHeight);
     
     // Create GPU resources
@@ -3394,7 +3399,7 @@ void ADynamicTerrain::InitializeGPUTerrainWithData()
     if (bUseGPUTerrain)
     {
         CurrentComputeMode = ETerrainComputeMode::GPU;
-        UE_LOG(LogTemp, Warning, TEXT("ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ GPU Terrain initialized with CPU data as authority"));
+        UE_LOG(LogTemp, Log, TEXT("  GPU Terrain initialized with CPU data as authority"));
     }
 }
 
@@ -3470,7 +3475,7 @@ void ADynamicTerrain::TransferHeightmapToGPU()
         });
 }
 
-// 2. GPUÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢CPU Transfer (one-time on mode switch)
+// 2. GPU -> CPU Transfer (one-time on mode switch)
 
 void ADynamicTerrain::SyncCPUToGPU()
 {
@@ -3521,7 +3526,7 @@ void ADynamicTerrain::SyncCPUToGPU()
             );
         });
     
-    UE_LOG(LogTemp, Verbose, TEXT("ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ Synced %dx%d CPU heightmap to GPU"),
+    UE_LOG(LogTemp, Verbose, TEXT("  Synced %dx%d CPU heightmap to GPU"),
            TerrainWidth, TerrainHeight);
 }
 
@@ -3749,14 +3754,14 @@ void ADynamicTerrain::ExecuteTerrainComputeShader(float DeltaTime)
             static bool bLoggedOnce = false;
             if (!bLoggedOnce && bEnableGPUErosion)
             {
-                UE_LOG(LogTemp, Warning, TEXT("Ã¢Å“â€œ Erosion shader dispatching (logged once)"));
+                UE_LOG(LogTemp, Warning, TEXT("  Erosion shader dispatching (logged once)"));
                 bLoggedOnce = true;
             }
             
             TShaderMapRef<FTerrainComputeCS> ComputeShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
             if (!ComputeShader.IsValid())
             {
-                UE_LOG(LogTemp, Error, TEXT("Ã¢Å“â€” Terrain compute shader not valid!"));
+                UE_LOG(LogTemp, Error, TEXT("  Terrain compute shader not valid!"));
                 return;
             }
             
@@ -4062,18 +4067,18 @@ void ADynamicTerrain::ConnectToGPUWaterSystem(UWaterSystem* WaterSys)
     {
         if (!WaterSys->ErosionWaterDepthRT || !WaterSys->ErosionFlowVelocityRT)
         {
-            UE_LOG(LogTemp, Error, TEXT("ÃƒÂ¢Ã‚ÂÃ…â€™ CRITICAL: Erosion textures not created after connection!"));
+            UE_LOG(LogTemp, Error, TEXT("  CRITICAL: Erosion textures not created after connection!"));
             UE_LOG(LogTemp, Error, TEXT("   Water may need to be initialized first"));
         }
         else
         {
-            UE_LOG(LogTemp, Warning, TEXT("ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ Erosion textures verified: %dx%d"),
+            UE_LOG(LogTemp, Warning, TEXT("  Erosion textures verified: %dx%d"),
                    WaterSys->ErosionWaterDepthRT->SizeX,
                    WaterSys->ErosionWaterDepthRT->SizeY);
         }
     }
     
-    UE_LOG(LogTemp, Warning, TEXT("ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ Terrain connected to GPU water system"));
+    UE_LOG(LogTemp, Warning, TEXT("  Terrain connected to GPU water system"));
 }
 
 
@@ -4359,13 +4364,13 @@ void ADynamicTerrain::SyncGPUChunkVisuals()
 
 void ADynamicTerrain::DebugErosion()
 {
-    UE_LOG(LogTemp, Warning, TEXT("=== EROSION DEBUG ==="));
+    UE_LOG(LogTemp, Log, TEXT("=== EROSION DEBUG ==="));
     
     // Check 1: Is system ready?
     UE_LOG(LogTemp, Warning, TEXT("1. GPU Mode: %s"),
-           CurrentComputeMode == ETerrainComputeMode::GPU ? TEXT("ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ YES") : TEXT("ÃƒÂ¢Ã…â€œÃ¢â‚¬â€ NO (CPU mode)"));
+           CurrentComputeMode == ETerrainComputeMode::GPU ? TEXT("  YES") : TEXT("  NO (CPU mode)"));
     UE_LOG(LogTemp, Warning, TEXT("2. Erosion Enabled: %s"),
-           bEnableGPUErosion ? TEXT("ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ YES") : TEXT("ÃƒÂ¢Ã…â€œÃ¢â‚¬â€ NO"));
+           bEnableGPUErosion ? TEXT("  YES") : TEXT("  NO"));
     
     // Check 2: Water connection
     bool bWaterConnected = (ConnectedWaterSystem != nullptr);
@@ -4374,9 +4379,9 @@ void ADynamicTerrain::DebugErosion()
                                ConnectedWaterSystem->ErosionFlowVelocityRT;
     
     UE_LOG(LogTemp, Warning, TEXT("3. Water System: %s"),
-           bWaterConnected ? TEXT("ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ Connected") : TEXT("ÃƒÂ¢Ã…â€œÃ¢â‚¬â€ Not Connected"));
+           bWaterConnected ? TEXT("  Connected") : TEXT("  Not Connected"));
     UE_LOG(LogTemp, Warning, TEXT("4. Water Textures: %s"),
-           bWaterTexturesExist ? TEXT("ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ Exist") : TEXT("ÃƒÂ¢Ã…â€œÃ¢â‚¬â€ Missing"));
+           bWaterTexturesExist ? TEXT("  Exist") : TEXT("  Missing"));
     
     // Check 3: Water flow (if connected)
     if (bWaterConnected && ConnectedWaterSystem->SimulationData.IsValid())
@@ -4396,16 +4401,16 @@ void ADynamicTerrain::DebugErosion()
             }
         }
         
-        UE_LOG(LogTemp, Warning, TEXT("5. Water Cells: %d"), WaterCells);
+        UE_LOG(LogTemp, Log, TEXT("5. Water Cells: %d"), WaterCells);
         UE_LOG(LogTemp, Warning, TEXT("6. Max Flow Speed: %.2f m/s"), MaxFlow);
         
         if (WaterCells == 0)
         {
-            UE_LOG(LogTemp, Warning, TEXT("   ÃƒÂ¢Ã…Â¡Ã‚Â ÃƒÂ¯Ã‚Â¸Ã‚Â  NO WATER - Add water to see erosion!"));
+            UE_LOG(LogTemp, Warning, TEXT("      NO WATER - Add water to see erosion!"));
         }
         else if (MaxFlow < 0.1f)
         {
-            UE_LOG(LogTemp, Warning, TEXT("   ÃƒÂ¢Ã…Â¡Ã‚Â ÃƒÂ¯Ã‚Â¸Ã‚Â  WATER NOT FLOWING - Needs slope or more water!"));
+            UE_LOG(LogTemp, Warning, TEXT("      WATER NOT FLOWING - Needs slope or more water!"));
         }
     }
     
@@ -4414,28 +4419,28 @@ void ADynamicTerrain::DebugErosion()
     
     if (GPUErosionRate < 0.01f)
     {
-        UE_LOG(LogTemp, Warning, TEXT("   ÃƒÂ¢Ã…Â¡Ã‚Â ÃƒÂ¯Ã‚Â¸Ã‚Â  TOO LOW - Try 0.5 or 1.0 for visible erosion"));
+        UE_LOG(LogTemp, Warning, TEXT("      TOO LOW - Try 0.5 or 1.0 for visible erosion"));
     }
     
     // Final verdict
     UE_LOG(LogTemp, Warning, TEXT(""));
     if (CurrentComputeMode != ETerrainComputeMode::GPU)
     {
-        UE_LOG(LogTemp, Error, TEXT("ÃƒÂ¢Ã‚ÂÃ…â€™ EROSION CANNOT WORK - Switch to GPU mode!"));
+        UE_LOG(LogTemp, Error, TEXT("  EROSION CANNOT WORK - Switch to GPU mode!"));
     }
     else if (!bEnableGPUErosion)
     {
-        UE_LOG(LogTemp, Error, TEXT("ÃƒÂ¢Ã‚ÂÃ…â€™ EROSION DISABLED - Enable bEnableGPUErosion"));
+        UE_LOG(LogTemp, Error, TEXT("  EROSION DISABLED - Enable bEnableGPUErosion"));
     }
     else if (!bWaterTexturesExist)
     {
-        UE_LOG(LogTemp, Error, TEXT("ÃƒÂ¢Ã‚ÂÃ…â€™ WATER TEXTURES MISSING - Need to create them!"));
+        UE_LOG(LogTemp, Error, TEXT("  WATER TEXTURES MISSING - Need to create them!"));
     }
     else
     {
-        UE_LOG(LogTemp, Warning, TEXT("ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ EROSION SHOULD BE WORKING!"));
+        UE_LOG(LogTemp, Log, TEXT(" EROSION SHOULD BE WORKING!"));
         UE_LOG(LogTemp, Warning, TEXT("   Wait 30-60 seconds and check for terrain changes."));
-        UE_LOG(LogTemp, Warning, TEXT("   Increase GPUErosionRate to 1.0 for faster results."));
+        UE_LOG(LogTemp, Log, TEXT("   Increase GPUErosionRate to 1.0 for faster results."));
     }
     
     UE_LOG(LogTemp, Warning, TEXT("===================="));
@@ -4443,29 +4448,6 @@ void ADynamicTerrain::DebugErosion()
 
 // 16.2 GPU DEBUGGING
 
-void ADynamicTerrain::DebugGPUTerrain()
-{
-    UE_LOG(LogTemp, Warning, TEXT("=== GPU TERRAIN DEBUG ==="));
-    UE_LOG(LogTemp, Warning, TEXT("GPU Initialized: %s"), bGPUInitialized ? TEXT("YES") : TEXT("NO"));
-    UE_LOG(LogTemp, Warning, TEXT("Compute Mode: %s"),
-           CurrentComputeMode == ETerrainComputeMode::GPU ? TEXT("GPU") : TEXT("CPU"));
-    UE_LOG(LogTemp, Warning, TEXT("GPU Texture: %dx%d"), GPUTextureWidth, GPUTextureHeight);
-    UE_LOG(LogTemp, Warning, TEXT("CPU Heightmap: %dx%d (%d elements)"),
-           TerrainWidth, TerrainHeight, HeightMap.Num());
-    
-    if (HeightRenderTexture)
-    {
-        UE_LOG(LogTemp, Warning, TEXT("HeightRenderTexture: %dx%d, Format=%d"),
-               HeightRenderTexture->SizeX, HeightRenderTexture->SizeY,
-               (int32)HeightRenderTexture->GetFormat());
-    }
-    else
-    {
-        UE_LOG(LogTemp, Error, TEXT("HeightRenderTexture: NULL"));
-    }
-    
-    ValidateGPUUpload();
-}
 
 // 16.3 AUTHORITY DEBUGGING
 

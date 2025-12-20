@@ -12,7 +12,7 @@ void UGPUComputeManager::Initialize(FSubsystemCollectionBase& Collection)
 {
     Super::Initialize(Collection);
     
-    UE_LOG(LogTemp, Warning, TEXT("=== GPUComputeManager Initializing ==="));
+    UE_LOG(LogTemp, Verbose, TEXT("=== GPUComputeManager Initializing ==="));
     
     // Detect GPU capabilities
     DetectGPUCapabilities();
@@ -28,12 +28,12 @@ void UGPUComputeManager::Initialize(FSubsystemCollectionBase& Collection)
     
     bGPUInitialized = true;
     
-    UE_LOG(LogTemp, Warning, TEXT("=== GPUComputeManager Ready ==="));
+    UE_LOG(LogTemp, Verbose, TEXT("=== GPUComputeManager Ready ==="));
 }
 
 void UGPUComputeManager::Deinitialize()
 {
-    UE_LOG(LogTemp, Warning, TEXT("GPUComputeManager: Shutting down"));
+    UE_LOG(LogTemp, Log, TEXT("GPUComputeManager: Shutting down"));
     
     // Clean up texture pool
     ReleaseAllTextures();
@@ -81,12 +81,12 @@ void UGPUComputeManager::DetectGPUCapabilities()
     CurrentConfig.MaxComputeThreadsPerGroup = 1024; // Standard for most GPUs
     CurrentConfig.MaxUAVs = 8; // Conservative limit
     
-    UE_LOG(LogTemp, Warning, TEXT("GPU Capabilities Detected:"));
-    UE_LOG(LogTemp, Warning, TEXT("  Compute Shaders: %s"), CurrentConfig.bSupportsCompute ? TEXT("Yes") : TEXT("No"));
-    UE_LOG(LogTemp, Warning, TEXT("  Async Compute: %s"), CurrentConfig.bSupportsAsyncCompute ? TEXT("Yes") : TEXT("No"));
-    UE_LOG(LogTemp, Warning, TEXT("  16-bit Ops: %s"), CurrentConfig.bSupports16BitOps ? TEXT("Yes") : TEXT("No"));
-    UE_LOG(LogTemp, Warning, TEXT("  Wave Ops: %s"), CurrentConfig.bSupportsWaveOps ? TEXT("Yes") : TEXT("No"));
-    UE_LOG(LogTemp, Warning, TEXT("  Max Texture: %d"), CurrentConfig.MaxTextureSize);
+    UE_LOG(LogTemp, Log, TEXT("GPU Capabilities Detected:"));
+    UE_LOG(LogTemp, Log, TEXT("  Compute Shaders: %s"), CurrentConfig.bSupportsCompute ? TEXT("Yes") : TEXT("No"));
+    UE_LOG(LogTemp, Log, TEXT("  Async Compute: %s"), CurrentConfig.bSupportsAsyncCompute ? TEXT("Yes") : TEXT("No"));
+    UE_LOG(LogTemp, Log, TEXT("  16-bit Ops: %s"), CurrentConfig.bSupports16BitOps ? TEXT("Yes") : TEXT("No"));
+    UE_LOG(LogTemp, Log, TEXT("  Wave Ops: %s"), CurrentConfig.bSupportsWaveOps ? TEXT("Yes") : TEXT("No"));
+    UE_LOG(LogTemp, Verbose, TEXT("  Max Texture: %d"), CurrentConfig.MaxTextureSize);
 }
 
 void UGPUComputeManager::AutoConfigureQuality()
@@ -144,7 +144,7 @@ void UGPUComputeManager::AutoConfigureQuality()
     
     ConfigureForTier(DetectedTier);
     
-    UE_LOG(LogTemp, Warning, TEXT("Auto-configured GPU Quality Tier: %s"),
+    UE_LOG(LogTemp, Log, TEXT("Auto-configured GPU Quality Tier: %s"),
            *UEnum::GetValueAsString(DetectedTier));
 }
 
@@ -156,7 +156,7 @@ void UGPUComputeManager::SetQualityTier(EGPUQualityTier NewTier)
     {
         ConfigureForTier(NewTier);
         
-        UE_LOG(LogTemp, Warning, TEXT("GPU Quality Tier changed: %s -> %s"),
+        UE_LOG(LogTemp, Log, TEXT("GPU Quality Tier changed: %s -> %s"),
                *UEnum::GetValueAsString(OldTier),
                *UEnum::GetValueAsString(NewTier));
         
@@ -314,7 +314,7 @@ void UGPUComputeManager::ReleaseAllTextures()
     TexturePool.Empty();
     MemoryUsageMB = 0.0f;
     
-    UE_LOG(LogTemp, Warning, TEXT("Released all GPU textures"));
+    UE_LOG(LogTemp, Verbose, TEXT("Released all GPU textures"));
 }
 
 float UGPUComputeManager::GetGPUMemoryUsageMB() const
@@ -341,19 +341,19 @@ void UGPUComputeManager::UpdatePerformanceMetrics()
 
 void UGPUComputeManager::LogConfiguration() const
 {
-    UE_LOG(LogTemp, Warning, TEXT("=== GPU Configuration ==="));
-    UE_LOG(LogTemp, Warning, TEXT("Quality Tier: %s"), *UEnum::GetValueAsString(CurrentConfig.QualityTier));
-    UE_LOG(LogTemp, Warning, TEXT("Grid Sizes:"));
-    UE_LOG(LogTemp, Warning, TEXT("  Atmosphere: %d"), GetAtmosphereGridSize());
-    UE_LOG(LogTemp, Warning, TEXT("  Water: %d"), GetWaterGridSize());
-    UE_LOG(LogTemp, Warning, TEXT("  Erosion: %d"), GetErosionGridSize());
-    UE_LOG(LogTemp, Warning, TEXT("  Vegetation: %d"), GetVegetationGridSize());
-    UE_LOG(LogTemp, Warning, TEXT("Update Rates:"));
-    UE_LOG(LogTemp, Warning, TEXT("  Physics: %.1f Hz"), CurrentConfig.PhysicsUpdateRate);
-    UE_LOG(LogTemp, Warning, TEXT("  Visual: %.1f Hz"), CurrentConfig.VisualUpdateRate);
-    UE_LOG(LogTemp, Warning, TEXT("Memory Budgets:"));
-    UE_LOG(LogTemp, Warning, TEXT("  Textures: %d MB"), CurrentConfig.TextureMemoryBudget);
-    UE_LOG(LogTemp, Warning, TEXT("  Compute: %d MB"), CurrentConfig.ComputeMemoryBudget);
+    UE_LOG(LogTemp, Verbose, TEXT("=== GPU Configuration ==="));
+    UE_LOG(LogTemp, Log, TEXT("Quality Tier: %s"), *UEnum::GetValueAsString(CurrentConfig.QualityTier));
+    UE_LOG(LogTemp, Log, TEXT("Grid Sizes:"));
+    UE_LOG(LogTemp, Log, TEXT("  Atmosphere: %d"), GetAtmosphereGridSize());
+    UE_LOG(LogTemp, Log, TEXT("  Water: %d"), GetWaterGridSize());
+    UE_LOG(LogTemp, Log, TEXT("  Erosion: %d"), GetErosionGridSize());
+    UE_LOG(LogTemp, Log, TEXT("  Vegetation: %d"), GetVegetationGridSize());
+    UE_LOG(LogTemp, Log, TEXT("Update Rates:"));
+    UE_LOG(LogTemp, Log, TEXT("  Physics: %.1f Hz"), CurrentConfig.PhysicsUpdateRate);
+    UE_LOG(LogTemp, Log, TEXT("  Visual: %.1f Hz"), CurrentConfig.VisualUpdateRate);
+    UE_LOG(LogTemp, Log, TEXT("Memory Budgets:"));
+    UE_LOG(LogTemp, Log, TEXT("  Textures: %d MB"), CurrentConfig.TextureMemoryBudget);
+    UE_LOG(LogTemp, Log, TEXT("  Compute: %d MB"), CurrentConfig.ComputeMemoryBudget);
 }
 
 void UGPUComputeManager::RegisterConsoleCommands()
@@ -392,10 +392,10 @@ void UGPUComputeManager::RegisterConsoleCommands()
         TEXT("Display GPU memory usage"),
         FConsoleCommandDelegate::CreateLambda([this]()
         {
-            UE_LOG(LogTemp, Warning, TEXT("GPU Memory Usage:"));
-            UE_LOG(LogTemp, Warning, TEXT("  Allocated: %.2f MB"), MemoryUsageMB);
-            UE_LOG(LogTemp, Warning, TEXT("  Budget: %d MB"), CurrentConfig.TextureMemoryBudget);
-            UE_LOG(LogTemp, Warning, TEXT("  Textures in pool: %d"), TexturePool.Num());
+            UE_LOG(LogTemp, Log, TEXT("GPU Memory Usage:"));
+            UE_LOG(LogTemp, Log, TEXT("  Allocated: %.2f MB"), MemoryUsageMB);
+            UE_LOG(LogTemp, Log, TEXT("  Budget: %d MB"), CurrentConfig.TextureMemoryBudget);
+            UE_LOG(LogTemp, Log, TEXT("  Textures in pool: %d"), TexturePool.Num());
         }),
         ECVF_Default
     ));

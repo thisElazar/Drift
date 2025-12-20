@@ -15,10 +15,10 @@
  * - IBrushReceiver: Universal brush system integration (from MasterController)
  *
  * ARCHITECTURE PATTERNS:
- * ÃƒÂ¢Ã‚Â­Ã‚Â Authority Delegation: Registered with MasterController for coordination
- * ÃƒÂ¢Ã‚Â­Ã‚Â State Machine Camera: Overhead/FirstPerson with smooth transitions
- * ÃƒÂ¢Ã‚Â­Ã‚Â Enhanced Input System: Modern UE5.5 input handling
- * ÃƒÂ¢Ã‚Â­Ã‚Â Unified Cursor: Single consistent cursor across all systems
+ *   Authority Delegation: Registered with MasterController for coordination
+ *   State Machine Camera: Overhead/FirstPerson with smooth transitions
+ *   Enhanced Input System: Modern UE5.5 input handling
+ *   Unified Cursor: Single consistent cursor across all systems
  *
  * SECTION STRUCTURE (matches TerrainController.cpp 15 sections):
  * Organized to mirror reorganized .cpp file for easy cross-reference navigation.
@@ -148,7 +148,7 @@ class IBrushReceiver;
  * - APawn: UE5 player controller base
  * - IBrushReceiver: Universal brush system interface
  *
- * ÃƒÂ¢Ã‚Â­Ã‚Â IBRUSHRECEIVER INTERFACE:
+ *   IBRUSHRECEIVER INTERFACE:
  * Implements ApplyBrush(), UpdateBrushSettings(), CanReceiveBrush() to
  * participate in Universal Brush System without tight coupling.
  *
@@ -297,9 +297,6 @@ public:
     float CalculateFogDensity(FVector Position) const;
     void InitializeFogSystem();
 
-    UFUNCTION(BlueprintCallable, Category = "Water System")
-    void ToggleRain();
-    
     // Menu system integration
     UFUNCTION(BlueprintCallable, Category = "Menu")
     void ReturnToMainMenu();
@@ -312,10 +309,10 @@ public:
     float MinTimeSpeed = 0.1f;  // Slowest (1/10 speed)
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Time Control")
-    float MaxTimeSpeed = 10.0f;  // Fastest (10x speed)
+    float MaxTimeSpeed = 30.0f;  // Fastest (10x speed)
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Time Control")
-    float TimeSpeedChangeRate = 0.5f;  // How much to change per keypress
+    float TimeSpeedChangeRate = 0.1f;  // How much to change per keypress
 
     // ===== ATMOSPHERIC FOG SETTINGS =====
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Atmospheric Fog")
@@ -384,11 +381,15 @@ public:
     UFUNCTION()
     void HandleWaterToggle();
 
-    UFUNCTION()
-    void HandleRainToggle();
     
     UFUNCTION(BlueprintImplementableEvent, Category = "UI")
     void OnToggleControlPanel();
+    
+    UFUNCTION(BlueprintImplementableEvent, Category = "UI")
+    void ShowControlPanel();
+
+    UFUNCTION(BlueprintImplementableEvent, Category = "UI")
+    void HideControlPanel();
     
     // Spring editing functions
         UFUNCTION(BlueprintCallable, Category = "Spring Editing")
@@ -553,31 +554,11 @@ protected:
 
     
     void UpdateTerrainModification(float DeltaTime);
-   
 
-    // ===== DUPLICATE BRUSH PROPERTIES REMOVED =====
-    // Brush properties now managed by Universal Brush System in MasterController
-    // Use GetBrushRadius() and GetBrushStrength() instead
-
-    // Water Editing Settings
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Editing")
-    float WaterBrushStrength = 10.0f;
-
+    
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Editing")
     float WaterAdditionRate = 50.0f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Editing")
-    float LakeCreationMultiplier = 10.0f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Editing")
-    float MinWaterBrushStrength = 1.0f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Editing")
-    float MaxWaterBrushStrength = 50000.0f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Editing")
-    float WaterStrengthChangeRate = 5.0f;
-
+    
     // Brush Preview Settings
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Brush Preview")
     bool bShowBrushPreview = true;
@@ -616,19 +597,7 @@ protected:
         // Spring update function
         void UpdateSpringEditing(float DeltaTime);
 
-    
-    // Legacy material support (deprecated - use above instead)
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Brush Preview", meta = (DeprecatedProperty, DeprecationMessage = "Use TerrainEditMaterial instead"))
-    UMaterial* RaiseBrushMaterial = nullptr;
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Brush Preview", meta = (DeprecatedProperty, DeprecationMessage = "Use TerrainEditMaterial instead"))
-    UMaterial* LowerBrushMaterial = nullptr;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Brush Preview", meta = (DeprecatedProperty, DeprecationMessage = "Use WaterAddMaterial instead"))
-    UMaterial* AddWaterBrushMaterial = nullptr;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Brush Preview", meta = (DeprecatedProperty, DeprecationMessage = "Use WaterRemoveMaterial instead"))
-    UMaterial* RemoveWaterBrushMaterial = nullptr;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Brush Preview")
     float BrushPreviewOpacity = 0.3f;
@@ -657,9 +626,6 @@ public:
 
     UFUNCTION(BlueprintCallable, Category = "Water Editing")
     void StopWaterEditing();
-
-    UFUNCTION(BlueprintCallable, Category = "Water Editing")
-    void SetWaterBrushStrength(float NewStrength);
 
     // Time control functions
     UFUNCTION(BlueprintCallable, Category = "Time Control")
@@ -726,10 +692,6 @@ protected:
     void StopRaiseTerrain(const FInputActionValue& Value);
     void StartLowerTerrain(const FInputActionValue& Value);
     void StopLowerTerrain(const FInputActionValue& Value);
-  //  void IncreaseBrushSize(const FInputActionValue& Value);
-  //  void DecreaseBrushSize(const FInputActionValue& Value);
-  //  void IncreaseBrushStrength(const FInputActionValue& Value);
-  //  void DecreaseBrushStrength(const FInputActionValue& Value);
     void ResetTerrain(const FInputActionValue& Value);
 
     // Enhanced Input functions - Water Editing
@@ -764,7 +726,6 @@ protected:
 
 
     // Performance and UI
-    void UpdatePerformanceStats(float DeltaTime);
     void UpdateTerrainInfo(float DeltaTime);
 
 private:
@@ -906,15 +867,15 @@ private:
  * - Section headers added for navigation
  *
  * VALIDATION:
- * ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ All UPROPERTY preserved (95)
- * ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ All UFUNCTION preserved (41)
- * ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ All UENUM preserved (4)
- * ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ Forward declarations intact
- * ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ Includes unchanged
- * ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ IBrushReceiver implementation preserved
- * ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ Public/protected/private access unchanged
- * ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ Ready for compilation
+ *  All UPROPERTY preserved (95)
+ *  All UFUNCTION preserved (41)
+ *  All UENUM preserved (4)
+ *  Forward declarations intact
+ *  Includes unchanged
+ *  IBrushReceiver implementation preserved
+ *  Public/protected/private access unchanged
+ *  Ready for compilation
  *
- * QUALITY: ÃƒÂ¢Ã‚Â­Ã‚ÂÃƒÂ¢Ã‚Â­Ã‚ÂÃƒÂ¢Ã‚Â­Ã‚ÂÃƒÂ¢Ã‚Â­Ã‚ÂÃƒÂ¢Ã‚Â­Ã‚Â
+ * QUALITY:  
  * Comprehensive documentation, clear architecture, perfect integrity.
  */

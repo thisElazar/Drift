@@ -49,7 +49,7 @@ void UAtmosphericSystem::Initialize(ADynamicTerrain* InTerrain, UWaterSystem* In
     // Initialize the grid
     InitializeAtmosphericGrid();
     
-    UE_LOG(LogTemp, Warning, TEXT("AtmosphericSystem: Initialized with terrain and water systems"));
+    UE_LOG(LogTemp, Log, TEXT("AtmosphericSystem: Initialized with terrain and water systems"));
 }
 
 void UAtmosphericSystem::InitializeAtmosphericGrid()
@@ -80,7 +80,7 @@ void UAtmosphericSystem::InitializeAtmosphericGrid()
         }
     }
     
-    UE_LOG(LogTemp, Warning, TEXT("AtmosphericSystem: Grid initialized with %dx%d cells"),
+    UE_LOG(LogTemp, Log, TEXT("AtmosphericSystem: Grid initialized with %dx%d cells"),
            GridResolutionX, GridResolutionY);
 }
 
@@ -90,7 +90,7 @@ void UAtmosphericSystem::RegisterWithMasterController(AMasterWorldController* Co
     if (MasterController)
     {
         // TemporalManager would be set here if needed
-        UE_LOG(LogTemp, Warning, TEXT("AtmosphericSystem: Registered with MasterController"));
+        UE_LOG(LogTemp, Log, TEXT("AtmosphericSystem: Registered with MasterController"));
     }
 }
 
@@ -99,14 +99,14 @@ void UAtmosphericSystem::ConfigureFromMaster(const FWorldScalingConfig& Config)
     // Handle world scaling configuration
     // This is called by existing architecture
     bSystemScaled = true;
-    UE_LOG(LogTemp, Warning, TEXT("AtmosphericSystem: Configured from master"));
+    UE_LOG(LogTemp, Log, TEXT("AtmosphericSystem: Configured from master"));
 }
 
 void UAtmosphericSystem::SynchronizeCoordinates(const FWorldCoordinateSystem& CoordSystem)
 {
     // Handle coordinate synchronization
     // This is called by existing architecture
-    UE_LOG(LogTemp, Warning, TEXT("AtmosphericSystem: Coordinates synchronized"));
+    UE_LOG(LogTemp, Log, TEXT("AtmosphericSystem: Coordinates synchronized"));
 }
 
 void UAtmosphericSystem::ConnectToTerrainSystem(ADynamicTerrain* InTerrain, UWaterSystem* InWaterSystem)
@@ -120,7 +120,7 @@ void UAtmosphericSystem::ConnectToTerrainSystem(ADynamicTerrain* InTerrain, UWat
     GridWidth = GridResolutionX;
     GridHeight = GridResolutionY;
     
-    UE_LOG(LogTemp, Warning, TEXT("AtmosphericSystem: Connected to terrain and water systems"));
+    UE_LOG(LogTemp, Log, TEXT("AtmosphericSystem: Connected to terrain and water systems"));
 }
 
 // ===== MAIN UPDATE =====
@@ -231,7 +231,7 @@ void UAtmosphericSystem::SetWeather(EWeatherType NewWeather, float TransitionTim
     FSeasonalData SeasonData = GetCurrentSeasonalData();
     TargetWeather.WindDirection = SeasonData.PrevailingWind;
     
-    UE_LOG(LogTemp, Warning, TEXT("AtmosphericSystem: Weather changing to %d"), (int32)NewWeather);
+    UE_LOG(LogTemp, Log, TEXT("AtmosphericSystem: Weather changing to %d"), (int32)NewWeather);
 }
 
 void UAtmosphericSystem::SetWeatherImmediate(EWeatherType NewWeather)
@@ -408,7 +408,7 @@ void UAtmosphericSystem::SetGlobalWind(FVector2D WindVector)
     FVector Wind3D(WindVector.X, WindVector.Y, 0);
     OnWindChanged.Broadcast(Wind3D.GetSafeNormal(), WindVector.Size());
     
-    UE_LOG(LogTemp, Warning, TEXT("AtmosphericSystem: Global wind set to %s"), *WindVector.ToString());
+    UE_LOG(LogTemp, Log, TEXT("AtmosphericSystem: Global wind set to %s"), *WindVector.ToString());
 }
 
 void UAtmosphericSystem::SetGlobalWindPattern(FVector WindVector3D)
@@ -809,7 +809,7 @@ void UAtmosphericSystem::TriggerStorm(float Intensity, float Duration)
     TargetWeather.PrecipitationRate = 10.0f * Intensity;
     TargetWeather.WindSpeed = 20.0f * (1.0f + Intensity);
     
-    UE_LOG(LogTemp, Warning, TEXT("AtmosphericSystem: Storm triggered - Intensity:%.2f Duration:%.1fs"),
+    UE_LOG(LogTemp, Log, TEXT("AtmosphericSystem: Storm triggered - Intensity:%.2f Duration:%.1fs"),
            Intensity, Duration);
 }
 
@@ -818,5 +818,5 @@ void UAtmosphericSystem::SetSeason(ESeason NewSeason)
     CurrentSeason = NewSeason;
     SeasonTimer = 0.0f;
     
-    UE_LOG(LogTemp, Warning, TEXT("AtmosphericSystem: Season set to %d"), (int32)NewSeason);
+    UE_LOG(LogTemp, Log, TEXT("AtmosphericSystem: Season set to %d"), (int32)NewSeason);
 }

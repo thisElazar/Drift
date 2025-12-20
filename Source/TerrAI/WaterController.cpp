@@ -29,27 +29,16 @@ void AWaterController::BeginPlay()
         TargetTerrain = Cast<ADynamicTerrain>(UGameplayStatics::GetActorOfClass(GetWorld(), ADynamicTerrain::StaticClass()));
         if (TargetTerrain)
         {
-            UE_LOG(LogTemp, Warning, TEXT("WaterController: Auto-found terrain"));
+            UE_LOG(LogTemp, Log, TEXT("WaterController: Auto-found terrain"));
         }
     }
     
     if (TargetTerrain)
     {
         Initialize(TargetTerrain);
-        UE_LOG(LogTemp, Warning, TEXT("WaterController: Initialized with terrain"));
-        
-        // Apply Blueprint settings that may have been set before BeginPlay
-        if (bIsRaining)
-        {
-            UE_LOG(LogTemp, Warning, TEXT("WaterController: Blueprint rain setting detected - starting rain"));
-            StartRain(RainIntensity);
-        }
+        UE_LOG(LogTemp, Log, TEXT("WaterController: Initialized with terrain"));
     }
-    else
-    {
-        UE_LOG(LogTemp, Warning, TEXT("WaterController: No terrain assigned - set TargetTerrain in Blueprint"));
-    }
-    
+
     // Initialize GPU water if enabled
        if (bUseGPUVertexDisplacement && WaterSystem)
        {
@@ -136,7 +125,7 @@ void AWaterController::RegisterWithMasterController()
     
     if (MasterController)
     {
-        UE_LOG(LogTemp, Warning, TEXT("WaterController: Connected to MasterController for coordinate authority"));
+        UE_LOG(LogTemp, Log, TEXT("WaterController: Connected to MasterController for coordinate authority"));
     }
     else
     {
@@ -154,7 +143,7 @@ void AWaterController::Initialize(ADynamicTerrain* Terrain)
         if (WaterSystem)
         {
             ApplySettingsToWaterSystem();
-            UE_LOG(LogTemp, Warning, TEXT("WaterController: Successfully connected to WaterSystem"));
+            UE_LOG(LogTemp, Log, TEXT("WaterController: Successfully connected to WaterSystem"));
         }
         else
         {
@@ -168,7 +157,7 @@ void AWaterController::ResetWaterSystem()
     if (WaterSystem)
     {
         WaterSystem->ResetWaterSystem();
-        UE_LOG(LogTemp, Warning, TEXT("WaterController: Water system reset"));
+        UE_LOG(LogTemp, Log, TEXT("WaterController: Water system reset"));
     }
 }
 
@@ -192,7 +181,7 @@ void AWaterController::SetWaterVisualMode(EWaterVisualMode NewMode)
     
     if (!NewMaterial)
     {
-        UE_LOG(LogTemp, Warning, TEXT("No material set for mode: %d"), (int32)NewMode);
+        UE_LOG(LogTemp, Log, TEXT("No material set for mode: %d"), (int32)NewMode);
         return;
     }
     
@@ -224,7 +213,7 @@ void AWaterController::SetWaterVisualMode(EWaterVisualMode NewMode)
                 }
             }
             
-            UE_LOG(LogTemp, Warning, TEXT("Updated GPU water material to: %s"), *NewMaterial->GetName());
+            UE_LOG(LogTemp, Log, TEXT("Updated GPU water material to: %s"), *NewMaterial->GetName());
         }
     }
     
@@ -234,45 +223,15 @@ void AWaterController::SetWaterVisualMode(EWaterVisualMode NewMode)
         TargetTerrain->SetWaterVolumeMaterial(NewMaterial);
     }
     
-    UE_LOG(LogTemp, Warning, TEXT("Water visual mode changed to: %s"),
+    UE_LOG(LogTemp, Log, TEXT("Water visual mode changed to: %s"),
            NewMode == EWaterVisualMode::Water ? TEXT("Water") :
            NewMode == EWaterVisualMode::Milk ? TEXT("Milk") : TEXT("Debug"));
 }
 
 // ===== WEATHER CONTROLS =====
 
-void AWaterController::StartRain(float Intensity)
-{
-    if (WaterSystem)
-    {
-        bIsRaining = true;
-        RainIntensity = Intensity;
-        WaterSystem->StartRain(Intensity);
-        UE_LOG(LogTemp, Warning, TEXT("WaterController: Rain started with intensity %.2f"), Intensity);
-    }
-}
 
-void AWaterController::StopRain()
-{
-    if (WaterSystem)
-    {
-        bIsRaining = false;
-        WaterSystem->StopRain();
-        UE_LOG(LogTemp, Warning, TEXT("WaterController: Rain stopped"));
-    }
-}
 
-void AWaterController::ToggleRain()
-{
-    if (bIsRaining)
-    {
-        StopRain();
-    }
-    else
-    {
-        StartRain(RainIntensity);
-    }
-}
 
 // ===== INTERACTION =====
 
@@ -453,13 +412,6 @@ float AWaterController::GetWaterDepthAtPosition(FVector WorldPosition) const
 
 // ===== DEBUG =====
 
-void AWaterController::DrawDebugInfo() const
-{
-    if (WaterSystem)
-    {
-        WaterSystem->DrawDebugInfo();
-    }
-}
 
 // ===== UTILITIES =====
 
@@ -496,7 +448,7 @@ void AWaterController::ApplySettingsToWaterSystem()
 {
     if (!WaterSystem) return;
     
-    UE_LOG(LogTemp, Warning, TEXT("WaterController: Applying all settings to WaterSystem..."));
+    UE_LOG(LogTemp, Log, TEXT("WaterController: Applying all settings to WaterSystem..."));
     
     // Apply physics settings
     WaterSystem->bEnableWaterSimulation = bEnableWaterSimulation;
@@ -532,11 +484,6 @@ void AWaterController::ApplySettingsToWaterSystem()
         WaterSystem->WaterParameterCollection = WaterParameterCollection;
     }
     
-    // Apply weather settings
-    WaterSystem->bIsRaining = bIsRaining;
-    WaterSystem->RainIntensity = RainIntensity;
-    WaterSystem->WeatherChangeInterval = WeatherChangeInterval;
-    WaterSystem->bAutoWeather = bAutoWeather;
     
     // Apply debug settings
     WaterSystem->bShowWaterStats = bShowWaterStats;
@@ -554,7 +501,7 @@ void AWaterController::ApplySettingsToWaterSystem()
     }
     WaterSystem->BaseSurfaceResolution = BaseSurfaceResolution;
     
-    UE_LOG(LogTemp, Warning, TEXT("WaterController: All settings applied successfully"));
+    UE_LOG(LogTemp, Log, TEXT("WaterController: All settings applied successfully"));
 }
 
 void AWaterController::UpdateWaterSystemFromController()
@@ -589,7 +536,7 @@ UMaterialInterface* AWaterController::GetCurrentWaterMaterial() const
 
 void AWaterController::EnableGPUWater()
 {
-    UE_LOG(LogTemp, Warning, TEXT("=== AWaterController::EnableGPUWater() START ==="));
+    UE_LOG(LogTemp, Verbose, TEXT("=== AWaterController::EnableGPUWater() START ==="));
     
     // Step 1: Validate WaterSystem
     if (!WaterSystem)
@@ -616,7 +563,7 @@ void AWaterController::EnableGPUWater()
     // Step 4: Ensure terrain chunks exist
     if (TargetTerrain->TerrainChunks.Num() == 0)
     {
-        UE_LOG(LogTemp, Warning, TEXT("EnableGPUWater: No terrain chunks, attempting generation..."));
+        UE_LOG(LogTemp, Log, TEXT("EnableGPUWater: No terrain chunks, attempting generation..."));
         
         // Try to initialize terrain properly
         TargetTerrain->InitializeTerrainData();
@@ -630,7 +577,7 @@ void AWaterController::EnableGPUWater()
         }
     }
     
-    UE_LOG(LogTemp, Warning, TEXT("EnableGPUWater: Terrain ready with %d chunks"),
+    UE_LOG(LogTemp, Log, TEXT("EnableGPUWater: Terrain ready with %d chunks"),
            TargetTerrain->TerrainChunks.Num());
     
     // Step 5: Ensure water simulation is initialized
@@ -662,14 +609,14 @@ void AWaterController::EnableGPUWater()
         if (CurrentMaterial)
         {
             WaterSystem->WaterMaterialWithDisplacement = CurrentMaterial;
-            UE_LOG(LogTemp, Warning, TEXT("EnableGPUWater: Using current material mode: %s"),
+            UE_LOG(LogTemp, Log, TEXT("EnableGPUWater: Using current material mode: %s"),
                    *CurrentMaterial->GetName());
         }
         else if (WaterMaterial)
         {
             // Fallback to default water material
             WaterSystem->WaterMaterialWithDisplacement = WaterMaterial;
-            UE_LOG(LogTemp, Warning, TEXT("EnableGPUWater: Using default water material"));
+            UE_LOG(LogTemp, Log, TEXT("EnableGPUWater: Using default water material"));
         }
         else
         {
@@ -685,7 +632,7 @@ void AWaterController::EnableGPUWater()
         // Step 11: Force immediate mesh update for visible chunks
         if (WaterSystem->WaterSurfaceChunks.Num() > 0)
         {
-            UE_LOG(LogTemp, Warning, TEXT("EnableGPUWater: Forcing mesh update for %d chunks"),
+            UE_LOG(LogTemp, Log, TEXT("EnableGPUWater: Forcing mesh update for %d chunks"),
                    WaterSystem->WaterSurfaceChunks.Num());
             
             for (FWaterSurfaceChunk& Chunk : WaterSystem->WaterSurfaceChunks)
@@ -700,16 +647,16 @@ void AWaterController::EnableGPUWater()
         bPendingGPUInit = false;
         GPUInitRetryCount = 0;
         
-        UE_LOG(LogTemp, Warning, TEXT("=== AWaterController::EnableGPUWater() SUCCESS ==="));
+        UE_LOG(LogTemp, Verbose, TEXT("=== AWaterController::EnableGPUWater() SUCCESS ==="));
     }
 
 void AWaterController::DisableGPUWater()
 {
-    UE_LOG(LogTemp, Warning, TEXT("=== AWaterController::DisableGPUWater() ==="));
+    UE_LOG(LogTemp, Verbose, TEXT("=== AWaterController::DisableGPUWater() ==="));
     
     if (!WaterSystem)
     {
-        UE_LOG(LogTemp, Warning, TEXT("DisableGPUWater: No WaterSystem"));
+        UE_LOG(LogTemp, Log, TEXT("DisableGPUWater: No WaterSystem"));
         return;
     }
     
@@ -720,12 +667,12 @@ void AWaterController::DisableGPUWater()
     // Disable GPU vertex displacement
     WaterSystem->ToggleVertexDisplacement(false);
     
-    UE_LOG(LogTemp, Warning, TEXT("DisableGPUWater: GPU Water DISABLED"));
+    UE_LOG(LogTemp, Log, TEXT("DisableGPUWater: GPU Water DISABLED"));
 }
 
 void AWaterController::ToggleGPUWater()
 {
-    UE_LOG(LogTemp, Warning, TEXT("=== AWaterController::ToggleGPUWater() ==="));
+    UE_LOG(LogTemp, Verbose, TEXT("=== AWaterController::ToggleGPUWater() ==="));
     
     // Validate prerequisites
     if (!TargetTerrain || !WaterSystem)
@@ -766,7 +713,7 @@ void AWaterController::UpdateGPUWaveParameters()
     WaterSystem->GPUMaxWaveHeightRatio = GPUMaxWaveHeightRatio;
     WaterSystem->GPUSafeWaveHeightRatio = GPUSafeWaveHeightRatio;
     
-    UE_LOG(LogTemp, Warning, TEXT("GPU Wave Parameters Updated - Scale:%.2f Damping:%.2f MaxRatio:%.2f"),
+    UE_LOG(LogTemp, Verbose, TEXT("GPU Wave Parameters Updated - Scale:%.2f Damping:%.2f MaxRatio:%.2f"),
            GPUWaveScale, GPUWaveDamping, GPUMaxWaveHeightRatio);
 }
 
@@ -774,7 +721,7 @@ void AWaterController::ResetGPUWaveSystem()
 {
     if (!WaterSystem)
     {
-        UE_LOG(LogTemp, Warning, TEXT("ResetGPUWaveSystem: No WaterSystem"));
+        UE_LOG(LogTemp, Log, TEXT("ResetGPUWaveSystem: No WaterSystem"));
         return;
     }
     
@@ -791,7 +738,7 @@ void AWaterController::ResetGPUWaveSystem()
     // Call water system's reset
     WaterSystem->ResetGPUWaveSystem();
     
-    UE_LOG(LogTemp, Warning, TEXT("GPU Wave System reset to safe defaults"));
+    UE_LOG(LogTemp, Verbose, TEXT("GPU Wave System reset to safe defaults"));
 }
 
 bool AWaterController::ValidateGPUParameters()
@@ -821,7 +768,7 @@ bool AWaterController::ValidateGPUParameters()
     if (!bValid)
     {
         UpdateGPUWaveParameters();
-        UE_LOG(LogTemp, Warning, TEXT("GPU Parameters validated and corrected"));
+        UE_LOG(LogTemp, Verbose, TEXT("GPU Parameters validated and corrected"));
     }
     
     return bValid;
@@ -830,7 +777,7 @@ bool AWaterController::ValidateGPUParameters()
 
 void AWaterController::InitializeGPUWaterSystem()
 {
-    UE_LOG(LogTemp, Warning, TEXT("=== AWaterController::InitializeGPUWaterSystem() ==="));
+    UE_LOG(LogTemp, Verbose, TEXT("=== AWaterController::InitializeGPUWaterSystem() ==="));
     
     // Validate WaterSystem
     if (!WaterSystem)
@@ -842,7 +789,7 @@ void AWaterController::InitializeGPUWaterSystem()
     // Check if terrain is ready
     if (!TargetTerrain || TargetTerrain->TerrainChunks.Num() == 0)
     {
-        UE_LOG(LogTemp, Warning, TEXT("InitializeGPUWaterSystem: Deferring - terrain not ready"));
+        UE_LOG(LogTemp, Log, TEXT("InitializeGPUWaterSystem: Deferring - terrain not ready"));
         bPendingGPUInit = true;
         return;
     }
@@ -857,11 +804,11 @@ void AWaterController::InitializeGPUWaterSystem()
     if (bUseGPUVertexDisplacement)
     {
         WaterSystem->ToggleVertexDisplacement(true);
-        UE_LOG(LogTemp, Warning, TEXT("InitializeGPUWaterSystem: System initialized and enabled"));
+        UE_LOG(LogTemp, Log, TEXT("InitializeGPUWaterSystem: System initialized and enabled"));
     }
     else
     {
-        UE_LOG(LogTemp, Warning, TEXT("InitializeGPUWaterSystem: System initialized (not enabled)"));
+        UE_LOG(LogTemp, Log, TEXT("InitializeGPUWaterSystem: System initialized (not enabled)"));
     }
     
     bPendingGPUInit = false;
@@ -901,31 +848,31 @@ void AWaterController::DebugGPUWater()
 {
     if (!WaterSystem)
     {
-        UE_LOG(LogTemp, Warning, TEXT("No WaterSystem"));
+        UE_LOG(LogTemp, Log, TEXT("No WaterSystem"));
         return;
     }
     
-    UE_LOG(LogTemp, Warning, TEXT("=== GPU WATER DEBUG ==="));
-    UE_LOG(LogTemp, Warning, TEXT("GPU Mode Enabled: %s"),
+    UE_LOG(LogTemp, Verbose, TEXT("=== GPU WATER DEBUG ==="));
+    UE_LOG(LogTemp, Log, TEXT("GPU Mode Enabled: %s"),
            bUseGPUVertexDisplacement ? TEXT("YES") : TEXT("NO"));
-    UE_LOG(LogTemp, Warning, TEXT("Water Chunks: %d"),
+    UE_LOG(LogTemp, Log, TEXT("Water Chunks: %d"),
            WaterSystem->WaterSurfaceChunks.Num());
-    UE_LOG(LogTemp, Warning, TEXT("GPU Material: %s"),
+    UE_LOG(LogTemp, Log, TEXT("GPU Material: %s"),
            GPUWaterMaterial ? *GPUWaterMaterial->GetName() : TEXT("NULL"));
-    UE_LOG(LogTemp, Warning, TEXT("Wave Scale: %.2f"), GPUWaveScale);
-    UE_LOG(LogTemp, Warning, TEXT("Wave Speed: %.2f"), GPUWaveSpeed);
+    UE_LOG(LogTemp, Log, TEXT("Wave Scale: %.2f"), GPUWaveScale);
+    UE_LOG(LogTemp, Log, TEXT("Wave Speed: %.2f"), GPUWaveSpeed);
     
     if (TargetTerrain)
     {
-        UE_LOG(LogTemp, Warning, TEXT("Terrain Chunks: %d"),
+        UE_LOG(LogTemp, Log, TEXT("Terrain Chunks: %d"),
                TargetTerrain->TerrainChunks.Num());
-        UE_LOG(LogTemp, Warning, TEXT("Terrain Scale: %.1f"),
+        UE_LOG(LogTemp, Log, TEXT("Terrain Scale: %.1f"),
                TargetTerrain->TerrainScale);
-        UE_LOG(LogTemp, Warning, TEXT("Chunk Size: %d"),
+        UE_LOG(LogTemp, Log, TEXT("Chunk Size: %d"),
                TargetTerrain->ChunkSize);
-        UE_LOG(LogTemp, Warning, TEXT("Chunk Overlap: %d"),
+        UE_LOG(LogTemp, Log, TEXT("Chunk Overlap: %d"),
                TargetTerrain->ChunkOverlap);
-        UE_LOG(LogTemp, Warning, TEXT("HeightMap Size: %d"),
+        UE_LOG(LogTemp, Log, TEXT("HeightMap Size: %d"),
                TargetTerrain->HeightMap.Num());
     }
     
@@ -933,7 +880,7 @@ void AWaterController::DebugGPUWater()
     for (int32 i = 0; i < FMath::Min(5, WaterSystem->WaterSurfaceChunks.Num()); i++)
     {
         const FWaterSurfaceChunk& Chunk = WaterSystem->WaterSurfaceChunks[i];
-        UE_LOG(LogTemp, Warning, TEXT("  Chunk %d: TerrainIdx=%d, Pos=(%d,%d), HasWater=%s"),
+        UE_LOG(LogTemp, Verbose, TEXT("  Chunk %d: TerrainIdx=%d, Pos=(%d,%d), HasWater=%s"),
                i, Chunk.ChunkIndex, Chunk.ChunkX, Chunk.ChunkY,
                Chunk.bHasWater ? TEXT("YES") : TEXT("NO"));
     }

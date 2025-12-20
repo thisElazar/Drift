@@ -14,9 +14,9 @@
  * CRITICAL RESPONSIBILITIES:
  * - 8-Phase Sequential Initialization (eliminates race conditions)
  * - Coordinate System Authority (single source of truth)
- * - Water Conservation Tracking (atmosphere â†” surface â†” groundwater)
+ * - Water Conservation Tracking (atmosphere   surface   groundwater)
  * - Universal Brush System (multi-system editing coordination)
- * - Temporal Coordination (real-time â†’ geological timescales)
+ * - Temporal Coordination (real-time   geological timescales)
  * - World Scaling Configuration (map sizes, grid resolutions)
  * - System Performance Monitoring (frame time, update rates)
  *
@@ -288,12 +288,12 @@ public:
  *    - Coarse resolution (biomes are large-scale)
  *
  * COORDINATE CONVERSION EXAMPLE:
- * World Position â†’ Water Grid:
+ * World Position   Water Grid:
  * 1. Subtract WorldOrigin (get relative position)
  * 2. Divide by WaterCellScale (convert to grid units)
  * 3. Round to nearest integer (get grid index)
  *
- * World Position â†’ Atmosphere Grid:
+ * World Position   Atmosphere Grid:
  * 1. Subtract WorldOrigin
  * 2. Divide by AtmosphereCellSize (1000 instead of 100)
  * 3. Result: Multiple water cells per atmosphere cell
@@ -596,7 +596,7 @@ struct TERRAI_API FWorldCoordinateSystem
  * Phase 8: Final synchronization & validation
  *
  * WATER CONSERVATION CONSTANTS:
- * - WATER_DENSITY_KG_PER_M3: 1000 kg/mÂ³ (standard water density)
+ * - WATER_DENSITY_KG_PER_M3: 1000 kg/m  (standard water density)
  * - SECONDS_PER_HOUR: 3600 (time conversion)
  * - MM_TO_M: 0.001 (precipitation unit conversion)
  * - WATER_DEPTH_SCALE: 0.01 (1 sim unit = 1cm water)
@@ -767,7 +767,7 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Budget")
     bool bShowWaterBudgetDebug = false;
     
-    // Surface ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬Â Atmosphere transfers
+    // Surface   Atmosphere transfers
         UFUNCTION(BlueprintCallable, Category = "Water Authority")
         void TransferSurfaceToAtmosphere(FVector WorldLocation, float Volume);
         
@@ -822,7 +822,7 @@ public:
 
     /**
      * Converts world-space brush position to GPU shader texture coordinates
-     * This is the SINGLE SOURCE OF TRUTH for all brushÃ¢â€ â€™shader coordinate transforms
+     * This is the SINGLE SOURCE OF TRUTH for all brush -> shader coordinate transforms
      *
      * @param WorldPosition - Brush position in world space (Unreal coordinates)
      * @param OutTextureCoords - Output texture space coordinates (0 to TerrainWidth-1)
@@ -1089,6 +1089,20 @@ public:
     UFUNCTION(BlueprintCallable, Category = "World Management")
     void ApplyGameInstanceSettings();
     
+    /**
+     * Console command: Test map selection through GamePreviewManager
+     * Usage: DebugSelectPreviewMap 1
+     */
+    UFUNCTION(Exec)
+    void DebugSelectPreviewMap(int32 MapIndex);
+    
+    /**
+     * Blueprint-accessible version of map selection
+     * Finds GamePreviewManager and triggers map switch
+     */
+    UFUNCTION(BlueprintCallable, Category = "World Management")
+    void SelectPreviewMapFromUI(int32 MapIndex);
+    
     // ===== UNIVERSAL BRUSH AUTHORITY =====
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Universal Brush",
@@ -1274,7 +1288,7 @@ public:
     // ===== WATER VOLUME CONVERSIONS =====
     
     /**
-     * Convert depth (meters) to moisture mass (kg/mÃƒâ€šÃ‚Â²)
+     * Convert depth (meters) to moisture mass (kg/mÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â²)
      */
     UFUNCTION(BlueprintPure, Category = "Water Authority")
     static float DepthToMoistureMass(float DepthMeters)
@@ -1283,7 +1297,7 @@ public:
     }
     
     /**
-     * Convert moisture mass (kg/mÃƒâ€šÃ‚Â²) to depth (meters)
+     * Convert moisture mass (kg/mÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â²) to depth (meters)
      */
     UFUNCTION(BlueprintPure, Category = "Water Authority")
     static float MoistureMassToDepth(float MassKgPerM2)
@@ -1503,7 +1517,7 @@ public:
      * - GPU pipeline initialization and lifecycle
      * - Atmosphere GPU enable/disable with validation
      * - Orographic feedback loop coordination
-     * - GPU↔CPU synchronization
+     * - GPUâ†”CPU synchronization
      * - Console command interface for GPU debugging
      *
      * CONSOLE COMMANDS:
@@ -1583,7 +1597,7 @@ public:
     bool bAutoSyncGPUCPU = true;
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Pipeline")
-    float GPUSyncInterval = 0.1f; // Sync GPU→CPU every 100ms
+    float GPUSyncInterval = 0.1f; // Sync GPUâ†’CPU every 100ms
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Pipeline")
     bool bEnableAtmosphereOnStart = false;
@@ -1645,13 +1659,13 @@ private:
  * Section 4: Master Controller Class Declaration (865 lines, 73%)
  *
  * VALIDATION:
- * âœ… All enums present
- * âœ… All structs preserved
- * âœ… All interfaces intact
- * âœ… All UPROPERTYs preserved
- * âœ… All UFUNCTIONs preserved
- * âœ… Forward declarations complete
- * âœ… Ready for compilation
+ *   All enums present
+ *   All structs preserved
+ *   All interfaces intact
+ *   All UPROPERTYs preserved
+ *   All UFUNCTIONs preserved
+ *   Forward declarations complete
+ *   Ready for compilation
  *
  * ARCHITECTURAL CLARITY:
  * The reorganization reveals MasterController's three primary roles:

@@ -136,29 +136,7 @@ public:
     int32 BaseSurfaceResolution = 64;
     
     
-    // ===== WEATHER SYSTEM =====
-    
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather")
-    bool bIsRaining = false;
-    
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather")
-    float RainIntensity = 1.0f;
-    
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather")
-    float WeatherChangeInterval = 60.0f;
-    
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather")
-    bool bAutoWeather = false;
-    
-    UFUNCTION(BlueprintCallable, Category = "Weather")
-    void StartRain(float Intensity = 1.0f);
-    
-    UFUNCTION(BlueprintCallable, Category = "Weather")
-    void StopRain();
-    
-    UFUNCTION(BlueprintCallable, Category = "Weather")
-    void ToggleRain();
-    
+ 
     // ===== INTERACTION =====
     
     UFUNCTION(BlueprintCallable, Category = "Water Interaction")
@@ -191,9 +169,7 @@ public:
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug")
     bool bShowWaterDebugTexture = false;
-    
-    UFUNCTION(BlueprintCallable, Category = "Debug")
-    void DrawDebugInfo() const;
+
     
     // ===== UTILITIES =====
     

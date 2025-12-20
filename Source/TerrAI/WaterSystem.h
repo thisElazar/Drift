@@ -376,13 +376,11 @@ struct FWaterSurfaceChunk
     int32 CurrentLOD = 0;                           // 0=highest detail, 3=lowest
     
 
-       int32 ChunkX = 0;  // ADD THIS
-       
-  
-       int32 ChunkY = 0;  // ADD THIS
+       int32 ChunkX = 0;
+       int32 ChunkY = 0;
     
 
-       FVector2D WorldPosition = FVector2D::ZeroVector;  // ADD THIS
+       FVector2D WorldPosition = FVector2D::ZeroVector; 
     
     // PHASE 1-2: Flow data SYNCHRONIZED from simulation velocity
     float WavePhase = 0.0f;                         // Animation phase offset
@@ -394,13 +392,8 @@ struct FWaterSurfaceChunk
     bool bHasFoam = false;                          // Based on FoamMap values
     
     UPROPERTY()
-       bool bHasWater = false;  // ADD THIS
-       
-       UPROPERTY()
-       class UProceduralMeshComponent* MeshComponent = nullptr;  // ADD THIS
-       
-  
-    
+       bool bHasWater = false;
+
     
     FWaterSurfaceChunk()
     {
@@ -592,21 +585,14 @@ public:
     void RemoveWater(FVector WorldPosition, float Amount);
     
     UFUNCTION(BlueprintCallable, Category = "Water Interaction")
+    void RemoveWaterInRadius(int32 CenterX, int32 CenterY, float Radius, float Amount);
+    
+    UFUNCTION(BlueprintCallable, Category = "Water Interaction")
     float GetWaterDepthAtPosition(FVector WorldPosition) const;
     
     UFUNCTION(BlueprintCallable, Category = "Water Interaction")
     float GetWaterDepthAtIndex(int32 X, int32 Y) const;
 
-    // ===== WEATHER SYSTEM =====
-    
-    UFUNCTION(BlueprintCallable, Category = "Weather")
-    void StartRain(float Intensity = 1.0f);
-    
-    UFUNCTION(BlueprintCallable, Category = "Weather")
-    void StopRain();
-    
-    UFUNCTION(BlueprintCallable, Category = "Weather")
-    void SetAutoWeather(bool bEnable);
 
     // ===== UTILITIES =====
     
@@ -618,9 +604,6 @@ public:
     
     UFUNCTION(BlueprintCallable, Category = "Water Utilities")
     float GetMaxFlowSpeed() const;
-    
-    UFUNCTION(BlueprintCallable, Category = "Water Debug")
-    void DrawDebugInfo() const;
     
     UFUNCTION(BlueprintCallable, Category = "Water Terrain")
     float GetTerrainGradientMagnitude(FVector2D WorldPos) const;
@@ -671,21 +654,7 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Edge Drainage")
     float MinDepthThreshold = 0.1f;                // Minimum depth for triangle generation
     
-    
 
-    // ===== WEATHER SETTINGS =====
-    
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather")
-    bool bIsRaining = false;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather")
-    float RainIntensity = 1.0f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather")
-    float WeatherChangeInterval = 60.0f;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather")
-    bool bAutoWeather = false;
 
     // ===== DEBUG SETTINGS =====
     
@@ -936,12 +905,7 @@ public:
     
     UFUNCTION(BlueprintCallable, Category = "Volumetric Water")
     void ApplyWaterMaterialParams(UMaterialInstanceDynamic* Material, const FWaterMaterialParams& Params);
-    
-    UFUNCTION(BlueprintCallable, Category = "Volumetric Water")
-    float GetDynamicTurbidity() const;
-    
-    UFUNCTION(BlueprintCallable, Category = "Volumetric Water")
-    FLinearColor GetWeatherAdjustedWaterColor() const;
+
     
     UFUNCTION(BlueprintCallable, Category = "Volumetric Water")
     void UpdateAllWaterVisuals(float DeltaTime);
@@ -1249,7 +1213,7 @@ public:
 
        UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Physics|Smoothing",
            meta = (ClampMin = "0.0", ClampMax = "1.0"))
-       float SimulationSmoothingStrength = 0.3f;
+       float SimulationSmoothingStrength = 0.7f;
 
        UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Physics|Smoothing")
        bool bUseBicubicInterpolation = true;
@@ -1308,7 +1272,6 @@ private:
     void ApplyWaterFlow(float DeltaTime);
     void ProcessWaterEvaporation(float DeltaTime);
     void UpdateWeatherSystem(float DeltaTime);
-    void ApplyRain(float DeltaTime);
     
     
     // Helper functions
@@ -1340,11 +1303,11 @@ private:
     // Wave physics constants (no namespace, just class members)
     
 
-    static constexpr float WaveGravity = 981.0f;              // cm/sÃƒâ€šÃ‚Â² (UE units)
+    static constexpr float WaveGravity = 981.0f;              // cm/s  (UE units)
     static constexpr float WaveMinWindForWaves = 0.1f;        // m/s
     static constexpr float WaveDeepWaterLimit = 0.5f;         // depth/wavelength ratio
     static constexpr float WaveTwoPi = 6.28318530718f;        // 2 * PI
-    static constexpr float WaveDensity = 1000.0f; // kg/mÃƒâ€šÃ‚Â³ for water
+    static constexpr float WaveDensity = 1000.0f; // kg/m  for water
     
     // Simple wave generation context (no forward declaration issues)
     struct FWaveContext
@@ -1358,8 +1321,8 @@ private:
         FVector2D WindDirection;
         float TerrainGradient;
         float FroudeNumber;
-        float MeshResolution;     // NEW
-           float MinWavelength;      // NEW
+        float MeshResolution;
+           float MinWavelength;     
         
         void Init(FVector2D Pos, float T, float Depth, FVector2D Flow,
                   float Wind, FVector2D WindDir, float Gradient, float MeshRes = 100.0f)
@@ -1452,7 +1415,6 @@ public:
     float GPUWaveAnimationSpeed = 1.0f;
     
     void MonitorWaveAmplitudes();
-     bool ValidateGPUWaveParameters();
      void DebugDrawWaveInfo();
      void ResetGPUWaveSystem();
      void UpdateGPUWaveDebug(float DeltaTime);
@@ -1548,11 +1510,7 @@ private:
         static constexpr float ChunkWorldSize = 3300.0f;
   
 public:
-    UFUNCTION(BlueprintCallable, Category = "Debug")
-    void DebugGPUPipeline();
-    
-    UFUNCTION(BlueprintCallable, Category = "Debug")
-    void ValidateWaveTexture();
+  
     
     UFUNCTION(BlueprintCallable, Category = "Debug")
     void ForceGPUMeshRegeneration();
@@ -1577,10 +1535,7 @@ private:
     void InitializeGPUChunkMesh(FWaterSurfaceChunk& Chunk);
    // void UpdateFlowDisplacementTexture();
     float CalculateChunkWaterArea(int32 ChunkIndex) const;
-    
-    // Add to WaterSystem.h
 
-    // Add to public section:
     public:
         // Set precipitation input from atmosphere
         void SetPrecipitationInput(UTextureRenderTarget2D* PrecipTexture);

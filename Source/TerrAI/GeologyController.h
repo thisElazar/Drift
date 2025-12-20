@@ -1,5 +1,51 @@
-// GeologyController.h - Simplified for emergent water cycle behaviors
-
+/**
+ * ============================================
+ * TERRAI GEOLOGY CONTROLLER - HEADER
+ * ============================================
+ * Reorganized: December 2025
+ * Lines: ~395
+ *
+ * PURPOSE:
+ * Interface for simplified geology system managing groundwater,
+ * water table, rock types, and user springs.
+ *
+ * KEY INTERFACES:
+ * - AActor: UE5 actor base
+ * - IScalableSystem: World scaling integration
+ *
+ * ARCHITECTURE:
+ * - Grid-based geology cells (1/4 terrain resolution)
+ * - Global water table (single elevation, not per-cell)
+ * - Rock type classification for infiltration
+ * - User-placeable springs with MasterController authority
+ *
+ * TABLE OF CONTENTS:
+ *
+ * SECTION 1: INCLUDES & FORWARD DECLARATIONS (~15 lines)
+ *
+ * SECTION 2: ENUMS (~25 lines)
+ *   - ERockType: Sand, Clay, Silt, Sandstone, etc.
+ *
+ * SECTION 3: STRUCTS (~80 lines)
+ *   - FUserSpring: User-created spring definition
+ *   - FSimplifiedGeology: Per-cell geology data
+ *
+ * SECTION 4: CLASS DECLARATION (~275 lines)
+ *   4.1 Compatibility Methods
+ *   4.2 Lifecycle (BeginPlay, Tick)
+ *   4.3 Initialization
+ *   4.4 Geology Grid
+ *   4.5 Water Table System
+ *   4.6 User Springs
+ *   4.7 IScalableSystem Interface
+ *   4.8 MasterController Integration
+ *   4.9 Visualization
+ *   4.10 Internal Grid Functions
+ *
+ * DEPENDENCIES:
+ * - MasterController.h: IScalableSystem interface
+ * - TerrAI.h: Project constants
+ */
 #pragma once
 
 #include "CoreMinimal.h"
@@ -216,6 +262,8 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Geology Update")
     void UpdateGeologySystem(float DeltaTime);
 
+    UFUNCTION(BlueprintCallable, Category = "Geology System")
+    void ResetGeologySystem();
 
     UFUNCTION(BlueprintCallable, Category = "Water Table")
     void CheckInitialWaterTable();
@@ -392,3 +440,25 @@ private:
 
 };
 
+// ============================================================================
+// END OF GEOLOGYCONTROLLER.H
+// ============================================================================
+/**
+ * ORGANIZATION SUMMARY:
+ * - Lines: ~395
+ * - Sections: 4 (Includes, Enums, Structs, Class)
+ *
+ * KEY TYPES:
+ * - ERockType: 9 rock classifications
+ * - FUserSpring: User spring data
+ * - FSimplifiedGeology: Cell geology data
+ *
+ * KEY INTERFACES:
+ * - Initialize(): Connect to terrain/water
+ * - UpdateGeologySystem(): Main update tick
+ * - AddUserSpring/RemoveUserSpring: Player interaction
+ * - GetRockTypeAtLocation(): Query rock type
+ * - ConfigureFromMaster(): IScalableSystem
+ */
+
+// End of file

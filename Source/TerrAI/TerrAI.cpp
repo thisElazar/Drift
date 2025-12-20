@@ -42,7 +42,7 @@ void FTerrAIModule::StartupModule()
     // Verify the shader directory exists
     if (!FPaths::DirectoryExists(ShaderDirectory))
     {
-        UE_LOG(LogTerrAI, Warning, TEXT("Shader directory does not exist, creating: %s"), *ShaderDirectory);
+        UE_LOG(LogTerrAI, Log, TEXT("Shader directory does not exist, creating: %s"), *ShaderDirectory);
         IFileManager::Get().MakeDirectory(*ShaderDirectory, true);
     }
     

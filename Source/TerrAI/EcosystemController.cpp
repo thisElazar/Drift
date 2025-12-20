@@ -177,7 +177,7 @@ void AEcosystemController::BeginPlay()
     // ENSURE ticking is disabled
     SetActorTickEnabled(false);
     
-    UE_LOG(LogTemp, Warning, TEXT("EcosystemController: BeginPlay complete - Ticking DISABLED"));
+    UE_LOG(LogTemp, Verbose, TEXT("EcosystemController: BeginPlay complete - Ticking DISABLED"));
 }
 
 void AEcosystemController::Initialize(ADynamicTerrain* Terrain, UWaterSystem* Water)
@@ -192,7 +192,7 @@ void AEcosystemController::Initialize(ADynamicTerrain* Terrain, UWaterSystem* Wa
     WaterSystem = Water;
     bSystemInitialized = true;
     
-    UE_LOG(LogTemp, Warning, TEXT("EcosystemController: Initialized with terrain and water system"));
+    UE_LOG(LogTemp, Log, TEXT("EcosystemController: Initialized with terrain and water system"));
 }
 
 // ============================================================================
@@ -248,7 +248,7 @@ void AEcosystemController::UpdateEcosystemSystem(float DeltaTime)
 
 void AEcosystemController::InitializeVegetationMeshes()
 {
-    UE_LOG(LogTemp, Warning, TEXT("EcosystemController: Initializing vegetation meshes..."));
+    UE_LOG(LogTemp, Log, TEXT("EcosystemController: Initializing vegetation meshes..."));
     
     // ===== GRASS MESH SETUP (ALPHA SPRINT) =====
     
@@ -275,7 +275,7 @@ void AEcosystemController::InitializeVegetationMeshes()
     if (GrassStaticMesh)
     {
         GrassMesh->SetStaticMesh(GrassStaticMesh);
-        UE_LOG(LogTemp, Warning, TEXT("✓ Grass mesh loaded from Engine content"));
+        UE_LOG(LogTemp, Log, TEXT("✓ Grass mesh loaded from Engine content"));
     }
     else
     {
@@ -295,7 +295,7 @@ void AEcosystemController::InitializeVegetationMeshes()
     // Store in map
     VegetationMeshes.Add(EVegetationType::Grass, GrassMesh);
     
-    UE_LOG(LogTemp, Warning, TEXT("EcosystemController: Grass HISM initialized with %d custom data floats"),
+    UE_LOG(LogTemp, Log, TEXT("EcosystemController: Grass HISM initialized with %d custom data floats"),
            GrassMesh->NumCustomDataFloats);
 }
 
@@ -495,7 +495,7 @@ void AEcosystemController::SpawnGrassInstance(FVector Location)
     // Check global limit
     if (ActiveGrassInstances.Num() >= MaxVegetationInstances)
     {
-        UE_LOG(LogTemp, Warning, TEXT("Grass spawn blocked: global limit reached (%d)"),
+        UE_LOG(LogTemp, Log, TEXT("Grass spawn blocked: global limit reached (%d)"),
                MaxVegetationInstances);
         return;
     }
@@ -551,7 +551,7 @@ void AEcosystemController::SpawnInitialGrassCoverage(int32 Count)
         return;
     }
     
-    UE_LOG(LogTemp, Warning, TEXT("Spawning initial grass coverage (%d instances)..."), Count);
+    UE_LOG(LogTemp, Log, TEXT("Spawning initial grass coverage (%d instances)..."), Count);
     
     int32 SuccessfulSpawns = 0;
     int32 Attempts = 0;
@@ -593,7 +593,7 @@ void AEcosystemController::SpawnInitialGrassCoverage(int32 Count)
         }
     }
     
-    UE_LOG(LogTemp, Warning, TEXT("Initial grass spawn complete: %d/%d successful (%d attempts)"),
+    UE_LOG(LogTemp, Verbose, TEXT("Initial grass spawn complete: %d/%d successful (%d attempts)"),
            SuccessfulSpawns, Count, Attempts);
 }
 
@@ -869,7 +869,7 @@ void AEcosystemController::RegisterWithMasterController(AMasterWorldController* 
     MasterController = Master;
     bIsRegisteredWithMaster = true;
     
-    UE_LOG(LogTemp, Warning, TEXT("EcosystemController: Registered with MasterController"));
+    UE_LOG(LogTemp, Log, TEXT("EcosystemController: Registered with MasterController"));
 }
 
 bool AEcosystemController::IsRegisteredWithMaster() const
@@ -893,7 +893,7 @@ FString AEcosystemController::GetScalingDebugInfo() const
 
 void AEcosystemController::ConfigureFromMaster(const FWorldScalingConfig& Config)
 {
-    UE_LOG(LogTemp, Warning, TEXT("[ECOSYSTEM SCALING] Configuring from master controller"));
+    UE_LOG(LogTemp, Log, TEXT("[ECOSYSTEM SCALING] Configuring from master controller"));
     
     CurrentWorldConfig = Config;
     
@@ -905,7 +905,7 @@ void AEcosystemController::ConfigureFromMaster(const FWorldScalingConfig& Config
     // Apply vegetation density scaling
     VegetationGrowthRate *= Config.EcosystemConfig.VegetationDensityScale;
     
-    UE_LOG(LogTemp, Warning, TEXT("[ECOSYSTEM SCALING] Max vegetation: %d"), MaxVegetationInstances);
+    UE_LOG(LogTemp, Verbose, TEXT("[ECOSYSTEM SCALING] Max vegetation: %d"), MaxVegetationInstances);
     
     bIsScaledByMaster = true;
 }
@@ -1115,20 +1115,20 @@ void AEcosystemController::DrawBiomeMap(bool bEnable)
 
 void AEcosystemController::ShowVegetationStats() const
 {
-    UE_LOG(LogTemp, Warning, TEXT("=== VEGETATION STATISTICS ==="));
-    UE_LOG(LogTemp, Warning, TEXT("Legacy Vegetation: %d"), VegetationLocations.Num());
-    UE_LOG(LogTemp, Warning, TEXT("Active Grass: %d"), ActiveGrassInstances.Num());
-    UE_LOG(LogTemp, Warning, TEXT("Max Instances: %d"), MaxVegetationInstances);
-    UE_LOG(LogTemp, Warning, TEXT("Spatial Grid Cells: %d"), GrassSpatialGrid.Num());
+    UE_LOG(LogTemp, Verbose, TEXT("=== VEGETATION STATISTICS ==="));
+    UE_LOG(LogTemp, Log, TEXT("Legacy Vegetation: %d"), VegetationLocations.Num());
+    UE_LOG(LogTemp, Log, TEXT("Active Grass: %d"), ActiveGrassInstances.Num());
+    UE_LOG(LogTemp, Verbose, TEXT("Max Instances: %d"), MaxVegetationInstances);
+    UE_LOG(LogTemp, Log, TEXT("Spatial Grid Cells: %d"), GrassSpatialGrid.Num());
 }
 
 void AEcosystemController::ShowGrassStats() const
 {
-    UE_LOG(LogTemp, Warning, TEXT("=== GRASS STATISTICS ==="));
-    UE_LOG(LogTemp, Warning, TEXT("Active Instances: %d/%d"),
+    UE_LOG(LogTemp, Verbose, TEXT("=== GRASS STATISTICS ==="));
+    UE_LOG(LogTemp, Log, TEXT("Active Instances: %d/%d"),
            ActiveGrassInstances.Num(), MaxVegetationInstances);
-    UE_LOG(LogTemp, Warning, TEXT("Update Index: %d"), GrassUpdateIndex);
-    UE_LOG(LogTemp, Warning, TEXT("Spatial Grid Cells: %d"), GrassSpatialGrid.Num());
+    UE_LOG(LogTemp, Log, TEXT("Update Index: %d"), GrassUpdateIndex);
+    UE_LOG(LogTemp, Log, TEXT("Spatial Grid Cells: %d"), GrassSpatialGrid.Num());
     
     // Calculate average health and growth
     if (ActiveGrassInstances.Num() > 0)
@@ -1145,8 +1145,8 @@ void AEcosystemController::ShowGrassStats() const
         AvgHealth /= ActiveGrassInstances.Num();
         AvgGrowth /= ActiveGrassInstances.Num();
         
-        UE_LOG(LogTemp, Warning, TEXT("Average Health: %.2f"), AvgHealth);
-        UE_LOG(LogTemp, Warning, TEXT("Average Growth: %.2f"), AvgGrowth);
+        UE_LOG(LogTemp, Log, TEXT("Average Health: %.2f"), AvgHealth);
+        UE_LOG(LogTemp, Log, TEXT("Average Growth: %.2f"), AvgGrowth);
     }
     
     // Sample first few grass instances
@@ -1154,7 +1154,7 @@ void AEcosystemController::ShowGrassStats() const
     for (int32 i = 0; i < SampleSize; i++)
     {
         const FGrassInstance& Grass = ActiveGrassInstances[i];
-        UE_LOG(LogTemp, Warning, TEXT("  [%d] Growth: %.2f, Health: %.2f, Moisture: %.2f"),
+        UE_LOG(LogTemp, Log, TEXT("  [%d] Growth: %.2f, Health: %.2f, Moisture: %.2f"),
                i, Grass.GrowthProgress, Grass.Health, Grass.SoilMoisture);
     }
 }

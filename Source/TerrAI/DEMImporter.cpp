@@ -50,9 +50,9 @@ bool UDEMImporter::ImportDEMWithSettings(const FString& FilePath, EDEMFormat For
     CurrentSettings = Settings;
     Metadata.SourceFile = FilePath;
     
-    UE_LOG(LogTemp, Warning, TEXT("=== Importing DEM ==="));
-    UE_LOG(LogTemp, Warning, TEXT("File: %s"), *FPaths::GetCleanFilename(FilePath));
-    UE_LOG(LogTemp, Warning, TEXT("Format: %s"), *GetFormatDisplayName(Format));
+    UE_LOG(LogTemp, Verbose, TEXT("=== Importing DEM ==="));
+    UE_LOG(LogTemp, Log, TEXT("File: %s"), *FPaths::GetCleanFilename(FilePath));
+    UE_LOG(LogTemp, Log, TEXT("Format: %s"), *GetFormatDisplayName(Format));
     
     bool bSuccess = false;
     
@@ -129,8 +129,8 @@ bool UDEMImporter::ImportDEMWithSettings(const FString& FilePath, EDEMFormat For
     Metadata.CalculateCenterPoint();
     ValidateHeightData();
     
-    UE_LOG(LogTemp, Warning, TEXT("=== DEM Import Complete ==="));
-    UE_LOG(LogTemp, Warning, TEXT("%s"), *Metadata.ToString());
+    UE_LOG(LogTemp, Verbose, TEXT("=== DEM Import Complete ==="));
+    UE_LOG(LogTemp, Log, TEXT("%s"), *Metadata.ToString());
     
     return true;
 }
@@ -178,7 +178,7 @@ bool UDEMImporter::LoadSRTM_HGT(const FString& FilePath)
     
     if (NumSamples != 1201 && NumSamples != 3601)
     {
-        UE_LOG(LogTemp, Warning, TEXT("Unusual HGT size: %d (expected 1201 or 3601)"), NumSamples);
+        UE_LOG(LogTemp, Log, TEXT("Unusual HGT size: %d (expected 1201 or 3601)"), NumSamples);
     }
     
     Metadata.Width = NumSamples;
@@ -344,7 +344,7 @@ bool UDEMImporter::LoadASCIIGrid(const FString& FilePath)
     
     if (HeightIndex != HeightData.Num())
     {
-        UE_LOG(LogTemp, Warning, TEXT("ASCII Grid data count mismatch: expected %d, got %d"),
+        UE_LOG(LogTemp, Verbose, TEXT("ASCII Grid data count mismatch: expected %d, got %d"),
                HeightData.Num(), HeightIndex);
     }
     
@@ -545,7 +545,7 @@ bool UDEMImporter::LoadTIFF(const FString& FilePath)
     // Try to load geographic metadata from world file
     if (!LoadTIFFWorldFile(FilePath))
     {
-        UE_LOG(LogTemp, Warning, TEXT("No world file found, using pixel space"));
+        UE_LOG(LogTemp, Log, TEXT("No world file found, using pixel space"));
         Metadata.LatLonMin = FVector2D(0, 0);
         Metadata.LatLonMax = FVector2D(Metadata.Width, Metadata.Height);
         Metadata.MetersPerPixel = 1.0f;

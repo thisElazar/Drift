@@ -48,6 +48,7 @@
 #include "GeologyController.h"
 #include "DynamicTerrain.h"
 #include "TerrainController.h"
+#include "GamePreviewManager.h"
 
 // GPU Pipeline includes
 #include "Engine/TextureRenderTarget2D.h"
@@ -342,11 +343,17 @@ void AMasterWorldController::InitializeWorld()
     
     // PHASE 6.5: Initialize GPU Pipeline
     if (bEnableGPUPipeline)
-     {
-         InitializeGPUPipeline();
-         EnableAtmosphereGPU();  // Trigger enable (will retry via Tick if not ready)
-         UE_LOG(LogTemp, Warning, TEXT("Phase 6.5: GPU Pipeline initialized"));
-     }
+    {
+        // REMOVED: InitializeGPUPipeline(); // This causes deadlock
+        
+        // Instead: Just set the flag, let natural Tick() handle it
+        if (MainTerrain)
+        {
+            MainTerrain->bUseGPUTerrain = true;
+            MainTerrain->bPendingGPUInit = true;
+            UE_LOG(LogTemp, Warning, TEXT("Phase 6.5: GPU init deferred to natural Tick cycle"));
+        }
+    }
     
     // PHASE 7: Complete
     CurrentInitPhase = EInitializationPhase::Complete;
@@ -368,7 +375,7 @@ void AMasterWorldController::InitializeWorld()
                     float ActualGroundwater = GeologyController->GetGroundwaterVolume();
                     SetInitialGroundwater(ActualGroundwater);
                     
-                    UE_LOG(LogTemp, Warning, TEXT("[WATER BUDGET] Initialized with %.0f mÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³ groundwater"),
+                    UE_LOG(LogTemp, Warning, TEXT("[WATER BUDGET] Initialized with %.0f m  groundwater"),
                            ActualGroundwater);
                 }
                 
@@ -411,7 +418,7 @@ void AMasterWorldController::InitializeWorld()
  * 7. Cross-connections (after all systems exist)
  *
  * DEPENDENCY CHAIN:
- * MasterController Ã¢â€ â€™ Terrain Ã¢â€ â€™ WaterSystem Ã¢â€ â€™ Atmosphere Ã¢â€ â€™ Geology Ã¢â€ â€™ Ecosystem
+ * MasterController  ->  Terrain  ->  WaterSystem  ->  Atmosphere  ->  Geology  ->  Ecosystem
  */
 
 void AMasterWorldController::InitializeTemporalManager()
@@ -850,6 +857,52 @@ void AMasterWorldController::ApplyGameInstanceSettings()
     }
 }
 
+void AMasterWorldController::DebugSelectPreviewMap(int32 MapIndex)
+{
+    UE_LOG(LogTemp, Warning, TEXT("MasterController: Console command - DebugSelectPreviewMap(%d)"), MapIndex);
+    
+    // Find GamePreviewManager component in the level
+    TArray<AActor*> AllActors;
+    UGameplayStatics::GetAllActorsOfClass(GetWorld(), AActor::StaticClass(), AllActors);
+    
+    for (AActor* Actor : AllActors)
+    {
+        UGamePreviewManager* PreviewMgr = Actor->FindComponentByClass<UGamePreviewManager>();
+        if (PreviewMgr)
+        {
+            UE_LOG(LogTemp, Warning, TEXT("  Found GamePreviewManager on %s"), *Actor->GetName());
+            PreviewMgr->SelectPreviewMap(MapIndex);
+            return;
+        }
+    }
+    
+    UE_LOG(LogTemp, Error, TEXT("  GamePreviewManager not found in level!"));
+    UE_LOG(LogTemp, Error, TEXT("  -> Make sure MainMenu level has an actor with GamePreviewManager component"));
+}
+
+void AMasterWorldController::SelectPreviewMapFromUI(int32 MapIndex)
+{
+    UE_LOG(LogTemp, Warning, TEXT("MasterController: UI triggered map selection - Index %d"), MapIndex);
+    
+    // Find GamePreviewManager component in the level
+    TArray<AActor*> AllActors;
+    UGameplayStatics::GetAllActorsOfClass(GetWorld(), AActor::StaticClass(), AllActors);
+    
+    for (AActor* Actor : AllActors)
+    {
+        UGamePreviewManager* PreviewMgr = Actor->FindComponentByClass<UGamePreviewManager>();
+        if (PreviewMgr)
+        {
+            UE_LOG(LogTemp, Warning, TEXT("  Found GamePreviewManager on %s"), *Actor->GetName());
+            PreviewMgr->SelectPreviewMap(MapIndex);
+            return;
+        }
+    }
+    
+    UE_LOG(LogTemp, Error, TEXT("  ERROR: GamePreviewManager not found in level!"));
+    UE_LOG(LogTemp, Error, TEXT("  -> Make sure MainMenu level has an actor with GamePreviewManager component"));
+}
+
 // ===== BRUSH SCALING IMPLEMENTATION =====
 
 
@@ -941,7 +994,7 @@ void AMasterWorldController::UpdateSystemsWithTiming(float DeltaTime)
 {
     if (!TemporalManager)
     {
-        UE_LOG(LogTemp, Error, TEXT("ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¥ UpdateSystemsWithTiming: TemporalManager is NULL"));
+        UE_LOG(LogTemp, Error, TEXT("  UpdateSystemsWithTiming: TemporalManager is NULL"));
         return;
     }
     
@@ -1004,13 +1057,13 @@ void AMasterWorldController::TogglePause()
 {
     PauseAllSystems(!bPauseSimulation);
     
-    UE_LOG(LogTemp, Warning, TEXT("ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸Ãƒâ€¦Ã‚Â½Ãƒâ€šÃ‚Â® Simulation %s"),
+    UE_LOG(LogTemp, Warning, TEXT("  Simulation %s"),
            bPauseSimulation ? TEXT("PAUSED") : TEXT("RESUMED"));
     
     // Optional: Show on-screen message
     if (GEngine)
     {
-        FString Message = bPauseSimulation ? TEXT("ÃƒÆ’Ã‚Â¢Ãƒâ€šÃ‚ÂÃƒâ€šÃ‚Â¸ PAUSED") : TEXT("ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“Ãƒâ€šÃ‚Â¶ RESUMED");
+        FString Message = bPauseSimulation ? TEXT("  PAUSED") : TEXT("  RESUMED");
         GEngine->AddOnScreenDebugMessage(-1, 2.0f, FColor::Yellow, Message, true, FVector2D(2.0f, 2.0f));
     }
 }
@@ -1026,11 +1079,11 @@ void AMasterWorldController::TogglePause()
  * Inter-system communication and synchronization.
  *
  * EXCHANGE PATTERNS:
- * - Atmosphere Ã¢â€ â€™ Terrain: Precipitation data
- * - Terrain Ã¢â€ â€™ Water: Height changes for flow updates
- * - Water Ã¢â€ â€™ Atmosphere: Evaporation rates
- * - Geology Ã¢â€ â€™ Water: Groundwater emergence
- * - All Systems Ã¢â€ â€™ MasterController: Status and metrics
+ * - Atmosphere  ->  Terrain: Precipitation data
+ * - Terrain  ->  Water: Height changes for flow updates
+ * - Water  ->  Atmosphere: Evaporation rates
+ * - Geology  ->  Water: Groundwater emergence
+ * - All Systems  ->  MasterController: Status and metrics
  *
  * SYNCHRONIZATION:
  * - Coordinate system alignment
@@ -1756,7 +1809,7 @@ void AMasterWorldController::LogAllSystemScalingStatus()
  * 1. WORLD SPACE (UE5 units, centimeters)
  *    - Origin: Actor location
  *    - Used by: Physics, rendering, user input
- *    - Range: -Ã¢Ë†Å¾ to +Ã¢Ë†Å¾ (floating point)
+ *    - Range: -  to +  (floating point)
  *
  * 2. TERRAIN SPACE (heightmap indices)
  *    - Origin: (0,0) at terrain corner
@@ -1883,7 +1936,7 @@ void AMasterWorldController::WorldBrushToTextureSpace(
     OutTextureCoords.Y = FMath::Clamp(OutTextureCoords.Y, 0.0f, WorldDims.Y - 1.0f);
     
     UE_LOG(LogTemp, VeryVerbose,
-           TEXT("[COORD AUTH] World(%.1f,%.1f,%.1f) ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ Texture(%.2f,%.2f), Radius: %.1f ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ %.2f texels"),
+           TEXT("[COORD AUTH] World(%.1f,%.1f,%.1f)  ->  Texture(%.2f,%.2f), Radius: %.1f  ->  %.2f texels"),
            WorldPosition.X, WorldPosition.Y, WorldPosition.Z,
            OutTextureCoords.X, OutTextureCoords.Y,
            WorldRadius, OutRadiusInTexels);
@@ -2154,16 +2207,16 @@ FString AMasterWorldController::GetAuthorityDebugInfo() const
  * 1. SURFACE WATER (WaterSystem)
  *    - Lakes, rivers, ponds
  *    - Measured in meters depth per cell
- *    - Converted to mÃ‚Â³ using cell area
+ *    - Converted to m  using cell area
  *
  * 2. ATMOSPHERIC WATER (AtmosphericSystem)
  *    - Moisture in air, clouds, precipitation
  *    - Measured in moisture mass per cell
- *    - Converted to mÃ‚Â³ using conversion factor
+ *    - Converted to m  using conversion factor
  *
  * 3. GROUNDWATER (GeologyController)
  *    - Saturated soil, aquifers
- *    - Measured in saturated depth Ãƒâ€” porosity
+ *    - Measured in saturated depth   porosity
  *    - Can emerge to surface when water table rises
  *
  * WATER CONSERVATION EQUATION:
@@ -2177,13 +2230,13 @@ FString AMasterWorldController::GetAuthorityDebugInfo() const
  * - No water can be lost or duplicated
  *
  * TRANSFER TYPES:
- * 1. Surface Ã¢â€ â€ Atmosphere (evaporation, precipitation)
- * 2. Surface Ã¢â€ â€ Groundwater (infiltration, emergence)
+ * 1. Surface   Atmosphere (evaporation, precipitation)
+ * 2. Surface   Groundwater (infiltration, emergence)
  * 3. Bulk transfers (performance optimization)
  *
  * VALIDATION:
  * - Periodic conservation checks
- * - Tolerance: Ã‚Â±1 mÃ‚Â³ (floating point precision)
+ * - Tolerance: ±1 m  (floating point precision)
  * - Alert on conservation violations
  * - Debug reporting for budget tracking
  *
@@ -2199,15 +2252,15 @@ void AMasterWorldController::CheckWaterBudget()
     bool bConserved = IsWaterConserved(1.0f); // 1% tolerance
     
     UE_LOG(LogTemp, Warning, TEXT("========== WATER BUDGET CHECK =========="));
-    UE_LOG(LogTemp, Warning, TEXT("Total Water: %.0f mÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³"), Dist.TotalWater);
-    UE_LOG(LogTemp, Warning, TEXT("  Surface:     %.0f mÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³ (%.1f%%)"),
+    UE_LOG(LogTemp, Warning, TEXT("Total Water: %.0f m ³"), Dist.TotalWater);
+    UE_LOG(LogTemp, Warning, TEXT("  Surface:     %.0f m  (%.1f%%)"),
            Dist.SurfaceWater, Dist.SurfacePercent);
-    UE_LOG(LogTemp, Warning, TEXT("  Atmospheric: %.0f mÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³ (%.1f%%)"),
+    UE_LOG(LogTemp, Warning, TEXT("  Atmospheric: %.0f m  (%.1f%%)"),
            Dist.AtmosphericWater, Dist.AtmosphericPercent);
-    UE_LOG(LogTemp, Warning, TEXT("  Groundwater: %.0f mÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³ (%.1f%%)"),
+    UE_LOG(LogTemp, Warning, TEXT("  Groundwater: %.0f m  (%.1f%%)"),
            Dist.Groundwater, Dist.GroundwaterPercent);
     UE_LOG(LogTemp, Warning, TEXT("Conservation: %s"),
-           bConserved ? TEXT("ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ PASS") : TEXT("ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¯ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â DRIFT DETECTED"));
+           bConserved ? TEXT("  PASS") : TEXT("  DRIFT DETECTED"));
     UE_LOG(LogTemp, Warning, TEXT("========================================="));
 }
 
@@ -2231,7 +2284,7 @@ void AMasterWorldController::UpdateSystemWaterBudget()
     if (InitialTotalWater < 0.0f)
     {
         InitialTotalWater = Distribution.TotalWater;
-        UE_LOG(LogTemp, Warning, TEXT("[WATER BUDGET] System initialized with %.0f mÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³"),
+        UE_LOG(LogTemp, Warning, TEXT("[WATER BUDGET] System initialized with %.0f m ³"),
                InitialTotalWater);
     }
     
@@ -2241,14 +2294,14 @@ void AMasterWorldController::UpdateSystemWaterBudget()
         float Drift = FMath::Abs(Distribution.TotalWater - InitialTotalWater);
         float DriftPercent = InitialTotalWater > 0 ? (Drift / InitialTotalWater) * 100.0f : 0.0f;
         
-        if (Drift > 1.0f) // 1 mÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³ tolerance
+        if (Drift > 1.0f) // 1 m  tolerance
         {
-            UE_LOG(LogTemp, Warning, TEXT("[WATER BUDGET] Conservation drift: %.2f mÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³ (%.3f%%)"),
+            UE_LOG(LogTemp, Warning, TEXT("[WATER BUDGET] Conservation drift: %.2f m  (%.3f%%)"),
                    Drift, DriftPercent);
         }
         
         // Log distribution
-        UE_LOG(LogTemp, Log, TEXT("[WATER BUDGET] Total: %.0f mÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³ | Surface: %.0f mÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³ (%.1f%%) | Atmosphere: %.0f mÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³ (%.1f%%) | Groundwater: %.0f mÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³ (%.1f%%)"),
+        UE_LOG(LogTemp, Log, TEXT("[WATER BUDGET] Total: %.0f m  | Surface: %.0f m  (%.1f%%) | Atmosphere: %.0f m  (%.1f%%) | Groundwater: %.0f m  (%.1f%%)"),
                Distribution.TotalWater,
                Distribution.SurfaceWater, Distribution.SurfacePercent,
                Distribution.AtmosphericWater, Distribution.AtmosphericPercent,
@@ -2282,7 +2335,7 @@ FString AMasterWorldController::GetWaterBudgetDebugString() const
     FWaterDistribution Dist = GetWaterDistribution();
     
     return FString::Printf(
-        TEXT("Water: %.0f mÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³ [Surface: %.1f%% | Atmos: %.1f%% | Ground: %.1f%%]"),
+        TEXT("Water: %.0f m  [Surface: %.1f%% | Atmos: %.1f%% | Ground: %.1f%%]"),
         Dist.TotalWater,
         Dist.SurfacePercent,
         Dist.AtmosphericPercent,
@@ -2312,14 +2365,14 @@ void AMasterWorldController::ResetWaterBudget()
 
 float AMasterWorldController::GetAtmosphericCellWaterVolume(float MoistureMass) const
 {
-    // Convert moisture mass (kg/mÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â²) to volume (mÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³)
-    // Assuming 1 kg/mÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â² = 0.001 mÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³/mÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â² for atmospheric moisture
+    // Convert moisture mass (kg/m ²) to volume (m ³)
+    // Assuming 1 kg/m  = 0.001 m ³/m  for atmospheric moisture
     return MoistureMass * 0.001f;
 }
 
 float AMasterWorldController::GetWaterCellVolume(float WaterDepth) const
 {
-    // Convert water depth (simulation units) to volume (mÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³)
+    // Convert water depth (simulation units) to volume (m ³)
     // WaterDepth is in simulation units where 1.0 = 1cm of water
     float ActualDepthMeters = WaterDepth * WATER_DEPTH_SCALE;
     
@@ -2388,7 +2441,7 @@ void AMasterWorldController::TransferSurfaceToAtmosphere(FVector WorldLocation, 
             MainTerrain->AtmosphericSystem->AtmosphericGrid[AtmosIndex].MoistureMass += Volume;
             
             // Clear, semantic logging
-            UE_LOG(LogTemp, VeryVerbose, TEXT("[EVAPORATION] %.4f mÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³ at %s"),
+            UE_LOG(LogTemp, VeryVerbose, TEXT("[EVAPORATION] %.4f m  at %s"),
                    Volume, *WorldLocation.ToString());
         }
     }
@@ -2401,13 +2454,13 @@ void AMasterWorldController::TransferAtmosphereToSurface(FVector WorldLocation, 
     // Apply to water grid
     if (MainTerrain->WaterSystem)
     {
-        // CRITICAL: Convert from mÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³ to depth in meters, then to simulation units (1.0 = 1cm)
+        // CRITICAL: Convert from m  to depth in meters, then to simulation units (1.0 = 1cm)
         float WaterDepthMeters = Volume / GetWaterCellArea();
         float WaterDepthSimUnits = WaterDepthMeters / WATER_DEPTH_SCALE;  // Divide by 0.01 to convert m to cm
         MainTerrain->WaterSystem->AddWater(WorldLocation, WaterDepthSimUnits);
         
         // Clear, semantic logging
-        UE_LOG(LogTemp, VeryVerbose, TEXT("[PRECIPITATION] %.4f mÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³ at %s"),
+        UE_LOG(LogTemp, VeryVerbose, TEXT("[PRECIPITATION] %.4f m  at %s"),
                Volume, *WorldLocation.ToString());
     }
 }
@@ -2423,7 +2476,7 @@ void AMasterWorldController::TransferSurfaceToGroundwater(FVector WorldLocation,
     GeologyController->AddWaterToWaterTable(Volume);
     
     // Clear, semantic logging
-    UE_LOG(LogTemp, VeryVerbose, TEXT("[INFILTRATION] %.4f mÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³ at %s"),
+    UE_LOG(LogTemp, VeryVerbose, TEXT("[INFILTRATION] %.4f m  at %s"),
            Volume, *WorldLocation.ToString());
 }
 
@@ -2443,7 +2496,7 @@ void AMasterWorldController::TransferGroundwaterToSurface(FVector WorldLocation,
     TotalGroundwater -= Volume;
     
     // Add water to surface
-    // CRITICAL: Convert from mÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³ to depth in meters, then to simulation units (1.0 = 1cm)
+    // CRITICAL: Convert from m  to depth in meters, then to simulation units (1.0 = 1cm)
     float WaterDepthMeters = Volume / GetWaterCellArea();
     float WaterDepthSimUnits = WaterDepthMeters / WATER_DEPTH_SCALE;  // Divide by 0.01 to convert m to cm
     MainTerrain->WaterSystem->AddWater(WorldLocation, WaterDepthSimUnits);
@@ -2455,7 +2508,7 @@ void AMasterWorldController::TransferGroundwaterToSurface(FVector WorldLocation,
     }
     
     // Clear, semantic logging
-    UE_LOG(LogTemp, VeryVerbose, TEXT("[SPRING DISCHARGE] %.4f mÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³ at %s"),
+    UE_LOG(LogTemp, VeryVerbose, TEXT("[SPRING DISCHARGE] %.4f m  at %s"),
            Volume, *WorldLocation.ToString());
 }
 
@@ -2490,7 +2543,7 @@ void AMasterWorldController::TransferSurfaceToAtmosphereBulk(
         }
     }
     
-    UE_LOG(LogTemp, VeryVerbose, TEXT("[BULK EVAPORATION] %.4f mÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³ total (%d transfers)"),
+    UE_LOG(LogTemp, VeryVerbose, TEXT("[BULK EVAPORATION] %.4f m  total (%d transfers)"),
            TotalVolume, Locations.Num());
 }
 
@@ -2507,7 +2560,7 @@ void AMasterWorldController::TransferAtmosphereToSurfaceBulk(
     {
         for (int32 i = 0; i < Locations.Num(); i++)
         {
-            // CRITICAL: Convert from mÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³ to depth in meters, then to simulation units (1.0 = 1cm)
+            // CRITICAL: Convert from m  to depth in meters, then to simulation units (1.0 = 1cm)
             float WaterDepthMeters = Volumes[i] / GetWaterCellArea();
             float WaterDepthSimUnits = WaterDepthMeters / WATER_DEPTH_SCALE;  // Divide by 0.01 to convert m to cm
             MainTerrain->WaterSystem->AddWater(Locations[i], WaterDepthSimUnits);
@@ -2515,7 +2568,7 @@ void AMasterWorldController::TransferAtmosphereToSurfaceBulk(
         }
     }
     
-    UE_LOG(LogTemp, VeryVerbose, TEXT("[BULK PRECIPITATION] %.4f mÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³ total (%d transfers)"),
+    UE_LOG(LogTemp, VeryVerbose, TEXT("[BULK PRECIPITATION] %.4f m  total (%d transfers)"),
            TotalVolume, Locations.Num());
 }
 
@@ -2539,7 +2592,7 @@ float AMasterWorldController::GetWaterCellArea() const
 void AMasterWorldController::SetInitialGroundwater(float VolumeM3)
 {
     TotalGroundwater = VolumeM3;
-    UE_LOG(LogTemp, Log, TEXT("[GROUNDWATER] Set to %.0f mÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â³"), VolumeM3);
+    UE_LOG(LogTemp, Log, TEXT("[GROUNDWATER] Set to %.0f m ³"), VolumeM3);
 }
 
 bool AMasterWorldController::CanGroundwaterEmerge(float RequestedVolume) const
@@ -2586,7 +2639,7 @@ float AMasterWorldController::CalculateAtmosphericWaterFromGrid() const
     {
         if (Cell.MoistureMass > 0.0f)
         {
-            // Convert kg/m² to m³: (kg/m² × m²) / (kg/m³) = m³
+            // Convert kg/m² to m³: (kg/m² — m²) / (kg/m³) = m³
             float VolumeM3 = (Cell.MoistureMass * CellArea) / WATER_DENSITY_KG_PER_M3;
             Total += VolumeM3;
         }
@@ -3025,6 +3078,25 @@ void AMasterWorldController::SwitchToMap(int32 MapIndex)
 {
     UE_LOG(LogTemp, Warning, TEXT("=== SWITCHING TO MAP %d ==="), MapIndex);
     
+    // SAFETY: Ensure terrain is ready
+    if (!MainTerrain)
+    {
+        UE_LOG(LogTemp, Error, TEXT("SwitchToMap: MainTerrain is NULL! Cannot switch map."));
+        return;
+    }
+    
+    if (!IsInitializationComplete())
+    {
+        UE_LOG(LogTemp, Warning, TEXT("SwitchToMap: Initialization not complete - deferring map switch"));
+        // Retry in 0.1 seconds
+        FTimerHandle RetryTimer;
+        GetWorld()->GetTimerManager().SetTimer(RetryTimer, [this, MapIndex]()
+        {
+            SwitchToMap(MapIndex);
+        }, 0.1f, false);
+        return;
+    }
+    
     // Get GameInstance
     UTerrAIGameInstance* GameInstance = Cast<UTerrAIGameInstance>(GetWorld()->GetGameInstance());
     if (!GameInstance)
@@ -3070,6 +3142,14 @@ void AMasterWorldController::SwitchToMap(int32 MapIndex)
         WorldCoordinateSystem = GenerateCoordinateSystem();
         
         UE_LOG(LogTemp, Warning, TEXT("MasterController synced to new scale: %.1f"), WorldScalingConfig.TerrainScale);
+        
+        // CRITICAL: Clear water system BEFORE terrain regeneration
+        // Prevents scale mismatch where water chunks use old scale
+        if (WaterController)
+        {
+            UE_LOG(LogTemp, Warning, TEXT("Clearing water system for scale change..."));
+            WaterController->ResetWaterSystem();
+        }
         
         // Regenerate terrain
         MainTerrain->ResetTerrainFully();
@@ -3181,7 +3261,7 @@ FString AMasterWorldController::GetMapDebugInfo() const
         "Octaves: %d\n"
         "Seed: %d\n"
         "Springs: %d\n"
-        "Latitude: %.1fÃƒâ€šÃ‚Â°"
+        "Latitude: %.1fÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â°"
     ),
         *CurrentMapDefinition.DisplayName.ToString(),
         *CurrentMapDefinition.GetGenerationModeName(),
@@ -3226,7 +3306,7 @@ void AMasterWorldController::UpdateTerrainScale(float NewScale)
         return;
     }
     
-    UE_LOG(LogTemp, Warning, TEXT("Updating terrain scale: %.1f ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ %.1f"),
+    UE_LOG(LogTemp, Warning, TEXT("Updating terrain scale: %.1f  ->  %.1f"),
            CurrentMapDefinition.TerrainScale, NewScale);
     
     CurrentMapDefinition.TerrainScale = NewScale;
@@ -3830,15 +3910,15 @@ void AMasterWorldController::LogDetailedScalingInfo()
 
 void AMasterWorldController::DiagnoseTemporalManagerIntegration()
 {
-    UE_LOG(LogTemp, Warning, TEXT("ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â°ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚ÂÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â TEMPORAL MANAGER INTEGRATION DIAGNOSIS"));
+    UE_LOG(LogTemp, Warning, TEXT("  TEMPORAL MANAGER INTEGRATION DIAGNOSIS"));
     UE_LOG(LogTemp, Warning, TEXT("================================================"));
     
     // Check critical flags
     UE_LOG(LogTemp, Warning, TEXT("bEnableUnifiedTiming: %s"),
-           bEnableUnifiedTiming ? TEXT("ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ TRUE") : TEXT("ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ FALSE"));
+           bEnableUnifiedTiming ? TEXT("  TRUE") : TEXT("  FALSE"));
     
     UE_LOG(LogTemp, Warning, TEXT("TemporalManager: %s"),
-           TemporalManager ? TEXT("ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ EXISTS") : TEXT("ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ NULL"));
+           TemporalManager ? TEXT("  EXISTS") : TEXT("  NULL"));
     
     UE_LOG(LogTemp, Warning, TEXT("CurrentInitPhase: %d"),
            (int32)CurrentInitPhase);
@@ -3847,19 +3927,19 @@ void AMasterWorldController::DiagnoseTemporalManagerIntegration()
     bool bWouldUpdate = (CurrentInitPhase == EInitializationPhase::Complete) &&
                         bEnableUnifiedTiming && TemporalManager;
     UE_LOG(LogTemp, Warning, TEXT("Would call UpdateSystemsWithTiming: %s"),
-           bWouldUpdate ? TEXT("ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ YES") : TEXT("ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ NO"));
+           bWouldUpdate ? TEXT("  YES") : TEXT("  NO"));
     
     if (TemporalManager)
     {
         // Check atmospheric system registration
         bool bAtmosphericRegistered = TemporalManager->IsSystemRegistered(ESystemType::Atmospheric);
         UE_LOG(LogTemp, Warning, TEXT("Atmospheric system registered: %s"),
-               bAtmosphericRegistered ? TEXT("ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ YES") : TEXT("ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ NO"));
+               bAtmosphericRegistered ? TEXT("  YES") : TEXT("  NO"));
         
         // Check if atmospheric system should update
         bool bShouldUpdate = TemporalManager->ShouldSystemUpdate(ESystemType::Atmospheric, 1.0f);
         UE_LOG(LogTemp, Warning, TEXT("Should atmospheric system update: %s"),
-               bShouldUpdate ? TEXT("ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ YES") : TEXT("ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ NO"));
+               bShouldUpdate ? TEXT("  YES") : TEXT("  NO"));
     }
 }
 
@@ -4346,10 +4426,10 @@ void AMasterWorldController::ConsolePipelineStatus()
  * - Method: Extraction (zero logic changes)
  *
  * VALIDATION:
- * - Function count verified: 132 == 132 Ã¢Å“â€œ
- * - All includes preserved Ã¢Å“â€œ
- * - All logic unchanged Ã¢Å“â€œ
- * - Compilation validated Ã¢Å“â€œ
+ * - Function count verified: 132 == 132  
+ * - All includes preserved  
+ * - All logic unchanged  
+ * - Compilation validated  
  *
  * MAJOR IMPROVEMENTS:
  * - Clear section organization
@@ -4381,10 +4461,10 @@ void AMasterWorldController::ConsolePipelineStatus()
  * - Method: Extraction (zero logic changes)
  *
  * VALIDATION:
- * - Function count verified: 132 == 132 Ã¢Å“â€œ
- * - All includes preserved Ã¢Å“â€œ
- * - All logic unchanged Ã¢Å“â€œ
- * - Compilation validated Ã¢Å“â€œ
+ * - Function count verified: 132 == 132  
+ * - All includes preserved  
+ * - All logic unchanged  
+ * - Compilation validated  
  *
  * MAJOR IMPROVEMENTS:
  * - Clear section organization

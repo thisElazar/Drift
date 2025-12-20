@@ -154,7 +154,7 @@ void AAtmosphereController::BeginPlay()
         CloudMaterialInstance = UMaterialInstanceDynamic::Create(VolumetricCloudMaterial, this);
     }
     
-    UE_LOG(LogTemp, Warning, TEXT("AtmosphereController: BeginPlay - clean slate, waiting for authority"));
+    UE_LOG(LogTemp, Verbose, TEXT("AtmosphereController: BeginPlay - clean slate, waiting for authority"));
 }
 
 void AAtmosphereController::Tick(float DeltaTime)
@@ -197,7 +197,7 @@ void AAtmosphereController::EndPlay(const EEndPlayReason::Type EndPlayReason)
         CloudPostProcess->Settings.WeightedBlendables.Array.Empty();
         CloudPostProcess->bEnabled = false;
         
-        UE_LOG(LogTemp, Warning, TEXT("Cleared post-process blendables"));
+        UE_LOG(LogTemp, Verbose, TEXT("Cleared post-process blendables"));
     }
     
     // Clear material instance references
@@ -250,7 +250,7 @@ void AAtmosphereController::EndPlay(const EEndPlayReason::Type EndPlayReason)
     
     Super::EndPlay(EndPlayReason);
     
-    UE_LOG(LogTemp, Warning, TEXT("AtmosphereController: Clean EndPlay completed"));
+    UE_LOG(LogTemp, Verbose, TEXT("AtmosphereController: Clean EndPlay completed"));
 }
 
 
@@ -304,27 +304,27 @@ void AAtmosphereController::InitializeWithAuthority(AMasterWorldController* Mast
 {
     if (bInitializedWithAuthority)
     {
-        UE_LOG(LogTemp, Warning, TEXT("AtmosphereController: Already initialized with authority, skipping"));
+        UE_LOG(LogTemp, Log, TEXT("AtmosphereController: Already initialized with authority, skipping"));
         return;
     }
     
     MasterController = Master;
     TargetTerrain = Terrain;
     
-    UE_LOG(LogTemp, Warning, TEXT("=== AtmosphereController: Initializing with MasterController Authority ==="));
+    UE_LOG(LogTemp, Verbose, TEXT("=== AtmosphereController: Initializing with MasterController Authority ==="));
     
     // Get water system reference internally (since it's protected)
     if (TargetTerrain && TargetTerrain->WaterSystem)
     {
         WaterSystem = TargetTerrain->WaterSystem;  // This is fine since we're inside AtmosphereController
-        UE_LOG(LogTemp, Warning, TEXT("  Connected to WaterSystem"));
+        UE_LOG(LogTemp, Verbose, TEXT("  Connected to WaterSystem"));
     }
     
     // Get atmospheric system reference if available
     if (TargetTerrain && TargetTerrain->AtmosphericSystem)
     {
         AtmosphericSystem = TargetTerrain->AtmosphericSystem;
-        UE_LOG(LogTemp, Warning, TEXT("  Connected to AtmosphericSystem"));
+        UE_LOG(LogTemp, Verbose, TEXT("  Connected to AtmosphericSystem"));
     }
     
     // Reset all timing for fresh start
@@ -347,7 +347,7 @@ void AAtmosphereController::InitializeWithAuthority(AMasterWorldController* Mast
         if (bGPUResourcesInitialized)
         {
             EnableGPUCompute();
-            UE_LOG(LogTemp, Warning, TEXT("AtmosphereController: GPU Compute enabled via authority"));
+            UE_LOG(LogTemp, Log, TEXT("AtmosphereController: GPU Compute enabled via authority"));
         }
         else
         {
@@ -355,7 +355,7 @@ void AAtmosphereController::InitializeWithAuthority(AMasterWorldController* Mast
         }
     });
     
-    UE_LOG(LogTemp, Warning, TEXT("AtmosphereController: Authority initialization complete"));
+    UE_LOG(LogTemp, Log, TEXT("AtmosphereController: Authority initialization complete"));
 }
 
 void AAtmosphereController::Initialize(ADynamicTerrain* Terrain, UWaterSystem* Water)
@@ -371,14 +371,14 @@ void AAtmosphereController::Initialize(ADynamicTerrain* Terrain, UWaterSystem* W
             AtmosphericSystem = TargetTerrain->AtmosphericSystem;
         }
         
-        UE_LOG(LogTemp, Warning, TEXT("AtmosphereController: Connected to terrain and water systems"));
+        UE_LOG(LogTemp, Log, TEXT("AtmosphereController: Connected to terrain and water systems"));
     }
     
     // Create material instance if we have a base material
     if (VolumetricCloudMaterial && !CloudMaterialInstance)
     {
         CloudMaterialInstance = UMaterialInstanceDynamic::Create(VolumetricCloudMaterial, this);
-        UE_LOG(LogTemp, Warning, TEXT("AtmosphereController: Created CloudMaterialInstance"));
+        UE_LOG(LogTemp, Log, TEXT("AtmosphereController: Created CloudMaterialInstance"));
     }
 }
 
@@ -448,21 +448,21 @@ void AAtmosphereController::InitializeGPUResources()
     // Allow re-initialization during reset by checking the recreation flag
     if (bGPUResourcesInitialized && !bResourcesNeedRecreation)
     {
-        UE_LOG(LogTemp, Warning, TEXT("GPU Resources already initialized, skipping"));
+        UE_LOG(LogTemp, Log, TEXT("GPU Resources already initialized, skipping"));
         return;
     }
     
     // Clear the recreation flag
     bResourcesNeedRecreation = false;
     
-    UE_LOG(LogTemp, Warning, TEXT("=== Initializing Atmosphere GPU Resources ==="));
+    UE_LOG(LogTemp, Verbose, TEXT("=== Initializing Atmosphere GPU Resources ==="));
     
     // Get grid size from terrain
     if (TargetTerrain)
     {
         GridSizeX = TargetTerrain->TerrainWidth;
         GridSizeY = TargetTerrain->TerrainHeight;
-        UE_LOG(LogTemp, Warning, TEXT("Grid size from terrain: %dx%d"), GridSizeX, GridSizeY);
+        UE_LOG(LogTemp, Log, TEXT("Grid size from terrain: %dx%d"), GridSizeX, GridSizeY);
     }
     
     // Create all textures
@@ -472,7 +472,7 @@ void AAtmosphereController::InitializeGPUResources()
         AtmosphereStateTexture->bCanCreateUAV = true;
         AtmosphereStateTexture->InitCustomFormat(GridSizeX, GridSizeY, PF_A32B32G32R32F, false);
         AtmosphereStateTexture->UpdateResourceImmediate(true);
-        UE_LOG(LogTemp, Warning, TEXT("Created AtmosphereStateTexture"));
+        UE_LOG(LogTemp, Verbose, TEXT("Created AtmosphereStateTexture"));
     }
     
     if (!CloudRenderTexture)
@@ -481,7 +481,7 @@ void AAtmosphereController::InitializeGPUResources()
         CloudRenderTexture->bCanCreateUAV = true;
         CloudRenderTexture->InitCustomFormat(GridSizeX, GridSizeY, PF_B8G8R8A8, false);
         CloudRenderTexture->UpdateResourceImmediate(true);
-        UE_LOG(LogTemp, Warning, TEXT("Created CloudRenderTexture"));
+        UE_LOG(LogTemp, Verbose, TEXT("Created CloudRenderTexture"));
     }
     
     if (!WindFieldTexture)
@@ -490,7 +490,7 @@ void AAtmosphereController::InitializeGPUResources()
         WindFieldTexture->bCanCreateUAV = true;
         WindFieldTexture->InitCustomFormat(GridSizeX, GridSizeY, PF_G32R32F, false);
         WindFieldTexture->UpdateResourceImmediate(true);
-        UE_LOG(LogTemp, Warning, TEXT("Created WindFieldTexture"));
+        UE_LOG(LogTemp, Verbose, TEXT("Created WindFieldTexture"));
     }
     
     if (!PrecipitationTexture)
@@ -499,7 +499,7 @@ void AAtmosphereController::InitializeGPUResources()
         PrecipitationTexture->bCanCreateUAV = true;
         PrecipitationTexture->InitCustomFormat(GridSizeX, GridSizeY, PF_R32_FLOAT, false);
         PrecipitationTexture->UpdateResourceImmediate(true);
-        UE_LOG(LogTemp, Warning, TEXT("Created PrecipitationTexture"));
+        UE_LOG(LogTemp, Verbose, TEXT("Created PrecipitationTexture"));
     }
     
     // PERFORMANCE FIX: UpdateResourceImmediate(true) already syncs - no flush needed
@@ -508,7 +508,7 @@ void AAtmosphereController::InitializeGPUResources()
     bGPUResourcesInitialized = true;
     bNeedsInitialState = true;
     
-    UE_LOG(LogTemp, Warning, TEXT("GPU Resources initialized successfully"));
+    UE_LOG(LogTemp, Verbose, TEXT("GPU Resources initialized successfully"));
 }
 
 
@@ -571,7 +571,7 @@ void AAtmosphereController::EnableGPUCompute()
     
     // Now ready for compute
     bUseGPUCompute = true;
-    UE_LOG(LogTemp, Warning, TEXT("GPU Compute enabled"));
+    UE_LOG(LogTemp, Verbose, TEXT("GPU Compute enabled"));
 }
 
 
@@ -582,7 +582,7 @@ void AAtmosphereController::PushInitialStateToGPU()
         return;
     }
     
-    UE_LOG(LogTemp, Warning, TEXT("Pushing initial atmospheric state to GPU..."));
+    UE_LOG(LogTemp, Log, TEXT("Pushing initial atmospheric state to GPU..."));
     
     // Capture for render thread - these are just pointers, safe to capture
     UTextureRenderTarget2D* LocalStateTexture = AtmosphereStateTexture;
@@ -647,7 +647,7 @@ void AAtmosphereController::PushInitialStateToGPU()
                                                             AddClearUAVPass(GraphBuilder, CloudUAV,
                                                                             FVector4f(0.0f, 0.0f, 0.0f, 0.0f));
                                                             
-                                                            UE_LOG(LogTemp, Warning, TEXT("Cleared CloudRenderTexture to black"));
+                                                            UE_LOG(LogTemp, Verbose, TEXT("Cleared CloudRenderTexture to black"));
                                                         }
                                                     }
                                                     
@@ -682,7 +682,7 @@ bool AAtmosphereController::IsReadyForGPU() const
 void AAtmosphereController::DisableGPUCompute()
 {
     bUseGPUCompute = false;
-    UE_LOG(LogTemp, Warning, TEXT("AtmosphereController: GPU Compute disabled"));
+    UE_LOG(LogTemp, Log, TEXT("AtmosphereController: GPU Compute disabled"));
 }
 
 
@@ -724,7 +724,7 @@ void AAtmosphereController::CleanupGPUResources()
      InitializationTimer = 0.0f;
      AccumulatedTime = 0.0f;
      */
-    UE_LOG(LogTemp, Warning, TEXT("Atmosphere GPU resources cleaned up EMPTY FUNCTION"));
+    UE_LOG(LogTemp, Verbose, TEXT("Atmosphere GPU resources cleaned up EMPTY FUNCTION"));
 }
 
 
@@ -845,13 +845,13 @@ void AAtmosphereController::DispatchAtmosphereCompute(float DeltaTime)
     if (!AtmosphereStateTexture || !CloudRenderTexture ||
         !WindFieldTexture || !PrecipitationTexture)
     {
-        UE_LOG(LogTemp, Warning, TEXT("DispatchAtmosphereCompute: Textures not allocated"));
+        UE_LOG(LogTemp, Log, TEXT("DispatchAtmosphereCompute: Textures not allocated"));
         return;
     }
     
     if (!TargetTerrain)
     {
-        UE_LOG(LogTemp, Warning, TEXT("DispatchAtmosphereCompute: No terrain connected"));
+        UE_LOG(LogTemp, Log, TEXT("DispatchAtmosphereCompute: No terrain connected"));
         return;
     }
     
@@ -862,7 +862,7 @@ void AAtmosphereController::DispatchAtmosphereCompute(float DeltaTime)
     // Check for failed initialization (give it 5 seconds)
     if (InitializationTimer > 5.0f && !HasValidCloudData())
     {
-        UE_LOG(LogTemp, Warning, TEXT("Atmosphere: No valid cloud data after 5 seconds, requesting re-init"));
+        UE_LOG(LogTemp, Log, TEXT("Atmosphere: No valid cloud data after 5 seconds, requesting re-init"));
         
         // Request re-initialization through MasterController
         if (MasterController)
@@ -880,11 +880,11 @@ void AAtmosphereController::DispatchAtmosphereCompute(float DeltaTime)
     
     if (bVerboseLog)
     {
-        UE_LOG(LogTemp, Warning, TEXT("=== Atmosphere Compute Frame %d ==="), FrameCounter);
-        UE_LOG(LogTemp, Warning, TEXT("  Authority: %s"),
+        UE_LOG(LogTemp, Verbose, TEXT("=== Atmosphere Compute Frame %d ==="), FrameCounter);
+        UE_LOG(LogTemp, Log, TEXT("  Authority: %s"),
                bInitializedWithAuthority ? TEXT("YES") : TEXT("NO"));
-        UE_LOG(LogTemp, Warning, TEXT("  Grid: %dx%d"), GridSizeX, GridSizeY);
-        UE_LOG(LogTemp, Warning, TEXT("  AccumulatedTime: %.2f"), AccumulatedTime);
+        UE_LOG(LogTemp, Log, TEXT("  Grid: %dx%d"), GridSizeX, GridSizeY);
+        UE_LOG(LogTemp, Log, TEXT("  AccumulatedTime: %.2f"), AccumulatedTime);
     }
     
     if (CloudRenderTexture->SizeX != GridSizeX || CloudRenderTexture->SizeY != GridSizeY)
@@ -908,12 +908,12 @@ void AAtmosphereController::DispatchAtmosphereCompute(float DeltaTime)
     
     if (FrameCounter % 60 == 0) // Log every 60 frames
     {
-        UE_LOG(LogTemp, Warning, TEXT("Atmosphere Dispatch Coverage:"));
-        UE_LOG(LogTemp, Warning, TEXT("  Grid: %dx%d"), GridSizeX, GridSizeY);
-        UE_LOG(LogTemp, Warning, TEXT("  Dispatch Groups: %dx%d"), DispatchX, DispatchY);
-        UE_LOG(LogTemp, Warning, TEXT("  Thread Coverage: %dx%d"),
+        UE_LOG(LogTemp, Log, TEXT("Atmosphere Dispatch Coverage:"));
+        UE_LOG(LogTemp, Log, TEXT("  Grid: %dx%d"), GridSizeX, GridSizeY);
+        UE_LOG(LogTemp, Log, TEXT("  Dispatch Groups: %dx%d"), DispatchX, DispatchY);
+        UE_LOG(LogTemp, Log, TEXT("  Thread Coverage: %dx%d"),
                DispatchX * ThreadGroupSize, DispatchY * ThreadGroupSize);
-        UE_LOG(LogTemp, Warning, TEXT("  Texture Actual: %dx%d"),
+        UE_LOG(LogTemp, Log, TEXT("  Texture Actual: %dx%d"),
                CloudRenderTexture->SizeX, CloudRenderTexture->SizeY);
     }
     */
@@ -1009,12 +1009,14 @@ void AAtmosphereController::DispatchAtmosphereCompute(float DeltaTime)
                                                           }
                                                           else
                                                           {
-                                                              // Dummy terrain
+                                                              // Dummy terrain - must be written to for RDG validation
                                                               FRDGTextureDesc DummyDesc = FRDGTextureDesc::Create2D(
-                                                                                                                    FIntPoint(1, 1), PF_R32_FLOAT, FClearValueBinding::Black, TexCreate_ShaderResource);
+                                                                  FIntPoint(1, 1), PF_R32_FLOAT, FClearValueBinding::Black,
+                                                                  TexCreate_ShaderResource | TexCreate_UAV);  // Add UAV flag
                                                               FRDGTextureRef DummyTexture = GraphBuilder.CreateTexture(DummyDesc, TEXT("DummyTerrain"));
-                                                              Parameters->TerrainHeightTexture = GraphBuilder.CreateSRV(DummyTexture);
-                                                              Parameters->TerrainSampler = TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp>::GetRHI();
+                                                              AddClearUAVPass(GraphBuilder, GraphBuilder.CreateUAV(DummyTexture), 0.0f);  // CRITICAL - writes to texture
+                                                              Parameters->TerrainHeightTexture = GraphBuilder.CreateSRV(DummyTexture);  // Complete the line
+                                                              Parameters->TerrainSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp>::GetRHI();
                                                           }
                                                           
                                                           Parameters->DeltaTime = LocalDeltaTime;
@@ -1145,23 +1147,23 @@ void AAtmosphereController::ActivateVolumetricRendering()
     CloudPostProcess->Settings.WeightedBlendables.Array.Add(Blendable);
     CloudPostProcess->bEnabled = true;
     
-    UE_LOG(LogTemp, Warning, TEXT("Ã¢Å“â€œ Volumetric cloud material bound to post-process"));
+    UE_LOG(LogTemp, Log, TEXT("  Volumetric cloud material bound to post-process"));
     
     // === Disable debug plane ===
     if (CloudDebugPlane)
     {
         CloudDebugPlane->SetVisibility(false);
-        UE_LOG(LogTemp, Warning, TEXT("Ã¢Å“â€œ Debug plane hidden"));
+        UE_LOG(LogTemp, Log, TEXT("  Debug plane hidden"));
     }
     
     if (AtmosphereDebugPlane)
     {
         AtmosphereDebugPlane->SetActorHiddenInGame(true);
-        UE_LOG(LogTemp, Warning, TEXT("Ã¢Å“â€œ Atmosphere debug plane hidden"));
+        UE_LOG(LogTemp, Log, TEXT("  Atmosphere debug plane hidden"));
     }
     
     bVolumetricRenderingActive = true;
-    UE_LOG(LogTemp, Warning, TEXT("=== VOLUMETRIC RENDERING ACTIVATED ==="));
+    UE_LOG(LogTemp, Verbose, TEXT("=== VOLUMETRIC RENDERING ACTIVATED ==="));
 }
 
 
@@ -1367,13 +1369,13 @@ void AAtmosphereController::UpdateVolumetricCloudComponent()
 
 void AAtmosphereController::ConfigureCloudAltitudeLayers()
 {
-    UE_LOG(LogTemp, Warning, TEXT("=== Configuring Cloud Altitude Layers ==="));
+    UE_LOG(LogTemp, Verbose, TEXT("=== Configuring Cloud Altitude Layers ==="));
     
     // Configure our low-level clouds
     CloudBaseHeight = 0.0f; // Ground fog
     CloudLayerThickness = LowCloudMaxAltitude;
     
-    UE_LOG(LogTemp, Warning, TEXT("  Custom Clouds: %.0f - %.0fm"),
+    UE_LOG(LogTemp, Log, TEXT("  Custom Clouds: %.0f - %.0fm"),
            CloudBaseHeight, CloudBaseHeight + CloudLayerThickness);
     
     // Configure UE's volumetric clouds for high altitude
@@ -1399,12 +1401,12 @@ void AAtmosphereController::ConfigureCloudAltitudeLayers()
             CloudMatDynamic->SetScalarParameterValue(FName("LayerHeight"),
                 400.0f); // 4km thick layer
             
-            UE_LOG(LogTemp, Warning, TEXT("  UE Volumetric Clouds: %.0f - %.0fm"),
+            UE_LOG(LogTemp, Log, TEXT("  UE Volumetric Clouds: %.0f - %.0fm"),
                    HighCloudMinAltitude, HighCloudMinAltitude + 4000.0f);
         }
     }
     
-    UE_LOG(LogTemp, Warning, TEXT("  Separation gap: %.0fm"),
+    UE_LOG(LogTemp, Log, TEXT("  Separation gap: %.0fm"),
            HighCloudMinAltitude - (CloudBaseHeight + CloudLayerThickness));
 }
 
@@ -1508,11 +1510,11 @@ void AAtmosphereController::UpdateDebugPlane()
                 DebugMat->SetTextureParameterValue(TEXT("BaseTexture"), CloudRenderTexture);
                 DebugMat->SetTextureParameterValue(TEXT("DiffuseTexture"), CloudRenderTexture);
                 
-                // COMMENTED OUT FOR SPAM BUT HELPFUL FOR TESTING    UE_LOG(LogTemp, Warning, TEXT("UpdateDebugPlane: Updated material with cloud texture"));
+                // COMMENTED OUT FOR SPAM BUT HELPFUL FOR TESTING    UE_LOG(LogTemp, Log, TEXT("UpdateDebugPlane: Updated material with cloud texture"));
             }
             else
             {
-                UE_LOG(LogTemp, Warning, TEXT("UpdateDebugPlane: No dynamic material found on debug plane"));
+                UE_LOG(LogTemp, Log, TEXT("UpdateDebugPlane: No dynamic material found on debug plane"));
             }
         }
     }
@@ -1523,7 +1525,7 @@ void AAtmosphereController::UpdateDebugPlane()
         {
             CloudDebugMaterial->SetTextureParameterValue(TEXT("CloudTexture"), CloudRenderTexture);
             CloudDebugMaterial->SetTextureParameterValue(TEXT("CloudDensity"), CloudRenderTexture);
-            UE_LOG(LogTemp, Warning, TEXT("UpdateDebugPlane: Updated CloudDebugMaterial"));
+            UE_LOG(LogTemp, Log, TEXT("UpdateDebugPlane: Updated CloudDebugMaterial"));
         }
     }
     
@@ -1592,7 +1594,7 @@ void AAtmosphereController::SetWeatherIntensity(float Intensity)
         CloudMaterialInstance->SetScalarParameterValue(TEXT("CloudDensityMultiplier"), CloudDensityScale);
     }
     
-    UE_LOG(LogTemp, Warning, TEXT("Weather intensity set to: %.2f"), ClampedIntensity);
+    UE_LOG(LogTemp, Log, TEXT("Weather intensity set to: %.2f"), ClampedIntensity);
 }
 
 
@@ -1615,14 +1617,14 @@ void AAtmosphereController::SetWindDirection(FVector Direction)
                                                        FLinearColor(NormalizedDirection.X, NormalizedDirection.Y, NormalizedDirection.Z, 1.0f));
     }
     
-    UE_LOG(LogTemp, Warning, TEXT("Wind direction set to: %s"), *NormalizedDirection.ToString());
+    UE_LOG(LogTemp, Log, TEXT("Wind direction set to: %s"), *NormalizedDirection.ToString());
 }
 
 
 void AAtmosphereController::TriggerLightning(FVector Location)
 {
     // Lightning effect at specified location
-    UE_LOG(LogTemp, Warning, TEXT("Lightning triggered at: %s"), *Location.ToString());
+    UE_LOG(LogTemp, Log, TEXT("Lightning triggered at: %s"), *Location.ToString());
     
     // In a full implementation, this would:
     // 1. Spawn a lightning visual effect
@@ -1736,7 +1738,7 @@ void AAtmosphereController::UpdateDirectionalLight(float DeltaTime)
     UDirectionalLightComponent* LightComp = Cast<UDirectionalLightComponent>(DirectionalLight->GetLightComponent());
     if (!LightComp)
     {
-        UE_LOG(LogTemp, Warning, TEXT("DirectionalLight has no valid light component"));
+        UE_LOG(LogTemp, Verbose, TEXT("DirectionalLight has no valid light component"));
         return;
     }
     
@@ -1813,7 +1815,7 @@ void AAtmosphereController::UpdateDirectionalLight(float DeltaTime)
     if (bShowIntegrationDebug && DebugTimer > 0.5f)
     {
         GEngine->AddOnScreenDebugMessage(100, 0.5f, FColor::Yellow,
-            FString::Printf(TEXT("Sun: %s | Elev: %.1fÃ‚Â° | Int: %.2f"),
+            FString::Printf(TEXT("Sun: %s | Elev: %.1f  | Int: %.2f"),
             *GetFormattedTime(), SunElevation, FinalIntensity));
         DebugTimer = 0.0f;
     }
@@ -1894,7 +1896,7 @@ void AAtmosphereController::UpdateMoonLight(float DeltaTime)
     if (bShowIntegrationDebug && MoonDebugTimer > 0.5f)
     {
         GEngine->AddOnScreenDebugMessage(101, 0.5f, FColor::Cyan,
-            FString::Printf(TEXT("Moon: %s | Elev: %.1fÃ‚Â° | Bright: %.0f%%"),
+            FString::Printf(TEXT("Moon: %s | Elev: %.1f  | Bright: %.0f%%"),
             *GetMoonPhaseName(), MoonElevation, PhaseBrightness * 100.0f));
         MoonDebugTimer = 0.0f;
     }
@@ -2024,7 +2026,7 @@ void AAtmosphereController::RestoreOriginalLightSettings()
         return;
     }
     
-    UE_LOG(LogTemp, Warning, TEXT("Restoring original light settings"));
+    UE_LOG(LogTemp, Verbose, TEXT("Restoring original light settings"));
     
     // Restore rotation
     DirectionalLight->SetActorRotation(OriginalLightRotation);
@@ -2037,7 +2039,7 @@ void AAtmosphereController::RestoreOriginalLightSettings()
         LightComp->SetLightColor(OriginalLightColor);
     }
     
-    UE_LOG(LogTemp, Warning, TEXT("  Original settings restored: Rotation=%s, Intensity=%.2f"),
+    UE_LOG(LogTemp, Log, TEXT("  Original settings restored: Rotation=%s, Intensity=%.2f"),
            *OriginalLightRotation.ToString(), OriginalLightIntensity);
 }
 
@@ -2139,7 +2141,7 @@ void AAtmosphereController::UpdateHybridIntegration(float DeltaTime)
         
         bHybridWasEnabledLastFrame = false;
         bUEComponentsCached = false;
-        UE_LOG(LogTemp, Warning, TEXT("Hybrid integration disabled, all settings restored"));
+        UE_LOG(LogTemp, Log, TEXT("Hybrid integration disabled, all settings restored"));
         return;
     }
     
@@ -2153,7 +2155,7 @@ void AAtmosphereController::UpdateHybridIntegration(float DeltaTime)
     // Check if we just got enabled
     if (bEnableHybridIntegration && !bHybridWasEnabledLastFrame)
     {
-        UE_LOG(LogTemp, Warning, TEXT("Hybrid integration enabled, discovering components..."));
+        UE_LOG(LogTemp, Log, TEXT("Hybrid integration enabled, discovering components..."));
         bHybridWasEnabledLastFrame = true;
     }
     
@@ -2248,18 +2250,18 @@ void AAtmosphereController::UpdateSkyAtmosphereComponent()
 void AAtmosphereController::ApplyLatitudePreset()
 {
     // Calculate sun apex based on latitude
-    // At equator (0Ã‚Â°): sun reaches 90Ã‚Â° overhead
-    // At 23.5Ã‚Â° (tropics): sun reaches 90Ã‚Â° on solstice
-    // At 45Ã‚Â° (mid-latitude): sun reaches 68Ã‚Â° at summer solstice
-    // At 66.5Ã‚Â° (arctic): sun reaches 47Ã‚Â° at summer solstice
+    // At equator (0Ã‚Â°): sun reaches 90  overhead
+    // At 23.5  (tropics): sun reaches 90  on solstice
+    // At 45  (mid-latitude): sun reaches 68  at summer solstice
+    // At 66.5  (arctic): sun reaches 47  at summer solstice
     
     float AbsLat = FMath::Abs(Latitude);
     
-    // Summer solstice sun elevation = 90Ã‚Â° - latitude + 23.5Ã‚Â° (tilt)
+    // Summer solstice sun elevation = 90  - latitude + 23.5  (tilt)
     // We use this as the "typical" max elevation
     MaxSunElevation = FMath::Clamp(90.0f - AbsLat + 23.5f, 23.5f, 90.0f);
     
-    UE_LOG(LogTemp, Warning, TEXT("Applied latitude preset: %.1fÃ‚Â° Ã¢â€ â€™ Max sun elevation: %.1fÃ‚Â°"),
+    UE_LOG(LogTemp, Verbose, TEXT("Applied latitude preset: %.1f    Max sun elevation: %.1fÃ‚Â°"),
            Latitude, MaxSunElevation);
 }
 
@@ -2285,11 +2287,11 @@ void AAtmosphereController::FindAndCacheUEComponents()
     UWorld* World = GetWorld();
     if (!World)
     {
-        UE_LOG(LogTemp, Warning, TEXT("No world context for component discovery"));
+        UE_LOG(LogTemp, Verbose, TEXT("No world context for component discovery"));
         return;
     }
     
-    UE_LOG(LogTemp, Warning, TEXT("=== Discovering UE Atmosphere Components ==="));
+    UE_LOG(LogTemp, Verbose, TEXT("=== Discovering UE Atmosphere Components ==="));
     
     // Find Directional Light (Sun) - EXISTING CODE
     for (TActorIterator<ADirectionalLight> It(World); It; ++It)
@@ -2313,11 +2315,11 @@ void AAtmosphereController::FindAndCacheUEComponents()
                     }
                     bHasStoredOriginalLightSettings = true;
                     
-                    UE_LOG(LogTemp, Warning, TEXT("  Ã¢Å“â€œ Stored original sun settings: Intensity=%.2f"),
+                    UE_LOG(LogTemp, Log, TEXT("    Stored original sun settings: Intensity=%.2f"),
                            OriginalLightIntensity);
                 }
                 
-                UE_LOG(LogTemp, Warning, TEXT("  Ã¢Å“â€œ Found Sun DirectionalLight: %s"), *LightName);
+                UE_LOG(LogTemp, Log, TEXT("    Found Sun DirectionalLight: %s"), *LightName);
                 break;
             }
         }
@@ -2342,7 +2344,7 @@ void AAtmosphereController::FindAndCacheUEComponents()
                     bHasStoredOriginalLightSettings = true;
                 }
                 
-                UE_LOG(LogTemp, Warning, TEXT("  Ã¢Å“â€œ Found DirectionalLight (fallback): %s"),
+                UE_LOG(LogTemp, Log, TEXT("    Found DirectionalLight (fallback): %s"),
                        *DirectionalLight->GetName());
                 break;
             }
@@ -2374,7 +2376,7 @@ void AAtmosphereController::FindAndCacheUEComponents()
                         bHasStoredOriginalMoonSettings = true;
                     }
                     
-                    UE_LOG(LogTemp, Warning, TEXT("  Ã¢Å“â€œ Found MoonLight: %s"), *LightName);
+                    UE_LOG(LogTemp, Log, TEXT("    Found MoonLight: %s"), *LightName);
                     break;
                 }
             }
@@ -2401,7 +2403,7 @@ void AAtmosphereController::FindAndCacheUEComponents()
                     OriginalMoonColor = MoonLightColor;
                     bHasStoredOriginalMoonSettings = true;
                 }
-                UE_LOG(LogTemp, Warning, TEXT("  Ã¢Å“â€œ Created MoonLight automatically"));
+                UE_LOG(LogTemp, Log, TEXT("    Created MoonLight automatically"));
             }
         }
     }
@@ -2421,7 +2423,7 @@ void AAtmosphereController::FindAndCacheUEComponents()
                 bHasStoredOriginalSkyLightSettings = true;
             }
             
-            UE_LOG(LogTemp, Warning, TEXT("  Ã¢Å“â€œ Found SkyLight: %s"), *SkyLightActor->GetName());
+            UE_LOG(LogTemp, Log, TEXT("    Found SkyLight: %s"), *SkyLightActor->GetName());
             break;
         }
         
@@ -2446,7 +2448,7 @@ void AAtmosphereController::FindAndCacheUEComponents()
                     OriginalSkyLightColor = AmbientNightColor;
                     bHasStoredOriginalSkyLightSettings = true;
                 }
-                UE_LOG(LogTemp, Warning, TEXT("  Ã¢Å“â€œ Created SkyLight automatically"));
+                UE_LOG(LogTemp, Log, TEXT("    Created SkyLight automatically"));
             }
         }
     }
@@ -2462,7 +2464,7 @@ void AAtmosphereController::FindAndCacheUEComponents()
             
             if (SkyAtmosphereComponent)
             {
-                UE_LOG(LogTemp, Warning, TEXT("  Ã¢Å“â€œ Found SkyAtmosphere: %s"), *Actor->GetName());
+                UE_LOG(LogTemp, Log, TEXT("    Found SkyAtmosphere: %s"), *Actor->GetName());
                 break;
             }
         }
@@ -2479,14 +2481,14 @@ void AAtmosphereController::FindAndCacheUEComponents()
             
             if (VolumetricCloudComponent)
             {
-                UE_LOG(LogTemp, Warning, TEXT("  Ã¢Å“â€œ Found VolumetricCloud: %s"), *Actor->GetName());
+                UE_LOG(LogTemp, Log, TEXT("    Found VolumetricCloud: %s"), *Actor->GetName());
                 break;
             }
         }
     }
     
     // Summary
-    UE_LOG(LogTemp, Warning, TEXT("=== Component Discovery Summary ==="));
+    UE_LOG(LogTemp, Verbose, TEXT("=== Component Discovery Summary ==="));
     UE_LOG(LogTemp, Warning, TEXT("  Sun Light: %s"), DirectionalLight ? TEXT("FOUND") : TEXT("MISSING"));
     UE_LOG(LogTemp, Warning, TEXT("  Moon Light: %s"), MoonLight ? TEXT("FOUND") : TEXT("MISSING"));
     UE_LOG(LogTemp, Warning, TEXT("  Sky Light: %s"), AmbientSkyLight ? TEXT("FOUND") : TEXT("MISSING"));
@@ -2508,29 +2510,29 @@ void AAtmosphereController::FindAndCacheUEComponents()
 
 void AAtmosphereController::DebugPrintIntegrationStatus()
 {
-    UE_LOG(LogTemp, Warning, TEXT("=== Hybrid Integration Status ==="));
-    UE_LOG(LogTemp, Warning, TEXT("Time of Day: %s (%.3f)"), *GetFormattedTime(), TimeOfDay);
-    UE_LOG(LogTemp, Warning, TEXT("Sun Angle: %.1fÃ‚Â°"), GetSunAngleDegrees());
-    UE_LOG(LogTemp, Warning, TEXT("Is Daytime: %s"), IsDaytime() ? TEXT("YES") : TEXT("NO"));
+    UE_LOG(LogTemp, Verbose, TEXT("=== Hybrid Integration Status ==="));
+    UE_LOG(LogTemp, Log, TEXT("Time of Day: %s (%.3f)"), *GetFormattedTime(), TimeOfDay);
+    UE_LOG(LogTemp, Log, TEXT("Sun Angle: %.1fÃ‚Â°"), GetSunAngleDegrees());
+    UE_LOG(LogTemp, Log, TEXT("Is Daytime: %s"), IsDaytime() ? TEXT("YES") : TEXT("NO"));
     
-    UE_LOG(LogTemp, Warning, TEXT("\nComponent Status:"));
-    UE_LOG(LogTemp, Warning, TEXT("  DirectionalLight: %s"),
-           DirectionalLight ? TEXT("Ã¢Å“â€œ Connected") : TEXT("Ã¢Å“â€” Missing"));
-    UE_LOG(LogTemp, Warning, TEXT("  SkyAtmosphere: %s"),
-           SkyAtmosphereComponent ? TEXT("Ã¢Å“â€œ Connected") : TEXT("Ã¢Å“â€” Missing"));
-    UE_LOG(LogTemp, Warning, TEXT("  VolumetricCloud: %s"),
-           VolumetricCloudComponent ? TEXT("Ã¢Å“â€œ Connected") : TEXT("Ã¢Å“â€” Missing"));
+    UE_LOG(LogTemp, Log, TEXT("\nComponent Status:"));
+    UE_LOG(LogTemp, Log, TEXT("  DirectionalLight: %s"),
+           DirectionalLight ? TEXT("  Connected") : TEXT("  Missing"));
+    UE_LOG(LogTemp, Log, TEXT("  SkyAtmosphere: %s"),
+           SkyAtmosphereComponent ? TEXT("  Connected") : TEXT("  Missing"));
+    UE_LOG(LogTemp, Log, TEXT("  VolumetricCloud: %s"),
+           VolumetricCloudComponent ? TEXT("  Connected") : TEXT("  Missing"));
     
     FVector4 Conditions = CalculateAverageConditions();
-    UE_LOG(LogTemp, Warning, TEXT("\nWeather Conditions:"));
-    UE_LOG(LogTemp, Warning, TEXT("  Cloud Coverage: %.2f"), Conditions.X);
-    UE_LOG(LogTemp, Warning, TEXT("  Precipitation: %.2f"), Conditions.Y);
-    UE_LOG(LogTemp, Warning, TEXT("  Wind: (%.2f, %.2f)"), Conditions.Z, Conditions.W);
+    UE_LOG(LogTemp, Log, TEXT("\nWeather Conditions:"));
+    UE_LOG(LogTemp, Log, TEXT("  Cloud Coverage: %.2f"), Conditions.X);
+    UE_LOG(LogTemp, Log, TEXT("  Precipitation: %.2f"), Conditions.Y);
+    UE_LOG(LogTemp, Log, TEXT("  Wind: (%.2f, %.2f)"), Conditions.Z, Conditions.W);
     
-    UE_LOG(LogTemp, Warning, TEXT("\nCloud Layers:"));
-    UE_LOG(LogTemp, Warning, TEXT("  Custom (Low): %.0f - %.0fm"),
+    UE_LOG(LogTemp, Log, TEXT("\nCloud Layers:"));
+    UE_LOG(LogTemp, Log, TEXT("  Custom (Low): %.0f - %.0fm"),
            CloudBaseHeight, CloudBaseHeight + CloudLayerThickness);
-    UE_LOG(LogTemp, Warning, TEXT("  UE (High): %.0fm+"), HighCloudMinAltitude);
+    UE_LOG(LogTemp, Log, TEXT("  UE (High): %.0fm+"), HighCloudMinAltitude);
 }
 
 // Add near your other console command registrations
@@ -2544,66 +2546,66 @@ static FAutoConsoleCommand DebugHybridIntegrationCmd(
         {
             AAtmosphereController* Atmo = *It;
             
-            UE_LOG(LogTemp, Warning, TEXT(""));
-            UE_LOG(LogTemp, Warning, TEXT("=== HYBRID INTEGRATION DEBUG ==="));
-            UE_LOG(LogTemp, Warning, TEXT(""));
+            UE_LOG(LogTemp, Log, TEXT(""));
+            UE_LOG(LogTemp, Verbose, TEXT("=== HYBRID INTEGRATION DEBUG ==="));
+            UE_LOG(LogTemp, Log, TEXT(""));
             
             // Basic state
-            UE_LOG(LogTemp, Warning, TEXT("Integration State:"));
-            UE_LOG(LogTemp, Warning, TEXT("  bEnableHybridIntegration: %s"),
+            UE_LOG(LogTemp, Log, TEXT("Integration State:"));
+            UE_LOG(LogTemp, Log, TEXT("  bEnableHybridIntegration: %s"),
                    Atmo->bEnableHybridIntegration ? TEXT("TRUE") : TEXT("FALSE"));
-            UE_LOG(LogTemp, Warning, TEXT("  bUEComponentsCached: %s"),
+            UE_LOG(LogTemp, Log, TEXT("  bUEComponentsCached: %s"),
                    Atmo->bUEComponentsCached ? TEXT("TRUE") : TEXT("FALSE"));
-            UE_LOG(LogTemp, Warning, TEXT("  bHybridWasEnabledLastFrame: %s"),
+            UE_LOG(LogTemp, Log, TEXT("  bHybridWasEnabledLastFrame: %s"),
                    Atmo->bHybridWasEnabledLastFrame ? TEXT("TRUE") : TEXT("FALSE"));
             
             // Component discovery
-            UE_LOG(LogTemp, Warning, TEXT(""));
-            UE_LOG(LogTemp, Warning, TEXT("UE Components:"));
+            UE_LOG(LogTemp, Log, TEXT(""));
+            UE_LOG(LogTemp, Log, TEXT("UE Components:"));
             
             if (Atmo->DirectionalLight)
             {
-                UE_LOG(LogTemp, Warning, TEXT("  Ã¢Å“â€œ DirectionalLight: %s"),
+                UE_LOG(LogTemp, Log, TEXT("    DirectionalLight: %s"),
                        *Atmo->DirectionalLight->GetName());
-                UE_LOG(LogTemp, Warning, TEXT("    Current Rotation: %s"),
+                UE_LOG(LogTemp, Log, TEXT("    Current Rotation: %s"),
                        *Atmo->DirectionalLight->GetActorRotation().ToString());
                 
                 UDirectionalLightComponent* LightComp = Cast<UDirectionalLightComponent>(
                     Atmo->DirectionalLight->GetLightComponent());
                 if (LightComp)
                 {
-                    UE_LOG(LogTemp, Warning, TEXT("    Current Intensity: %.2f"),
+                    UE_LOG(LogTemp, Log, TEXT("    Current Intensity: %.2f"),
                            LightComp->Intensity);
-                    UE_LOG(LogTemp, Warning, TEXT("    Current Color: %s"),
+                    UE_LOG(LogTemp, Log, TEXT("    Current Color: %s"),
                            *LightComp->GetLightColor().ToString());
-                    UE_LOG(LogTemp, Warning, TEXT("    Mobility: %s"),
+                    UE_LOG(LogTemp, Log, TEXT("    Mobility: %s"),
                            LightComp->Mobility == EComponentMobility::Movable ? TEXT("Movable") :
                            LightComp->Mobility == EComponentMobility::Static ? TEXT("Static") : TEXT("Stationary"));
                 }
                 else
                 {
-                    UE_LOG(LogTemp, Error, TEXT("    Ã¢Å“â€” Light Component is NULL!"));
+                    UE_LOG(LogTemp, Error, TEXT("      Light Component is NULL!"));
                 }
                 
                 // Show stored original values
                 if (Atmo->bHasStoredOriginalLightSettings)
                 {
-                    UE_LOG(LogTemp, Warning, TEXT("    Stored Original Rotation: %s"),
+                    UE_LOG(LogTemp, Log, TEXT("    Stored Original Rotation: %s"),
                            *Atmo->OriginalLightRotation.ToString());
-                    UE_LOG(LogTemp, Warning, TEXT("    Stored Original Intensity: %.2f"),
+                    UE_LOG(LogTemp, Log, TEXT("    Stored Original Intensity: %.2f"),
                            Atmo->OriginalLightIntensity);
                 }
             }
             else
             {
-                UE_LOG(LogTemp, Error, TEXT("  Ã¢Å“â€” DirectionalLight: NOT FOUND"));
+                UE_LOG(LogTemp, Error, TEXT("    DirectionalLight: NOT FOUND"));
                 
                 // Try to find why
                 int32 DirectionalLightCount = 0;
                 for (TActorIterator<ADirectionalLight> LightIt(GWorld); LightIt; ++LightIt)
                 {
                     DirectionalLightCount++;
-                    UE_LOG(LogTemp, Warning, TEXT("    Found DirectionalLight in scene: %s (not cached)"),
+                    UE_LOG(LogTemp, Log, TEXT("    Found DirectionalLight in scene: %s (not cached)"),
                            *LightIt->GetName());
                 }
                 
@@ -2615,59 +2617,59 @@ static FAutoConsoleCommand DebugHybridIntegrationCmd(
             
             if (Atmo->SkyAtmosphereComponent)
             {
-                UE_LOG(LogTemp, Warning, TEXT("  Ã¢Å“â€œ SkyAtmosphere: Found"));
+                UE_LOG(LogTemp, Log, TEXT("    SkyAtmosphere: Found"));
             }
             else
             {
-                UE_LOG(LogTemp, Warning, TEXT("  Ã¢Å“â€” SkyAtmosphere: NOT FOUND"));
+                UE_LOG(LogTemp, Warning, TEXT("    SkyAtmosphere: NOT FOUND"));
             }
             
             if (Atmo->VolumetricCloudComponent)
             {
-                UE_LOG(LogTemp, Warning, TEXT("  Ã¢Å“â€œ VolumetricCloud: Found"));
+                UE_LOG(LogTemp, Log, TEXT("    VolumetricCloud: Found"));
             }
             else
             {
-                UE_LOG(LogTemp, Warning, TEXT("  Ã¢Å“â€” VolumetricCloud: NOT FOUND"));
+                UE_LOG(LogTemp, Warning, TEXT("    VolumetricCloud: NOT FOUND"));
             }
             
             // Time of day
-            UE_LOG(LogTemp, Warning, TEXT(""));
-            UE_LOG(LogTemp, Warning, TEXT("Time System:"));
-            UE_LOG(LogTemp, Warning, TEXT("  TimeOfDay: %.3f (%s)"),
+            UE_LOG(LogTemp, Log, TEXT(""));
+            UE_LOG(LogTemp, Log, TEXT("Time System:"));
+            UE_LOG(LogTemp, Log, TEXT("  TimeOfDay: %.3f (%s)"),
                    Atmo->TimeOfDay, *Atmo->GetFormattedTime());
-            UE_LOG(LogTemp, Warning, TEXT("  bEnableTimeProgression: %s"),
+            UE_LOG(LogTemp, Log, TEXT("  bEnableTimeProgression: %s"),
                    Atmo->bEnableTimeProgression ? TEXT("TRUE") : TEXT("FALSE"));
-            UE_LOG(LogTemp, Warning, TEXT("  DayLengthSeconds: %.1f"),
+            UE_LOG(LogTemp, Log, TEXT("  DayLengthSeconds: %.1f"),
                    Atmo->DayLengthSeconds);
-            UE_LOG(LogTemp, Warning, TEXT("  Sun Angle: %.1fÃ‚Â°"),
+            UE_LOG(LogTemp, Log, TEXT("  Sun Angle: %.1fÃ‚Â°"),
                    Atmo->GetSunAngleDegrees());
-            UE_LOG(LogTemp, Warning, TEXT("  Is Daytime: %s"),
+            UE_LOG(LogTemp, Log, TEXT("  Is Daytime: %s"),
                    Atmo->IsDaytime() ? TEXT("YES") : TEXT("NO"));
             
             // Cloud layers
-            UE_LOG(LogTemp, Warning, TEXT(""));
-            UE_LOG(LogTemp, Warning, TEXT("Cloud Configuration:"));
-            UE_LOG(LogTemp, Warning, TEXT("  Low Cloud Max: %.0fm"),
+            UE_LOG(LogTemp, Log, TEXT(""));
+            UE_LOG(LogTemp, Log, TEXT("Cloud Configuration:"));
+            UE_LOG(LogTemp, Verbose, TEXT("  Low Cloud Max: %.0fm"),
                    Atmo->LowCloudMaxAltitude);
-            UE_LOG(LogTemp, Warning, TEXT("  High Cloud Min: %.0fm"),
+            UE_LOG(LogTemp, Verbose, TEXT("  High Cloud Min: %.0fm"),
                    Atmo->HighCloudMinAltitude);
-            UE_LOG(LogTemp, Warning, TEXT("  Gap Between Layers: %.0fm"),
+            UE_LOG(LogTemp, Log, TEXT("  Gap Between Layers: %.0fm"),
                    Atmo->HighCloudMinAltitude - Atmo->LowCloudMaxAltitude);
             
             // Sync parameters
-            UE_LOG(LogTemp, Warning, TEXT(""));
-            UE_LOG(LogTemp, Warning, TEXT("Sync Parameters:"));
-            UE_LOG(LogTemp, Warning, TEXT("  bSyncWithUEClouds: %s"),
+            UE_LOG(LogTemp, Log, TEXT(""));
+            UE_LOG(LogTemp, Log, TEXT("Sync Parameters:"));
+            UE_LOG(LogTemp, Log, TEXT("  bSyncWithUEClouds: %s"),
                    Atmo->bSyncWithUEClouds ? TEXT("TRUE") : TEXT("FALSE"));
-            UE_LOG(LogTemp, Warning, TEXT("  Cloud Coverage Blend: %.2f"),
+            UE_LOG(LogTemp, Verbose, TEXT("  Cloud Coverage Blend: %.2f"),
                    Atmo->CloudCoverageBlendFactor);
-            UE_LOG(LogTemp, Warning, TEXT("  Wind Sync Strength: %.2f"),
+            UE_LOG(LogTemp, Log, TEXT("  Wind Sync Strength: %.2f"),
                    Atmo->WindSyncStrength);
             
-            UE_LOG(LogTemp, Warning, TEXT(""));
-            UE_LOG(LogTemp, Warning, TEXT("=== END DEBUG ==="));
-            UE_LOG(LogTemp, Warning, TEXT(""));
+            UE_LOG(LogTemp, Log, TEXT(""));
+            UE_LOG(LogTemp, Verbose, TEXT("=== END DEBUG ==="));
+            UE_LOG(LogTemp, Log, TEXT(""));
             
             return; // Only debug first atmosphere controller found
         }
@@ -2800,12 +2802,12 @@ void AAtmosphereController::GenerateTestCloudData()
 {
     if (!CloudRenderTexture || !bGPUResourcesInitialized)
     {
-        UE_LOG(LogTemp, Warning, TEXT("GenerateTestCloudData: Resources not ready"));
+        UE_LOG(LogTemp, Log, TEXT("GenerateTestCloudData: Resources not ready"));
         return;
     }
     
     // Actually generate test cloud data with variation
-    UE_LOG(LogTemp, Warning, TEXT("Generating test cloud pattern..."));
+    UE_LOG(LogTemp, Log, TEXT("Generating test cloud pattern..."));
     
     // Capture textures for render thread
     UTextureRenderTarget2D* CloudTex = CloudRenderTexture;
@@ -2862,7 +2864,7 @@ void AAtmosphereController::GenerateTestCloudData()
                                                                               TextureData
                                                                               );
                                                    
-                                                   UE_LOG(LogTemp, Warning, TEXT("Test cloud pattern generated: %dx%d with noise pattern"), Width, Height);
+                                                   UE_LOG(LogTemp, Log, TEXT("Test cloud pattern generated: %dx%d with noise pattern"), Width, Height);
                                                });
 }
 
@@ -2902,7 +2904,7 @@ void AAtmosphereController::CreateDebugCloudPlane()
             }
         }
         
-        UE_LOG(LogTemp, Warning, TEXT("Debug cloud plane created"));
+        UE_LOG(LogTemp, Verbose, TEXT("Debug cloud plane created"));
     }
 }
 
@@ -2911,21 +2913,21 @@ void AAtmosphereController::DebugReadCloudTexture()
 {
     if (!CloudRenderTexture || !bGPUResourcesInitialized)
     {
-        UE_LOG(LogTemp, Warning, TEXT("DebugReadCloudTexture: Resources not ready"));
+        UE_LOG(LogTemp, Log, TEXT("DebugReadCloudTexture: Resources not ready"));
         return;
     }
     
     // Read back a sample of cloud data for debugging
     // This is expensive and should only be used for debugging
     
-    UE_LOG(LogTemp, Warning, TEXT("=== Cloud Texture Debug Info ==="));
-    UE_LOG(LogTemp, Warning, TEXT("Texture Size: %dx%d"), CloudRenderTexture->SizeX, CloudRenderTexture->SizeY);
+    UE_LOG(LogTemp, Verbose, TEXT("=== Cloud Texture Debug Info ==="));
+    UE_LOG(LogTemp, Verbose, TEXT("Texture Size: %dx%d"), CloudRenderTexture->SizeX, CloudRenderTexture->SizeY);
     
     // Get the pixel format enum value
     EPixelFormat Format = CloudRenderTexture->GetFormat();
-    UE_LOG(LogTemp, Warning, TEXT("Format: %d"), (int32)Format);
+    UE_LOG(LogTemp, Log, TEXT("Format: %d"), (int32)Format);
     
-    UE_LOG(LogTemp, Warning, TEXT("UAV Enabled: %s"), CloudRenderTexture->bCanCreateUAV ? TEXT("YES") : TEXT("NO"));
+    UE_LOG(LogTemp, Verbose, TEXT("UAV Enabled: %s"), CloudRenderTexture->bCanCreateUAV ? TEXT("YES") : TEXT("NO"));
     
     // In production, you could read back actual pixel data here for debugging
     // but it requires render thread synchronization
@@ -2934,32 +2936,32 @@ void AAtmosphereController::DebugReadCloudTexture()
 
 void AAtmosphereController::ValidateCloudRendering()
 {
-    UE_LOG(LogTemp, Warning, TEXT("=== Cloud Rendering Validation ==="));
-    UE_LOG(LogTemp, Warning, TEXT("CloudRenderTexture: %s"), CloudRenderTexture ? TEXT("Valid") : TEXT("NULL"));
-    UE_LOG(LogTemp, Warning, TEXT("VolumetricCloudMaterial: %s"), VolumetricCloudMaterial ? TEXT("Set") : TEXT("NULL"));
-    UE_LOG(LogTemp, Warning, TEXT("CloudMaterialInstance: %s"), CloudMaterialInstance ? TEXT("Created") : TEXT("NULL"));
-    UE_LOG(LogTemp, Warning, TEXT("CloudPostProcess: %s"), CloudPostProcess ? TEXT("Valid") : TEXT("NULL"));
+    UE_LOG(LogTemp, Verbose, TEXT("=== Cloud Rendering Validation ==="));
+    UE_LOG(LogTemp, Verbose, TEXT("CloudRenderTexture: %s"), CloudRenderTexture ? TEXT("Valid") : TEXT("NULL"));
+    UE_LOG(LogTemp, Log, TEXT("VolumetricCloudMaterial: %s"), VolumetricCloudMaterial ? TEXT("Set") : TEXT("NULL"));
+    UE_LOG(LogTemp, Log, TEXT("CloudMaterialInstance: %s"), CloudMaterialInstance ? TEXT("Created") : TEXT("NULL"));
+    UE_LOG(LogTemp, Log, TEXT("CloudPostProcess: %s"), CloudPostProcess ? TEXT("Valid") : TEXT("NULL"));
     
     if (CloudRenderTexture)
     {
-        UE_LOG(LogTemp, Warning, TEXT("  Texture Size: %dx%d"), CloudRenderTexture->SizeX, CloudRenderTexture->SizeY);
-        UE_LOG(LogTemp, Warning, TEXT("  Can Create UAV: %s"), CloudRenderTexture->bCanCreateUAV ? TEXT("YES") : TEXT("NO"));
+        UE_LOG(LogTemp, Verbose, TEXT("  Texture Size: %dx%d"), CloudRenderTexture->SizeX, CloudRenderTexture->SizeY);
+        UE_LOG(LogTemp, Verbose, TEXT("  Can Create UAV: %s"), CloudRenderTexture->bCanCreateUAV ? TEXT("YES") : TEXT("NO"));
     }
     
     if (CloudPostProcess && CloudPostProcess->Settings.WeightedBlendables.Array.Num() > 0)
     {
-        UE_LOG(LogTemp, Warning, TEXT("Post Process has %d blendables"),
+        UE_LOG(LogTemp, Verbose, TEXT("Post Process has %d blendables"),
                CloudPostProcess->Settings.WeightedBlendables.Array.Num());
     }
     
-    UE_LOG(LogTemp, Warning, TEXT("GPU Resources Initialized: %s"), bGPUResourcesInitialized ? TEXT("YES") : TEXT("NO"));
-    UE_LOG(LogTemp, Warning, TEXT("GPU Compute Enabled: %s"), bUseGPUCompute ? TEXT("YES") : TEXT("NO"));
+    UE_LOG(LogTemp, Log, TEXT("GPU Resources Initialized: %s"), bGPUResourcesInitialized ? TEXT("YES") : TEXT("NO"));
+    UE_LOG(LogTemp, Log, TEXT("GPU Compute Enabled: %s"), bUseGPUCompute ? TEXT("YES") : TEXT("NO"));
 }
 
 
 void AAtmosphereController::ResetAtmosphereSystem()
 {
-    UE_LOG(LogTemp, Warning, TEXT("=== Resetting Atmosphere System ==="));
+    UE_LOG(LogTemp, Verbose, TEXT("=== Resetting Atmosphere System ==="));
     
     // 1. Stop GPU compute immediately
     bool bWasUsingGPU = bUseGPUCompute;
@@ -3019,13 +3021,13 @@ void AAtmosphereController::ResetAtmosphereSystem()
         // Schedule recreation for next frame to ensure clean slate
         GetWorld()->GetTimerManager().SetTimerForNextTick([this]()
         {
-            UE_LOG(LogTemp, Warning, TEXT("Recreating atmosphere GPU resources..."));
+            UE_LOG(LogTemp, Log, TEXT("Recreating atmosphere GPU resources..."));
             
             // Recreate material instance BEFORE initializing GPU resources
             if (VolumetricCloudMaterial && !CloudMaterialInstance)
             {
                 CloudMaterialInstance = UMaterialInstanceDynamic::Create(VolumetricCloudMaterial, this);
-                UE_LOG(LogTemp, Warning, TEXT("Recreated CloudMaterialInstance"));
+                UE_LOG(LogTemp, Verbose, TEXT("Recreated CloudMaterialInstance"));
             }
             
             InitializeGPUResources();
@@ -3035,7 +3037,7 @@ void AAtmosphereController::ResetAtmosphereSystem()
             {
                 if (bGPUResourcesInitialized)
                 {
-                    UE_LOG(LogTemp, Warning, TEXT("Resources initialized, enabling GPU compute..."));
+                    UE_LOG(LogTemp, Log, TEXT("Resources initialized, enabling GPU compute..."));
                     
                     // Enable GPU compute (which handles initial state internally)
                     EnableGPUCompute();
@@ -3043,13 +3045,13 @@ void AAtmosphereController::ResetAtmosphereSystem()
                     // Wait one more frame for everything to be ready
                     GetWorld()->GetTimerManager().SetTimerForNextTick([this]()
                     {
-                        UE_LOG(LogTemp, Warning, TEXT("Finalizing atmosphere reset..."));
+                        UE_LOG(LogTemp, Log, TEXT("Finalizing atmosphere reset..."));
                         
                         // CRITICAL: Update debug plane with new texture references
                         if (AtmosphereDebugPlane)
                         {
                             UpdateDebugPlane();
-                            UE_LOG(LogTemp, Warning, TEXT("Debug plane updated with new textures"));
+                            UE_LOG(LogTemp, Verbose, TEXT("Debug plane updated with new textures"));
                         }
                         
                         // CRITICAL: Update cloud material with new texture references
@@ -3057,7 +3059,7 @@ void AAtmosphereController::ResetAtmosphereSystem()
                         
                         // Generate test data for immediate visual feedback
                         GenerateTestCloudData();
-                        UE_LOG(LogTemp, Warning, TEXT("Test cloud data generated for visual feedback"));
+                        UE_LOG(LogTemp, Verbose, TEXT("Test cloud data generated for visual feedback"));
                     });
                 }
                 else
@@ -3074,7 +3076,7 @@ void AAtmosphereController::ResetAtmosphereSystem()
         {
             CloudMaterialInstance = UMaterialInstanceDynamic::Create(VolumetricCloudMaterial, this);
         }
-        UE_LOG(LogTemp, Warning, TEXT("Atmosphere was not using GPU, reset complete"));
+        UE_LOG(LogTemp, Log, TEXT("Atmosphere was not using GPU, reset complete"));
     }
     
     // 8. Reset atmospheric system state if it exists
@@ -3084,7 +3086,7 @@ void AAtmosphereController::ResetAtmosphereSystem()
         // Add any necessary state resets here
     }
     
-    UE_LOG(LogTemp, Warning, TEXT("Atmosphere system reset initiated"));
+    UE_LOG(LogTemp, Verbose, TEXT("Atmosphere system reset initiated"));
 }
 
 
@@ -3092,20 +3094,20 @@ void AAtmosphereController::ResetAtmosphereSystem()
 
 void AAtmosphereController::TestResetVisualization()
 {
-    UE_LOG(LogTemp, Warning, TEXT("=== Testing Reset Visualization ==="));
+    UE_LOG(LogTemp, Verbose, TEXT("=== Testing Reset Visualization ==="));
     
     // Check texture validity
-    UE_LOG(LogTemp, Warning, TEXT("CloudRenderTexture: %s"),
+    UE_LOG(LogTemp, Verbose, TEXT("CloudRenderTexture: %s"),
            CloudRenderTexture ? TEXT("Valid") : TEXT("NULL"));
     
     if (CloudRenderTexture)
     {
-        UE_LOG(LogTemp, Warning, TEXT("  Size: %dx%d"),
+        UE_LOG(LogTemp, Log, TEXT("  Size: %dx%d"),
                CloudRenderTexture->SizeX, CloudRenderTexture->SizeY);
     }
     
     // Check debug plane
-    UE_LOG(LogTemp, Warning, TEXT("AtmosphereDebugPlane: %s"),
+    UE_LOG(LogTemp, Log, TEXT("AtmosphereDebugPlane: %s"),
            AtmosphereDebugPlane ? TEXT("Valid") : TEXT("NULL"));
     
     if (AtmosphereDebugPlane)
@@ -3114,20 +3116,20 @@ void AAtmosphereController::TestResetVisualization()
         if (MeshComp)
         {
             UMaterialInterface* Mat = MeshComp->GetMaterial(0);
-            UE_LOG(LogTemp, Warning, TEXT("  Debug plane material: %s"),
+            UE_LOG(LogTemp, Log, TEXT("  Debug plane material: %s"),
                    Mat ? TEXT("Valid") : TEXT("NULL"));
         }
     }
     
     // Force update
-    UE_LOG(LogTemp, Warning, TEXT("Forcing debug plane update..."));
+    UE_LOG(LogTemp, Log, TEXT("Forcing debug plane update..."));
     UpdateDebugPlane();
     
     // Generate visible test data
-    UE_LOG(LogTemp, Warning, TEXT("Generating test cloud pattern..."));
+    UE_LOG(LogTemp, Log, TEXT("Generating test cloud pattern..."));
     GenerateTestCloudData();
     
-    UE_LOG(LogTemp, Warning, TEXT("Test complete - check debug plane"));
+    UE_LOG(LogTemp, Log, TEXT("Test complete - check debug plane"));
 }
 
 

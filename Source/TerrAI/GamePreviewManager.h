@@ -50,16 +50,16 @@ struct TERRAI_API FMenuPreviewConfig
     
     // Spring system configuration
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Springs")
-    float InitialGroundwaterVolume = 100000000000000.0f; // m³ - enough for sustained preview
+    float InitialGroundwaterVolume = 100000000000000.0f; // mÂ³ - enough for sustained preview
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Springs")
     int32 NumberOfSprings = 5;
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Springs")
-    float MinSpringFlow = 15000.0f; // m³/s - weakest spring
+    float MinSpringFlow = 15000.0f; // mÂ³/s - weakest spring
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Springs")
-    float MaxSpringFlow = 3333333.0f; // m³/s - strongest spring
+    float MaxSpringFlow = 3333333.0f; // mÂ³/s - strongest spring
 
     FMenuPreviewConfig() = default;
 };
@@ -148,7 +148,7 @@ public:
                               FActorComponentTickFunction* ThisTickFunction) override;
 
     // ========================================================================
-    // SECTION 2: AUTHORITY-BASED INITIALIZATION ⭐
+    // SECTION 2: AUTHORITY-BASED INITIALIZATION â­
     // ========================================================================
     
     /**
@@ -208,10 +208,24 @@ public:
     void RegenerateWithCurrentSettings();
     
     /**
+     * Update preview with new map selection (triggered from menu UI)
+     * Connects UI map selection to preview terrain regeneration
+     * @param MapIndex - Index into GameInstance AvailableMaps (-1 for random)
+     */
+    UFUNCTION(BlueprintCallable, Category = "Menu Preview")
+    void SelectPreviewMap(int32 MapIndex);
+    
+    /**
      * Get current settings bundle for game transition
      */
     UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Menu Preview")
     FGameSettings GetCurrentSettings() const;
+    
+    /**
+     * Debug: Print current preview state to console
+     */
+    UFUNCTION(Exec)
+    void DebugPrintPreviewState();
 
     // ========================================================================
     // SECTION 4: PUBLIC PROPERTIES

@@ -26,14 +26,14 @@
 #define TERRAI_VALIDATE_TERRAIN_SYSTEM(TerrainPtr) \
     if (!TerrainPtr) \
     { \
-        UE_LOG(LogTemp, Warning, TEXT("%s: Terrain system is null"), *FString(__FUNCTION__)); \
+        UE_LOG(LogTemp, Log, TEXT("%s: Terrain system is null"), *FString(__FUNCTION__)); \
         return; \
     }
 
 #define TERRAI_VALIDATE_TERRAIN_SYSTEM_RET(TerrainPtr, RetVal) \
     if (!TerrainPtr) \
     { \
-        UE_LOG(LogTemp, Warning, TEXT("%s: Terrain system is null"), *FString(__FUNCTION__)); \
+        UE_LOG(LogTemp, Log, TEXT("%s: Terrain system is null"), *FString(__FUNCTION__)); \
         return RetVal; \
     }
 
