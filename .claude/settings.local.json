@@ -14,7 +14,9 @@
       "Bash(xargs basename:*)",
       "Bash(echo:*)",
       "Bash( find \"/Users/fields/Desktop/Unreal Projects/TerrAI/Content\" -type f -size +50M -exec ls -lh {} ;)",
-      "Bash(git init:*)"
+      "Bash(git init:*)",
+      "Bash(sort:*)",
+      "Bash(python3:*)"
     ]
   }
 }
