@@ -3192,6 +3192,58 @@ FVector4 AAtmosphereController::CalculateAverageConditions()
 
 
 // ============================================================================
+// SECTION 14: IScalableSystem Interface
+// ============================================================================
+/**
+ * PURPOSE:
+ * Implements IScalableSystem interface for MasterController coordination.
+ * Allows atmosphere to receive world scaling configuration and coordinate
+ * system updates from the central authority.
+ */
+
+void AAtmosphereController::ConfigureFromMaster(const FWorldScalingConfig& Config)
+{
+    CachedScalingConfig = Config;
+
+    // Update grid dimensions if needed
+    if (Config.TerrainWidth > 0 && Config.TerrainHeight > 0)
+    {
+        // Atmosphere grid can be lower resolution than terrain
+        // Typically 1/8 resolution for performance
+        int32 NewGridX = FMath::Max(64, Config.TerrainWidth / 8);
+        int32 NewGridY = FMath::Max(64, Config.TerrainHeight / 8);
+
+        if (NewGridX != GridSizeX || NewGridY != GridSizeY)
+        {
+            GridSizeX = NewGridX;
+            GridSizeY = NewGridY;
+
+            // Recreate GPU resources if already initialized
+            if (bGPUResourcesInitialized)
+            {
+                bResourcesNeedRecreation = true;
+            }
+        }
+    }
+
+    bIsScaled = true;
+
+    UE_LOG(LogTemp, Log, TEXT("AtmosphereController: Configured from master - Grid: %dx%d, Scale: %.1f"),
+           GridSizeX, GridSizeY, Config.TerrainScale);
+}
+
+void AAtmosphereController::SynchronizeCoordinates(const FWorldCoordinateSystem& Coords)
+{
+    CachedCoordinates = Coords;
+
+    // Update world origin for atmospheric calculations
+    // This ensures precipitation and wind align with world coordinates
+
+    UE_LOG(LogTemp, Verbose, TEXT("AtmosphereController: Synchronized coordinates - Origin: %s"),
+           *Coords.WorldOrigin.ToString());
+}
+
+// ============================================================================
 // END OF REORGANIZED ATMOSPHERECONTROLLER.CPP
 // ============================================================================
 /**

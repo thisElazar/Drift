@@ -1217,9 +1217,15 @@ public:
     // Water transfer authority functions
      UFUNCTION(BlueprintCallable, Category = "Water Authority")
      void TransferSurfaceToGroundwater(FVector WorldLocation, float InfiltrationVolume);
-     
+
      UFUNCTION(BlueprintCallable, Category = "Water Authority")
      void TransferGroundwaterToSurface(FVector WorldLocation, float DischargeVolume);
+
+     /** Transfer surface water to soil moisture layer (intermediate before groundwater)
+      *  This is the proper path for infiltration - water sits in soil for plants to use,
+      *  then slowly drains to groundwater over time via GeologyController tick */
+     UFUNCTION(BlueprintCallable, Category = "Water Authority")
+     void TransferSurfaceToSoilMoisture(FVector WorldLocation, float InfiltrationVolume);
     
     
      // Helper function
@@ -1564,8 +1570,10 @@ public:
     
     // ===== OROGRAPHIC FEEDBACK =====
     
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Orographic")
-    float HydraulicErosionStrength = 0.5f;
+    // Erosion strength - keep LOW for realistic geological timescales
+    // 0.5 = instant canyon carving, 0.005 = visible but gradual erosion
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Orographic", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+    float HydraulicErosionStrength = 0.005f;
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Orographic")
     float OrographicLiftCoefficient = 1.0f;

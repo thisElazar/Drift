@@ -199,20 +199,47 @@ void ADynamicTerrain::Tick(float DeltaTime)
             {
                 ExecuteTerrainComputeShader(DeltaTime);
             }
-            
+
+            // Update height buffer interpolation for smooth terrain transitions
+            UpdateHeightBufferInterpolation(DeltaTime);
+
+            // Update water height texture EVERY FRAME (no interpolation)
+            // This decouples water visuals from the terrain double-buffer system
+            UpdateWaterHeightTexture();
+
             // CRITICAL: Still process water chunk updates in GPU mode
             ProcessPendingWaterChunkUpdates();
-            
-            // Update GPU chunk visuals if needed
+
+            // FAST SYNC: Lightweight height-only sync for water (30Hz)
+            // This lets water see terrain changes smoothly without expensive mesh rebuilds
+            if (bEnableGPUErosion && bGPUDataDirty)
+            {
+                WaterHeightSyncTimer += DeltaTime;
+                if (WaterHeightSyncTimer >= WaterHeightSyncInterval)
+                {
+                    SyncGPUHeightsForWater();
+                    WaterHeightSyncTimer = 0.0f;
+                }
+            }
+
+            // SLOW SYNC: Full sync with validation and mesh updates (0.5s)
+            // This handles mesh rebuilds and is expensive - keep it slow
             if (bGPUDataDirty)
             {
                 GPUSyncTimer += DeltaTime;
-                if (GPUSyncTimer >= 0.1f) // Sync every 100ms max
+                float SyncInterval = 0.5f;  // Full sync always at 0.5s
+                if (GPUSyncTimer >= SyncInterval)
                 {
+                    SyncGPUToCPU();
                     SyncGPUChunkVisuals();
                     GPUSyncTimer = 0.0f;
-                    bGPUDataDirty = false;
                 }
+            }
+
+            // Process any chunks that need mesh regeneration (queued by SyncGPUToCPU)
+            if (PendingChunkUpdates.Num() > 0)
+            {
+                ProcessPendingChunkUpdates();
             }
             break;
             
@@ -761,6 +788,19 @@ void ADynamicTerrain::ResetTerrainFully()
 
     // Initialize chunk system (creates meshes automatically)
     InitializeChunks();
+
+    // ===== CRITICAL: UPLOAD NEW TERRAIN TO GPU =====
+    // If in GPU mode, the new procedural terrain must be uploaded to GPU textures
+    if (CurrentComputeMode == ETerrainComputeMode::GPU && bGPUInitialized)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("Uploading new terrain to GPU after reset..."));
+        TransferHeightmapToGPU();
+        bGPUDataDirty = true;  // Mark dirty so sync system picks it up
+
+        // Reset sync timers so water sees fresh data immediately
+        GPUSyncTimer = 0.0f;
+        WaterHeightSyncTimer = 0.0f;
+    }
 
     // ===== CRITICAL FIX: PROPER WATER SYSTEM RESET SEQUENCE =====
     
@@ -1312,17 +1352,24 @@ int32 ADynamicTerrain::FixInvalidHeights(TArray<float>& HeightData)
 
 void ADynamicTerrain::ModifyTerrain(FVector WorldPosition, float Radius, float Strength, bool bRaise)
 {
-    
+    static int32 ModifyTerrainCallCount = 0;
+    ModifyTerrainCallCount++;
+    if (ModifyTerrainCallCount <= 5)
+    {
+        UE_LOG(LogTemp, Warning, TEXT(">>> ModifyTerrain CALLED #%d: Pos=%s Radius=%.1f Strength=%.1f Raise=%d"),
+               ModifyTerrainCallCount, *WorldPosition.ToString(), Radius, Strength, bRaise ? 1 : 0);
+    }
+
     /*if (CurrentComputeMode == ETerrainComputeMode::GPU) {
         UpdateGPUBrush(WorldPosition, Radius, Strength, bRaise);
         return; // Skip CPU path
     }
      */
-    // PERFORMANCE: Throttle to 20 modifications/second
+    // PERFORMANCE: Throttle to 20 modifications/second (50ms cooldown)
     float CurrentTime = GetCachedFrameTime();
     if (CurrentTime - LastModificationTime < ModificationCooldown)
     {
-        return;
+        return;  // Throttled - too frequent
     }
     LastModificationTime = CurrentTime;
     
@@ -1334,12 +1381,29 @@ void ADynamicTerrain::ModifyTerrain(FVector WorldPosition, float Radius, float S
     // Use MasterController scaling authority
     float ScaledRadius = CachedMasterController->GetBrushScaleMultiplier() * (Radius / TerrainScale);
     
+    // Sample height BEFORE modification
+    int32 CenterIndex = Y * TerrainWidth + X;
+    float HeightBefore = (CenterIndex >= 0 && CenterIndex < HeightMap.Num()) ? HeightMap[CenterIndex] : 0.0f;
+
     ModifyTerrainAtIndex(X, Y, ScaledRadius, Strength, bRaise);
-    
+
+    // Sample height AFTER modification
+    float HeightAfter = (CenterIndex >= 0 && CenterIndex < HeightMap.Num()) ? HeightMap[CenterIndex] : 0.0f;
+
+    UE_LOG(LogTemp, Warning, TEXT("BRUSH EDIT: Center[%d,%d] Before=%.2f After=%.2f Delta=%.2f"),
+           X, Y, HeightBefore, HeightAfter, HeightAfter - HeightBefore);
+
     if (bUseGPUTerrain)
-        {
-            SyncCPUToGPU();
-        }
+    {
+        // Upload our edit to GPU and WAIT for it to complete
+        SyncCPUToGPU();
+        FlushRenderingCommands();
+
+        // Mark the time of this edit - used to protect against sync overwrites
+        LastUserEditTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+
+        UE_LOG(LogTemp, Warning, TEXT("BRUSH EDIT: Uploaded to GPU, edit protected until %.2f"), LastUserEditTime + 0.5f);
+    }
 }
 
 // 3.2 INDEX-BASED MODIFICATION
@@ -1544,28 +1608,39 @@ void ADynamicTerrain::GenerateChunkMesh(int32 ChunkX, int32 ChunkY)
     {
         for (int32 X = StartX; X < EndX; X++)
         {
-            float Height = GetHeightSafe(X, Y);
-            
+            float Height;
+
+            // GPU Rendering Mode: Generate FLAT mesh, material WPO handles height
+            // This eliminates expensive mesh regeneration when erosion changes heights
+            if (bUseGPUHeightmapRendering && bGPUInitialized)
+            {
+                Height = 0.0f;  // Flat mesh - WPO will displace
+            }
+            else
+            {
+                Height = GetHeightSafe(X, Y);  // Traditional CPU-baked heights
+            }
+
             // Local position within chunk (relative to chunk origin)
             FVector LocalPosition = FVector(
                 (X - StartX) * TerrainScale,
                 (Y - StartY) * TerrainScale,
                 Height
             );
-            
+
             Vertices.Add(LocalPosition);
-            
-            // Calculate normal
-            FVector Normal = CalculateVertexNormal(X, Y);
+
+            // Calculate normal (for GPU mode, material will recalculate from heightmap)
+            FVector Normal = bUseGPUHeightmapRendering ? FVector::UpVector : CalculateVertexNormal(X, Y);
             Normals.Add(Normal);
-            
-            // UV coordinates using actual chunk dimensions
+
+            // UV0: Local UVs for chunk texturing
             float U = (float)(X - StartX) / (EndX - StartX - 1);
             float V = (float)(Y - StartY) / (EndY - StartY - 1);
             UVs.Add(FVector2D(U, V));
-            
-            // Height-based vertex colors
-            float NormalizedHeight = Height / MaxTerrainHeight;
+
+            // Height-based vertex colors (for GPU mode, use 0 as placeholder)
+            float NormalizedHeight = bUseGPUHeightmapRendering ? 0.0f : Height / MaxTerrainHeight;
             FLinearColor VertexColor = GetHeightBasedColor(NormalizedHeight);
             VertexColors.Add(VertexColor);
         }
@@ -1601,7 +1676,17 @@ void ADynamicTerrain::GenerateChunkMesh(int32 ChunkX, int32 ChunkY)
         0, Vertices, Triangles, Normals, UVs, VertexColors,
         TArray<FProcMeshTangent>(), true
     );
-    
+
+    // CRITICAL: Expand bounds for GPU heightmap rendering mode
+    // When using WPO, mesh vertices are at Z=0 but displaced by the shader
+    // Without expanded bounds, frustum culling incorrectly clips chunks
+    if (bUseGPUHeightmapRendering && bGPUInitialized)
+    {
+        // Use a large bounds scale to ensure WPO-displaced geometry is never culled
+        // The flat mesh will be expanded to include the full terrain height range
+        Chunk.MeshComponent->SetBoundsScale(100.0f);
+    }
+
     // ===== CRITICAL FIX: MATERIAL APPLICATION ORDER =====
     
     // CRITICAL FIX: Ensure material is ready BEFORE mesh generation
@@ -1664,10 +1749,23 @@ void ADynamicTerrain::UpdateChunk(int32 ChunkIndex)
     {
         return;
     }
-    
+
     FTerrainChunk& Chunk = TerrainChunks[ChunkIndex];
     GenerateChunkMesh(Chunk.ChunkX, Chunk.ChunkY);
-    
+
+    // CRITICAL: Update material parameters for GPU rendering mode
+    // Without this, the flat mesh won't have heightmap texture binding or UV transforms
+    if (bUseGPUHeightmapRendering && bGPUInitialized && HeightRenderTexture)
+    {
+        UMaterialInstanceDynamic* DynMaterial = Cast<UMaterialInstanceDynamic>(
+            Chunk.MeshComponent->GetMaterial(0)
+        );
+        if (DynMaterial)
+        {
+            UpdateGPUChunkMaterialParams(DynMaterial, Chunk);
+        }
+    }
+
     TotalChunkUpdatesThisFrame++;
 }
 
@@ -2852,11 +2950,11 @@ bool ADynamicTerrain::ValidateChunkBoundaryIntegrity(int32 ChunkIndex) const
     {
         return false;
     }
-    
+
     const FTerrainChunk& Chunk = TerrainChunks[ChunkIndex];
     int32 ChunkX = Chunk.ChunkX;
     int32 ChunkY = Chunk.ChunkY;
-    
+
     // Check right boundary
     if (ChunkX < ChunksX - 1)
     {
@@ -2868,9 +2966,18 @@ bool ADynamicTerrain::ValidateChunkBoundaryIntegrity(int32 ChunkIndex) const
             {
                 float LeftHeight = GetHeightSafe(BoundaryX - 1, Y);
                 float RightHeight = GetHeightSafe(BoundaryX, Y);
-                
+
                 if (FMath::Abs(LeftHeight - RightHeight) > BOUNDARY_HEIGHT_TOLERANCE)
                 {
+                    // DIAGNOSTIC: Log first few boundary failures
+                    static int32 BoundaryFailLog = 0;
+                    if (BoundaryFailLog < 10)
+                    {
+                        BoundaryFailLog++;
+                        UE_LOG(LogTemp, Warning, TEXT("BOUNDARY FAIL #%d: Chunk(%d,%d) BoundaryX=%d Y=%d | Left[%d]=%.2f Right[%d]=%.2f Diff=%.2f"),
+                               BoundaryFailLog, ChunkX, ChunkY, BoundaryX, Y,
+                               BoundaryX - 1, LeftHeight, BoundaryX, RightHeight, FMath::Abs(LeftHeight - RightHeight));
+                    }
                     return false; // Significant height difference detected
                 }
             }
@@ -3240,20 +3347,63 @@ void ADynamicTerrain::CreateGPUResources()
 {
     // Release any existing resources
     ReleaseGPUResources();
-    
-    // Create height render texture with UAV support
-    HeightRenderTexture = NewObject<UTextureRenderTarget2D>(this);
-    HeightRenderTexture->InitCustomFormat(
+
+    // ========== DOUBLE BUFFERED HEIGHT TEXTURES ==========
+    // Double buffering eliminates visual pulsing during GPU sync:
+    // - Materials always read from the stable "read" buffer
+    // - Compute shader writes to the "write" buffer
+    // - After compute completes, buffers are swapped
+    // This ensures materials never sample partially-updated data
+
+    // Create height buffer A
+    HeightRenderTexture_A = NewObject<UTextureRenderTarget2D>(this);
+    HeightRenderTexture_A->InitCustomFormat(
         GPUTextureWidth,
         GPUTextureHeight,
-        PF_R32_FLOAT,
+        PF_FloatRGBA,
         false
     );
-    HeightRenderTexture->AddressX = TA_Clamp;
-    HeightRenderTexture->AddressY = TA_Clamp;
-    HeightRenderTexture->bCanCreateUAV = true;  // Enable UAV
-    HeightRenderTexture->UpdateResourceImmediate();
-    
+    HeightRenderTexture_A->AddressX = TA_Clamp;
+    HeightRenderTexture_A->AddressY = TA_Clamp;
+    HeightRenderTexture_A->bCanCreateUAV = true;
+    HeightRenderTexture_A->UpdateResourceImmediate();
+
+    // Create height buffer B
+    HeightRenderTexture_B = NewObject<UTextureRenderTarget2D>(this);
+    HeightRenderTexture_B->InitCustomFormat(
+        GPUTextureWidth,
+        GPUTextureHeight,
+        PF_FloatRGBA,
+        false
+    );
+    HeightRenderTexture_B->AddressX = TA_Clamp;
+    HeightRenderTexture_B->AddressY = TA_Clamp;
+    HeightRenderTexture_B->bCanCreateUAV = true;
+    HeightRenderTexture_B->UpdateResourceImmediate();
+
+    // Initialize buffer pointers - A starts as read (stable), B starts as write
+    CurrentHeightBufferIndex = 0;
+    HeightReadTexture = HeightRenderTexture_A;
+    HeightWriteTexture = HeightRenderTexture_B;
+    bFirstComputeExecution = true;  // Reset for new GPU session
+
+    // Legacy compatibility - point to read texture so existing code works
+    HeightRenderTexture = HeightReadTexture;
+
+    // Create water-specific height texture (NO double buffering - updates every frame)
+    // This decouples water flow visuals from the terrain interpolation system
+    WaterHeightTexture = NewObject<UTextureRenderTarget2D>(this);
+    WaterHeightTexture->InitCustomFormat(
+        GPUTextureWidth,
+        GPUTextureHeight,
+        PF_FloatRGBA,
+        false
+    );
+    WaterHeightTexture->AddressX = TA_Clamp;
+    WaterHeightTexture->AddressY = TA_Clamp;
+    WaterHeightTexture->bCanCreateUAV = false;  // Read-only for water, no compute writes
+    WaterHeightTexture->UpdateResourceImmediate();
+
     // Create erosion render texture with UAV support
     ErosionRenderTexture = NewObject<UTextureRenderTarget2D>(this);
     ErosionRenderTexture->InitCustomFormat(
@@ -3300,31 +3450,113 @@ void ADynamicTerrain::CreateGPUResources()
 
 void ADynamicTerrain::ReleaseGPUResources()
 {
-    if (HeightRenderTexture)
+    // Release double-buffered height textures
+    if (HeightRenderTexture_A)
     {
-        HeightRenderTexture->ReleaseResource();
-        HeightRenderTexture = nullptr;
+        HeightRenderTexture_A->ReleaseResource();
+        HeightRenderTexture_A = nullptr;
     }
-    
+
+    if (HeightRenderTexture_B)
+    {
+        HeightRenderTexture_B->ReleaseResource();
+        HeightRenderTexture_B = nullptr;
+    }
+
+    // Clear buffer pointers
+    HeightReadTexture = nullptr;
+    HeightWriteTexture = nullptr;
+    HeightRenderTexture = nullptr;
+    CurrentHeightBufferIndex = 0;
+    bFirstComputeExecution = true;
+
+    if (WaterHeightTexture)
+    {
+        WaterHeightTexture->ReleaseResource();
+        WaterHeightTexture = nullptr;
+    }
+
     if (ErosionRenderTexture)
     {
         ErosionRenderTexture->ReleaseResource();
         ErosionRenderTexture = nullptr;
     }
-    
+
     if (HardnessRenderTexture)
     {
         HardnessRenderTexture->ReleaseResource();
         HardnessRenderTexture = nullptr;
     }
-    
+
     if (NormalRenderTexture)
     {
         NormalRenderTexture->ReleaseResource();
         NormalRenderTexture = nullptr;
     }
-    
+
     UE_LOG(LogTemp, Log, TEXT("GPU Resources released"));
+}
+
+
+void ADynamicTerrain::SwapHeightBuffers()
+{
+    // NOTE: This function NO LONGER SWAPS buffer pointers.
+    // We now use a copy-after-compute approach instead:
+    // - HeightReadTexture (A) = stable buffer, material always samples this
+    // - HeightWriteTexture (B) = compute writes here, then copied to A
+    // This eliminates visual vibration caused by material alternating between textures.
+
+    // Just update materials to use HeightReadTexture (always A)
+    for (FTerrainChunk& Chunk : TerrainChunks)
+    {
+        if (Chunk.MeshComponent)
+        {
+            UMaterialInstanceDynamic* DynMaterial = Cast<UMaterialInstanceDynamic>(
+                Chunk.MeshComponent->GetMaterial(0));
+            if (DynMaterial)
+            {
+                DynMaterial->SetTextureParameterValue(FName("HeightmapTexture"), HeightReadTexture);
+                DynMaterial->SetScalarParameterValue(FName("HeightBlendFactor"), 1.0f);
+            }
+        }
+    }
+}
+
+void ADynamicTerrain::UpdateHeightBufferInterpolation(float DeltaTime)
+{
+    // NOTE: Material-side interpolation is disabled because with only 2 buffers,
+    // the "previous" buffer gets overwritten during compute execution.
+    // This function is kept as a stub in case we add a 3rd buffer for true interpolation.
+    // For now, double buffering alone provides stable compute shader execution.
+}
+
+void ADynamicTerrain::UpdateWaterHeightTexture()
+{
+    // Copy current height data to water texture EVERY FRAME
+    // This ensures water always sees the latest terrain without interpolation artifacts
+    if (!bGPUInitialized || !WaterHeightTexture || !HeightReadTexture) return;
+
+    ENQUEUE_RENDER_COMMAND(UpdateWaterHeightTexture)(
+        [this](FRHICommandListImmediate& RHICmdList)
+        {
+            if (!WaterHeightTexture || !HeightReadTexture) return;
+
+            FTextureRenderTargetResource* SrcResource = HeightReadTexture->GetRenderTargetResource();
+            FTextureRenderTargetResource* DstResource = WaterHeightTexture->GetRenderTargetResource();
+
+            if (SrcResource && DstResource)
+            {
+                FRHITexture* SrcTexture = SrcResource->GetRenderTargetTexture();
+                FRHITexture* DstTexture = DstResource->GetRenderTargetTexture();
+
+                if (SrcTexture && DstTexture)
+                {
+                    // Direct GPU copy - very fast
+                    FRHICopyTextureInfo CopyInfo;
+                    RHICmdList.CopyTexture(SrcTexture, DstTexture, CopyInfo);
+                }
+            }
+        });
 }
 
 
@@ -3338,19 +3570,39 @@ void ADynamicTerrain::InitializeGPUTerrain()
         UE_LOG(LogTemp, Warning, TEXT("GPU Terrain already initialized"));
         return;
     }
-    
-    // Check if we have terrain data
-    if (HeightMap.Num() > 0)
+
+    // CRITICAL: Require FULL terrain data before GPU init
+    // This prevents corruption from partial/empty HeightMap
+    int32 ExpectedSize = TerrainWidth * TerrainHeight;
+    if (HeightMap.Num() < ExpectedSize || ExpectedSize <= 0)
     {
-        // We have data - initialize with it
-        InitializeGPUTerrainWithData();
-    }
-    else
-    {
-        // No data yet - just mark as pending
-        UE_LOG(LogTemp, Warning, TEXT("GPU Terrain init deferred - no terrain data yet"));
+        UE_LOG(LogTemp, Warning, TEXT("GPU Terrain init deferred - HeightMap has %d elements, need %d"),
+               HeightMap.Num(), ExpectedSize);
         bPendingGPUInit = true;
+        return;
     }
+
+    // Validate HeightMap has actual terrain data (not all zeros)
+    float MinH = TNumericLimits<float>::Max();
+    float MaxH = TNumericLimits<float>::Lowest();
+    for (int32 i = 0; i < FMath::Min(1000, HeightMap.Num()); i++)
+    {
+        MinH = FMath::Min(MinH, HeightMap[i]);
+        MaxH = FMath::Max(MaxH, HeightMap[i]);
+    }
+    float Range = MaxH - MinH;
+
+    if (Range < 1.0f)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("GPU Terrain init deferred - HeightMap appears flat (range: %.2f)"), Range);
+        bPendingGPUInit = true;
+        return;
+    }
+
+    // We have valid data - initialize with it
+    UE_LOG(LogTemp, Log, TEXT("GPU Terrain init proceeding - HeightMap has %d elements, range: %.2f"),
+           HeightMap.Num(), Range);
+    InitializeGPUTerrainWithData();
 }
 
 
@@ -3361,14 +3613,32 @@ void ADynamicTerrain::InitializeGPUTerrainWithData()
         UE_LOG(LogTemp, Warning, TEXT("GPU Terrain already initialized"));
         return;
     }
-    
-    // Ensure we have valid terrain data first
-    if (HeightMap.Num() == 0)
+
+    // CRITICAL: Require FULL and VALID terrain data
+    int32 ExpectedSize = TerrainWidth * TerrainHeight;
+    if (HeightMap.Num() < ExpectedSize || ExpectedSize <= 0)
     {
-        UE_LOG(LogTemp, Error, TEXT("Cannot initialize GPU terrain - no height data!"));
+        UE_LOG(LogTemp, Error, TEXT("Cannot initialize GPU terrain - HeightMap has %d elements, need %d!"),
+               HeightMap.Num(), ExpectedSize);
         return;
     }
-    
+
+    // Validate HeightMap has actual terrain data (not all zeros)
+    float MinH = TNumericLimits<float>::Max();
+    float MaxH = TNumericLimits<float>::Lowest();
+    for (int32 i = 0; i < FMath::Min(1000, HeightMap.Num()); i++)
+    {
+        MinH = FMath::Min(MinH, HeightMap[i]);
+        MaxH = FMath::Max(MaxH, HeightMap[i]);
+    }
+
+    if ((MaxH - MinH) < 1.0f)
+    {
+        UE_LOG(LogTemp, Error, TEXT("Cannot initialize GPU terrain - HeightMap appears flat (range: %.2f)!"),
+               MaxH - MinH);
+        return;
+    }
+
     // Use exact dimensions
     GPUTextureWidth = TerrainWidth;
     GPUTextureHeight = TerrainHeight;
@@ -3376,12 +3646,14 @@ void ADynamicTerrain::InitializeGPUTerrainWithData()
     UE_LOG(LogTemp, Log, TEXT("Initializing GPU Terrain with existing data: %dx%d"),
            GPUTextureWidth, GPUTextureHeight);
     
-    // Create GPU resources
+    // Create GPU resources (includes double-buffered height textures)
     CreateGPUResources();
-    
-    if (!HeightRenderTexture)
+
+    if (!HeightRenderTexture_A || !HeightRenderTexture_B)
     {
-        UE_LOG(LogTemp, Error, TEXT("Failed to create GPU resources!"));
+        UE_LOG(LogTemp, Error, TEXT("Failed to create GPU resources! A=%s B=%s"),
+               HeightRenderTexture_A ? TEXT("Valid") : TEXT("NULL"),
+               HeightRenderTexture_B ? TEXT("Valid") : TEXT("NULL"));
         bGPUInitialized = false;
         return;
     }
@@ -3389,17 +3661,63 @@ void ADynamicTerrain::InitializeGPUTerrainWithData()
     // CRITICAL: Upload existing CPU terrain to GPU
     UE_LOG(LogTemp, Warning, TEXT("Uploading CPU terrain data to GPU..."));
     TransferHeightmapToGPU();
-    
-    // Wait for upload to complete
+
+    // Upload hardness data from GeologyController
+    UE_LOG(LogTemp, Warning, TEXT("Uploading hardness data to GPU..."));
+    SyncHardnessToGPU();
+
+    // Wait for uploads to complete
+    UE_LOG(LogTemp, Warning, TEXT(">>> Waiting for GPU uploads to complete (FlushRenderingCommands)..."));
     FlushRenderingCommands();
-    
+    UE_LOG(LogTemp, Warning, TEXT(">>> GPU upload flush completed, verifying..."));
+
+    // Verify upload by reading back a few samples
+    VerifyGPUUpload();
+
+    UE_LOG(LogTemp, Warning, TEXT(">>> GPU verification completed"));
     bGPUInitialized = true;
-    
+
     // Set compute mode but DON'T sync back from GPU
     if (bUseGPUTerrain)
     {
         CurrentComputeMode = ETerrainComputeMode::GPU;
         UE_LOG(LogTemp, Log, TEXT("  GPU Terrain initialized with CPU data as authority"));
+    }
+
+    // CRITICAL: If using GPU heightmap rendering, REGENERATE all chunks as FLAT meshes
+    // Initial generation used CPU heights because bGPUInitialized was false at that time
+    // We must regenerate as flat meshes so WPO can sample heights from GPU texture
+    if (bUseGPUHeightmapRendering)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("GPU Rendering Mode: Regenerating all %d chunks as FLAT meshes..."),
+               TerrainChunks.Num());
+
+        for (FTerrainChunk& Chunk : TerrainChunks)
+        {
+            if (Chunk.MeshComponent)
+            {
+                // Regenerate mesh as FLAT (Z=0) - now bGPUInitialized is true so it will be flat
+                GenerateChunkMesh(Chunk.ChunkX, Chunk.ChunkY);
+
+                // Ensure we have a dynamic material instance
+                UMaterialInstanceDynamic* DynMaterial = Cast<UMaterialInstanceDynamic>(
+                    Chunk.MeshComponent->GetMaterial(0)
+                );
+
+                if (!DynMaterial && CurrentActiveMaterial)
+                {
+                    DynMaterial = UMaterialInstanceDynamic::Create(CurrentActiveMaterial, this);
+                    Chunk.MeshComponent->SetMaterial(0, DynMaterial);
+                }
+
+                if (DynMaterial)
+                {
+                    UpdateGPUChunkMaterialParams(DynMaterial, Chunk);
+                }
+            }
+        }
+
+        UE_LOG(LogTemp, Warning, TEXT("GPU Rendering Mode: All chunks regenerated with flat geometry + heightmap binding"));
     }
 }
 
@@ -3429,50 +3747,192 @@ void ADynamicTerrain::ToggleGPUTerrain(bool bEnable)
 
 void ADynamicTerrain::TransferHeightmapToGPU()
 {
-    if (!HeightRenderTexture || HeightMap.Num() == 0) return;
-    
-    TArray<float> GPUData;
-    GPUData.SetNum(GPUTextureWidth * GPUTextureHeight);  // Use GPU dimensions
-    
-    // Initialize to zero (prevents garbage)
+    UE_LOG(LogTemp, Warning, TEXT("*** TransferHeightmapToGPU ENTERED ***"));
+
+    // Validate double buffers exist
+    if (!HeightRenderTexture_A || !HeightRenderTexture_B)
+    {
+        UE_LOG(LogTemp, Error, TEXT("*** TransferHeightmapToGPU: Height buffers not initialized! A=%s B=%s ***"),
+               HeightRenderTexture_A ? TEXT("Valid") : TEXT("NULL"),
+               HeightRenderTexture_B ? TEXT("Valid") : TEXT("NULL"));
+        return;
+    }
+
+    // CRITICAL: Require valid HeightMap data before uploading
+    int32 ExpectedSize = TerrainWidth * TerrainHeight;
+    if (HeightMap.Num() < ExpectedSize || ExpectedSize <= 0)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("TransferHeightmapToGPU: Skipping - HeightMap has %d elements, need %d"),
+               HeightMap.Num(), ExpectedSize);
+        return;
+    }
+
+    // NOTE: PF_FloatRGBA is actually 16-bit HALF-floats (FFloat16Color = 8 bytes per pixel)
+    // NOT 32-bit floats! Must use FFloat16Color for correct upload.
+    TArray<FFloat16Color> GPUData;
+    GPUData.SetNum(GPUTextureWidth * GPUTextureHeight);
+
+    // Initialize to zero height (prevents garbage)
     for (int32 i = 0; i < GPUData.Num(); i++)
     {
-        GPUData[i] = 0.0f;
+        GPUData[i] = FFloat16Color(FLinearColor(0.0f, 0.0f, 0.0f, 1.0f));
     }
-    
-    // Copy with proper bounds checking
+
+    // Copy height values into R channel with proper bounds checking
     for (int32 Y = 0; Y < FMath::Min(TerrainHeight, GPUTextureHeight); Y++)
     {
         for (int32 X = 0; X < FMath::Min(TerrainWidth, GPUTextureWidth); X++)
         {
             int32 CPUIndex = Y * TerrainWidth + X;
             int32 GPUIndex = Y * GPUTextureWidth + X;
-            
+
             if (CPUIndex < HeightMap.Num() && GPUIndex < GPUData.Num())
             {
-                GPUData[GPUIndex] = HeightMap[CPUIndex];
+                // Store height in R channel only (convert to half-float)
+                GPUData[GPUIndex] = FFloat16Color(FLinearColor(HeightMap[CPUIndex], 0.0f, 0.0f, 1.0f));
             }
         }
     }
-    
+
+    // DEBUG: Log sample values being uploaded
+    UE_LOG(LogTemp, Warning, TEXT("TransferHeightmapToGPU: Uploading %d pixels as FFloat16Color, first 5 values:"), GPUData.Num());
+    for (int32 i = 0; i < FMath::Min(5, GPUData.Num()); i++)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("  [%d] Height=%.2f"), i, GPUData[i].R.GetFloat());
+    }
+
+    // DOUBLE BUFFER: Upload to BOTH buffers so they start with identical data
     ENQUEUE_RENDER_COMMAND(UploadHeightmapToGPU)(
         [this, GPUData](FRHICommandListImmediate& RHICmdList)
         {
+            // Stride for RGBA half-float texture (4 half-floats = 8 bytes per pixel)
+            uint32 Stride = GPUTextureWidth * sizeof(FFloat16Color);
+            FUpdateTextureRegion2D Region(0, 0, 0, 0, GPUTextureWidth, GPUTextureHeight);
+
+            // Upload to Buffer A
+            if (HeightRenderTexture_A)
+            {
+                FTextureRHIRef TextureRHI_A = HeightRenderTexture_A->GetRenderTargetResource()->GetRenderTargetTexture();
+                if (TextureRHI_A)
+                {
+                    RHICmdList.UpdateTexture2D(TextureRHI_A, 0, Region, Stride, (const uint8*)GPUData.GetData());
+                    UE_LOG(LogTemp, Warning, TEXT("TransferHeightmapToGPU: Uploaded to Buffer A"));
+                }
+            }
+
+            // Upload to Buffer B
+            if (HeightRenderTexture_B)
+            {
+                FTextureRHIRef TextureRHI_B = HeightRenderTexture_B->GetRenderTargetResource()->GetRenderTargetTexture();
+                if (TextureRHI_B)
+                {
+                    RHICmdList.UpdateTexture2D(TextureRHI_B, 0, Region, Stride, (const uint8*)GPUData.GetData());
+                    UE_LOG(LogTemp, Warning, TEXT("TransferHeightmapToGPU: Uploaded to Buffer B"));
+                }
+            }
+
+            // Upload to WaterHeightTexture (continuous water texture - no double buffering)
+            if (WaterHeightTexture)
+            {
+                FTextureRHIRef TextureRHI_Water = WaterHeightTexture->GetRenderTargetResource()->GetRenderTargetTexture();
+                if (TextureRHI_Water)
+                {
+                    RHICmdList.UpdateTexture2D(TextureRHI_Water, 0, Region, Stride, (const uint8*)GPUData.GetData());
+                    UE_LOG(LogTemp, Warning, TEXT("TransferHeightmapToGPU: Uploaded to WaterHeightTexture"));
+                }
+            }
+
+            UE_LOG(LogTemp, Warning, TEXT("TransferHeightmapToGPU: All buffers uploaded (A, B, WaterHeight)"));
+        });
+}
+
+// Verification function to confirm GPU upload succeeded
+void ADynamicTerrain::VerifyGPUUpload()
+{
+    UE_LOG(LogTemp, Warning, TEXT(">>> VerifyGPUUpload CALLED <<<"));
+
+    if (!HeightRenderTexture)
+    {
+        UE_LOG(LogTemp, Error, TEXT("VerifyGPUUpload: No render texture!"));
+        return;
+    }
+
+    EPixelFormat Format = HeightRenderTexture->GetFormat();
+    UE_LOG(LogTemp, Warning, TEXT("VerifyGPUUpload: Texture format = %d (PF_FloatRGBA=%d)"), (int32)Format, (int32)PF_FloatRGBA);
+
+    if (Format != PF_FloatRGBA && Format != PF_A32B32G32R32F)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("VerifyGPUUpload: Skipping - format %d not compatible"), (int32)Format);
+        return;
+    }
+
+    UE_LOG(LogTemp, Warning, TEXT("VerifyGPUUpload: Reading back GPU texture to verify upload..."));
+
+    ENQUEUE_RENDER_COMMAND(VerifyGPUUploadCmd)(
+        [this](FRHICommandListImmediate& RHICmdList)
+        {
             FTextureRHIRef TextureRHI = HeightRenderTexture->GetRenderTargetResource()->GetRenderTargetTexture();
             if (!TextureRHI) return;
-            
-            // Use GPU texture width for stride
-            uint32 Stride = GPUTextureWidth * sizeof(float);
-            FUpdateTextureRegion2D Region(0, 0, 0, 0, GPUTextureWidth, GPUTextureHeight);
-            
-            RHICmdList.UpdateTexture2D(
-                TextureRHI,
-                0,
-                Region,
-                Stride,
-                (const uint8*)GPUData.GetData()
-            );
+
+            TArray<FFloat16Color> SurfaceData;
+            FIntRect Rect(0, 0, GPUTextureWidth, GPUTextureHeight);
+
+            RHICmdList.ReadSurfaceFloatData(TextureRHI, Rect, SurfaceData, CubeFace_PosX, 0, 0);
+
+            AsyncTask(ENamedThreads::GameThread, [this, SurfaceData]()
+            {
+                if (SurfaceData.Num() == 0)
+                {
+                    UE_LOG(LogTemp, Error, TEXT("VerifyGPUUpload: Readback returned 0 samples!"));
+                    return;
+                }
+
+                // Compare first 10 samples
+                UE_LOG(LogTemp, Warning, TEXT("VerifyGPUUpload: Comparing %d GPU samples to CPU HeightMap"), SurfaceData.Num());
+                UE_LOG(LogTemp, Warning, TEXT("  GPU texture: %dx%d, CPU terrain: %dx%d"),
+                       GPUTextureWidth, GPUTextureHeight, TerrainWidth, TerrainHeight);
+
+                float MaxDiff = 0.0f;
+                float TotalDiff = 0.0f;
+                int32 SampleCount = 0;
+
+                for (int32 i = 0; i < FMath::Min(100, FMath::Min(SurfaceData.Num(), HeightMap.Num())); i++)
+                {
+                    float GPUVal = SurfaceData[i].R.GetFloat();
+                    float CPUVal = HeightMap[i];
+                    float Diff = FMath::Abs(GPUVal - CPUVal);
+                    MaxDiff = FMath::Max(MaxDiff, Diff);
+                    TotalDiff += Diff;
+                    SampleCount++;
+
+                    if (i < 10)
+                    {
+                        // Show ALL channels to debug format issues
+                        float R = SurfaceData[i].R.GetFloat();
+                        float G = SurfaceData[i].G.GetFloat();
+                        float B = SurfaceData[i].B.GetFloat();
+                        float A = SurfaceData[i].A.GetFloat();
+                        UE_LOG(LogTemp, Warning, TEXT("    [%d] R=%.2f G=%.2f B=%.2f A=%.2f | CPU=%.2f"),
+                               i, R, G, B, A, CPUVal);
+                    }
+                }
+
+                float AvgDiff = SampleCount > 0 ? TotalDiff / SampleCount : 0.0f;
+                UE_LOG(LogTemp, Warning, TEXT("VerifyGPUUpload RESULT: MaxDiff=%.2f AvgDiff=%.2f (from %d samples)"),
+                       MaxDiff, AvgDiff, SampleCount);
+
+                if (MaxDiff > 10.0f)
+                {
+                    UE_LOG(LogTemp, Error, TEXT("VerifyGPUUpload FAILED: GPU data doesn't match CPU! Upload may have failed."));
+                }
+                else
+                {
+                    UE_LOG(LogTemp, Warning, TEXT("VerifyGPUUpload SUCCESS: GPU data matches CPU within tolerance."));
+                }
+            });
         });
+
+    FlushRenderingCommands();
 }
 
 // 2. GPU -> CPU Transfer (one-time on mode switch)
@@ -3481,42 +3941,43 @@ void ADynamicTerrain::SyncCPUToGPU()
 {
     if (!HeightRenderTexture || HeightMap.Num() == 0)
         return;
-    
-    // Use float array directly - matches texture format
-    TArray<float> GPUHeightData;
+
+    // CRITICAL: HeightRenderTexture uses PF_FloatRGBA which is 16-bit HALF floats (FFloat16Color)
+    // NOT 32-bit floats (FLinearColor)! Using wrong format causes data corruption.
+    TArray<FFloat16Color> GPUHeightData;
     GPUHeightData.SetNum(GPUTextureWidth * GPUTextureHeight);
-    
-    // Initialize to zero
+
+    // Initialize to zero height
     for (int32 i = 0; i < GPUHeightData.Num(); i++)
     {
-        GPUHeightData[i] = 0.0f;
+        GPUHeightData[i] = FFloat16Color(FLinearColor(0.0f, 0.0f, 0.0f, 1.0f));
     }
-    
-    // Copy CPU heightmap to GPU buffer
+
+    // Copy CPU heightmap to GPU buffer (height in R channel)
     for (int32 Y = 0; Y < TerrainHeight; Y++)
     {
         for (int32 X = 0; X < TerrainWidth; X++)
         {
             int32 CPUIndex = Y * TerrainWidth + X;
             int32 GPUIndex = Y * GPUTextureWidth + X;
-            
+
             if (CPUIndex < HeightMap.Num() && GPUIndex < GPUHeightData.Num())
             {
-                GPUHeightData[GPUIndex] = HeightMap[CPUIndex];
+                GPUHeightData[GPUIndex] = FFloat16Color(FLinearColor(HeightMap[CPUIndex], 0.0f, 0.0f, 1.0f));
             }
         }
     }
-    
+
     ENQUEUE_RENDER_COMMAND(UploadHeightToGPU)(
         [this, GPUHeightData](FRHICommandListImmediate& RHICmdList)
         {
             FTextureRHIRef TextureRHI = HeightRenderTexture->GetRenderTargetResource()->GetRenderTargetTexture();
             if (!TextureRHI) return;
-            
-            // CRITICAL FIX: Correct stride calculation
-            uint32 Stride = GPUTextureWidth * sizeof(float);  // Bytes per ROW
+
+            // Stride for RGBA half-float texture (4 half-floats = 8 bytes per pixel)
+            uint32 Stride = GPUTextureWidth * sizeof(FFloat16Color);
             FUpdateTextureRegion2D Region(0, 0, 0, 0, GPUTextureWidth, GPUTextureHeight);
-            
+
             RHICmdList.UpdateTexture2D(
                 TextureRHI,
                 0,  // Mip level
@@ -3525,35 +3986,152 @@ void ADynamicTerrain::SyncCPUToGPU()
                 (const uint8*)GPUHeightData.GetData()
             );
         });
-    
-    UE_LOG(LogTemp, Verbose, TEXT("  Synced %dx%d CPU heightmap to GPU"),
+
+    UE_LOG(LogTemp, Verbose, TEXT("SyncCPUToGPU: Uploaded %dx%d heightmap to GPU (FFloat16Color format)"),
            TerrainWidth, TerrainHeight);
 }
 
 
-// 13.2 GPU â†’ CPU READBACK
+void ADynamicTerrain::SyncHardnessToGPU()
+{
+    if (!HardnessRenderTexture || !CachedMasterController)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("SyncHardnessToGPU: Missing HardnessRenderTexture or MasterController"));
+        return;
+    }
+
+    AGeologyController* GeologyCtrl = CachedMasterController->GetGeologyController();
+    if (!GeologyCtrl)
+    {
+        // No geology controller - fill with default hardness (0.5)
+        UE_LOG(LogTemp, Warning, TEXT("SyncHardnessToGPU: No GeologyController - using default hardness"));
+
+        TArray<FColor> HardnessData;
+        HardnessData.SetNum(GPUTextureWidth * GPUTextureHeight);
+
+        uint8 DefaultHardness = 128; // 0.5 normalized
+        for (int32 i = 0; i < HardnessData.Num(); i++)
+        {
+            HardnessData[i] = FColor(DefaultHardness, 0, 0, 255);
+        }
+
+        ENQUEUE_RENDER_COMMAND(UploadDefaultHardness)(
+            [this, HardnessData](FRHICommandListImmediate& RHICmdList)
+            {
+                FTextureRHIRef TextureRHI = HardnessRenderTexture->GetRenderTargetResource()->GetRenderTargetTexture();
+                if (!TextureRHI) return;
+
+                uint32 Stride = GPUTextureWidth * sizeof(FColor);
+                FUpdateTextureRegion2D Region(0, 0, 0, 0, GPUTextureWidth, GPUTextureHeight);
+
+                RHICmdList.UpdateTexture2D(
+                    TextureRHI,
+                    0,
+                    Region,
+                    Stride,
+                    (const uint8*)HardnessData.GetData()
+                );
+            });
+        return;
+    }
+
+    // Get geology grid dimensions
+    int32 GeoWidth = GeologyCtrl->GeologyGridWidth;
+    int32 GeoHeight = GeologyCtrl->GeologyGridHeight;
+
+    if (GeoWidth <= 0 || GeoHeight <= 0)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("SyncHardnessToGPU: GeologyGrid not initialized"));
+        return;
+    }
+
+    // Create hardness data buffer (PF_R8G8B8A8 format)
+    TArray<FColor> HardnessData;
+    HardnessData.SetNum(GPUTextureWidth * GPUTextureHeight);
+
+    // Sample geology grid and resample to terrain resolution
+    for (int32 Y = 0; Y < GPUTextureHeight; Y++)
+    {
+        for (int32 X = 0; X < GPUTextureWidth; X++)
+        {
+            // Map terrain coordinates to geology grid coordinates
+            int32 GeoX = FMath::Clamp(X * GeoWidth / GPUTextureWidth, 0, GeoWidth - 1);
+            int32 GeoY = FMath::Clamp(Y * GeoHeight / GPUTextureHeight, 0, GeoHeight - 1);
+            int32 GeoIndex = GeoY * GeoWidth + GeoX;
+
+            float Hardness = 0.5f; // Default
+            if (GeoIndex < GeologyCtrl->GeologyGrid.Num())
+            {
+                Hardness = GeologyCtrl->GeologyGrid[GeoIndex].Hardness;
+            }
+
+            // Convert to 8-bit (0-255)
+            uint8 HardnessByte = FMath::Clamp(FMath::RoundToInt(Hardness * 255.0f), 0, 255);
+
+            int32 TexIndex = Y * GPUTextureWidth + X;
+            HardnessData[TexIndex] = FColor(HardnessByte, 0, 0, 255);
+        }
+    }
+
+    // Upload to GPU
+    ENQUEUE_RENDER_COMMAND(UploadHardnessToGPU)(
+        [this, HardnessData](FRHICommandListImmediate& RHICmdList)
+        {
+            FTextureRHIRef TextureRHI = HardnessRenderTexture->GetRenderTargetResource()->GetRenderTargetTexture();
+            if (!TextureRHI) return;
+
+            uint32 Stride = GPUTextureWidth * sizeof(FColor);
+            FUpdateTextureRegion2D Region(0, 0, 0, 0, GPUTextureWidth, GPUTextureHeight);
+
+            RHICmdList.UpdateTexture2D(
+                TextureRHI,
+                0,
+                Region,
+                Stride,
+                (const uint8*)HardnessData.GetData()
+            );
+        });
+
+    UE_LOG(LogTemp, Log, TEXT("SyncHardnessToGPU: Uploaded %dx%d hardness from GeologyGrid (%dx%d)"),
+           GPUTextureWidth, GPUTextureHeight, GeoWidth, GeoHeight);
+}
+
+
+// 13.2 GPU â†' CPU READBACK
 
 void ADynamicTerrain::TransferHeightmapFromGPU()
 {
     if (!HeightRenderTexture) return;
-    
+
+    // CRITICAL: Check texture format before attempting readback
+    EPixelFormat Format = HeightRenderTexture->GetFormat();
+    if (Format != PF_FloatRGBA && Format != PF_A32B32G32R32F)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("TransferHeightmapFromGPU: Skipping - texture format %d not compatible"), (int32)Format);
+        return;
+    }
+
     TArray<FFloat16Color> ReadbackData;
     ReadbackData.SetNum(TerrainWidth * TerrainHeight);
-    
+
     // Use proper UE5.5 render target readback
     FTextureRenderTargetResource* Resource = HeightRenderTexture->GetRenderTargetResource();
     if (!Resource) return;
-    
+
     FReadSurfaceDataFlags ReadFlags(RCM_UNorm, CubeFace_MAX);
     Resource->ReadFloat16Pixels(ReadbackData);
-    
+
     // Update CPU heightmap
     for (int32 i = 0; i < FMath::Min(ReadbackData.Num(), HeightMap.Num()); i++)
     {
         HeightMap[i] = ReadbackData[i].R.GetFloat();
     }
-    
-    ValidateAndRepairChunkBoundaries();
+
+    // Skip boundary validation when erosion is enabled - GPU handles heightmap uniformly
+    if (!bEnableGPUErosion)
+    {
+        ValidateAndRepairChunkBoundaries();
+    }
 }
 
 
@@ -3562,15 +4140,38 @@ void ADynamicTerrain::SyncGPUToCPU()
 {
     if (!HeightRenderTexture || !bGPUDataDirty)
     {
+        return;  // Silent return - this is normal
+    }
+
+    // CRITICAL: Check texture format before attempting readback
+    EPixelFormat Format = HeightRenderTexture->GetFormat();
+    if (Format != PF_FloatRGBA && Format != PF_A32B32G32R32F)
+    {
+        bGPUDataDirty = false;
         return;
     }
-    
-    // Store CPU data as backup for validation
-    TArray<float> CPUBackup = HeightMap;
-    
+
     // Don't sync if we're actively editing
     if (bHasPendingBrush)
     {
+        return;
+    }
+
+    // CRITICAL: Protect recent user edits from being overwritten
+    // After a user edit, skip GPU->CPU sync for a short time to let the edit "settle"
+    float CurrentTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+    float TimeSinceEdit = CurrentTime - LastUserEditTime;
+    if (TimeSinceEdit < UserEditProtectionDuration)
+    {
+        // User recently edited - skip this sync to preserve their changes
+        // The edit has been uploaded to GPU, erosion will run on it,
+        // and we'll sync back after the protection period
+        static int32 ProtectionLogCount = 0;
+        if (ProtectionLogCount++ < 10)
+        {
+            UE_LOG(LogTemp, Warning, TEXT("SYNC SKIPPED: User edit protection active (%.2fs remaining)"),
+                   UserEditProtectionDuration - TimeSinceEdit);
+        }
         return;
     }
     
@@ -3581,9 +4182,18 @@ void ADynamicTerrain::SyncGPUToCPU()
     }
     
     bPendingGPUReadback = true;
-    
+
+    // PERFORMANCE: Only backup CPU state when erosion is disabled (for validation)
+    // When erosion is enabled, we expect heights to change - no need for expensive copy
+    TArray<float> CPUBackup;
+    bool bNeedValidation = !bEnableGPUErosion;
+    if (bNeedValidation)
+    {
+        CPUBackup = HeightMap;
+    }
+
     ENQUEUE_RENDER_COMMAND(ReadbackHeightFromGPU)(
-        [this, CPUBackup](FRHICommandListImmediate& RHICmdList)
+        [this, CPUBackup, bNeedValidation](FRHICommandListImmediate& RHICmdList)
         {
             FTextureRHIRef TextureRHI = HeightRenderTexture->GetRenderTargetResource()->GetRenderTargetTexture();
             if (!TextureRHI) return;
@@ -3600,7 +4210,7 @@ void ADynamicTerrain::SyncGPUToCPU()
                 0
             );
             
-            AsyncTask(ENamedThreads::GameThread, [this, SurfaceData, CPUBackup]()
+            AsyncTask(ENamedThreads::GameThread, [this, SurfaceData, CPUBackup, bNeedValidation]()
             {
                 // Validate that GPU data isn't completely flat
                 float MinHeight = FLT_MAX;
@@ -3632,56 +4242,184 @@ void ADynamicTerrain::SyncGPUToCPU()
                     AvgHeight /= ValidCount;
                 }
                 
-                // Check if GPU data is suspiciously flat
+                // VALIDATION: Check if GPU data is corrupt
+                // CRITICAL: Skip ALL validation when erosion is enabled - we trust GPU erosion results
                 float HeightRange = MaxHeight - MinHeight;
-                bool bGPUDataSeemsFlat = (HeightRange < 1.0f && FMath::Abs(AvgHeight) < 1.0f);
-                
-                if (bGPUDataSeemsFlat)
+                bool bGPUDataSeemsFlat = false;
+                bool bGPUDataTooNoisy = false;
+
+                // Only check for flat/corrupt data when erosion is DISABLED
+                if (!bEnableGPUErosion)
                 {
-                    UE_LOG(LogTemp, Warning, TEXT("GPU data appears flat (range: %.2f), keeping CPU data"),
-                           HeightRange);
-                    // Restore CPU backup
+                    bGPUDataSeemsFlat = (HeightRange < 1.0f && FMath::Abs(AvgHeight) < 1.0f);
+                }
+
+                // PERFORMANCE: Skip expensive deviation checks when erosion is enabled
+                // Erosion legitimately changes heights - no need to validate against old CPU state
+                if (bNeedValidation && CPUBackup.Num() > 0)
+                {
+                    float MaxDeviation = 0.0f;
+                    float TotalDeviation = 0.0f;
+                    int32 DeviationSamples = 0;
+
+                    // Calculate CPU backup stats (reduced sample count for performance)
+                    float CPUMin = TNumericLimits<float>::Max();
+                    float CPUMax = TNumericLimits<float>::Lowest();
+                    int32 SampleStep = FMath::Max(1, CPUBackup.Num() / 200); // Sample ~200 pixels instead of 1000
+                    for (int32 i = 0; i < CPUBackup.Num(); i += SampleStep)
+                    {
+                        CPUMin = FMath::Min(CPUMin, CPUBackup[i]);
+                        CPUMax = FMath::Max(CPUMax, CPUBackup[i]);
+                    }
+                    float CPURange = CPUMax - CPUMin;
+
+                    // Sample GPU vs CPU deviation (reduced samples)
+                    for (int32 i = 0; i < SurfaceData.Num(); i += SampleStep)
+                    {
+                        int32 Y = i / GPUTextureWidth;
+                        int32 X = i % GPUTextureWidth;
+                        int32 CPUIndex = Y * TerrainWidth + X;
+
+                        if (CPUIndex < CPUBackup.Num())
+                        {
+                            float GPUHeight = SurfaceData[i].R.GetFloat();
+                            float CPUHeight = CPUBackup[CPUIndex];
+
+                            if (!FMath::IsNaN(GPUHeight) && FMath::IsFinite(GPUHeight))
+                            {
+                                float Deviation = FMath::Abs(GPUHeight - CPUHeight);
+                                MaxDeviation = FMath::Max(MaxDeviation, Deviation);
+                                TotalDeviation += Deviation;
+                                DeviationSamples++;
+                            }
+                        }
+                    }
+
+                    float AvgDeviation = DeviationSamples > 0 ? TotalDeviation / DeviationSamples : 0.0f;
+                    float AllowedDeviation = FMath::Max(CPURange * 0.1f, 100.0f);
+                    bGPUDataTooNoisy = (MaxDeviation > AllowedDeviation * 10.0f) || (AvgDeviation > AllowedDeviation);
+                }
+
+                // DEBUG: Log only on actual problems (reduced frequency for performance)
+                static int32 DiagnosticLogCount = 0;
+                if (DiagnosticLogCount < 3 && bGPUDataSeemsFlat)
+                {
+                    DiagnosticLogCount++;
+                    UE_LOG(LogTemp, Warning, TEXT("GPU SYNC: Data appears flat (range: %.2f, avg: %.2f)"),
+                           HeightRange, AvgHeight);
+                }
+
+                // Log sync status only first few times
+                static int32 SyncLogCount = 0;
+                if (SyncLogCount++ < 3)
+                {
+                    UE_LOG(LogTemp, Log, TEXT("GPU SYNC [%d]: Range=%.1f, Avg=%.1f"),
+                           SyncLogCount, HeightRange, AvgHeight);
+                }
+
+                if (bGPUDataSeemsFlat && CPUBackup.Num() > 0)
+                {
+                    UE_LOG(LogTemp, Warning, TEXT("GPU sync: RESTORING from CPU backup (flat data)"));
                     HeightMap = CPUBackup;
-                    
-                    // Re-upload CPU data to GPU to fix it
                     TransferHeightmapToGPU();
                 }
+                else if (bGPUDataSeemsFlat)
+                {
+                    // No backup available - this is a problem! GPU data is flat but we can't restore
+                    UE_LOG(LogTemp, Error, TEXT("GPU sync: FLAT DATA with no backup! Water/erosion may be broken."));
+                }
+                // NOTE: Removed "too noisy" rejection - delta-based sync handles this properly
+                // The old rejection caused a loop: reject -> overwrite GPU -> erosion runs -> reject again
                 else
                 {
-                    // GPU data looks valid, apply it
+                    // GPU data looks valid - apply EROSION DELTA only, don't overwrite user edits
+                    //
+                    // CRITICAL FIX: Only apply erosion where GPU height is LOWER than CPU height
+                    // This ensures user edits (raises) are NEVER undone by sync
+                    //
+                    // The rule is simple: erosion can only LOWER terrain, never raise it
+                    // If GPU is higher than CPU, that's fine (deposition or user edit made it to GPU)
+                    // If GPU is lower than CPU, apply the difference as erosion
+
+                    int32 ErosionPixelsApplied = 0;
+                    int32 PixelsSkipped = 0;
+
                     for (int32 Y = 0; Y < FMath::Min(TerrainHeight, GPUTextureHeight); Y++)
                     {
                         for (int32 X = 0; X < FMath::Min(TerrainWidth, GPUTextureWidth); X++)
                         {
                             int32 GPUIndex = Y * GPUTextureWidth + X;
                             int32 CPUIndex = Y * TerrainWidth + X;
-                            
+
                             if (GPUIndex < SurfaceData.Num() && CPUIndex < HeightMap.Num())
                             {
-                                float NewHeight = SurfaceData[GPUIndex].R.GetFloat();
-                                
-                                if (FMath::IsNaN(NewHeight) || !FMath::IsFinite(NewHeight))
+                                float GPUHeight = SurfaceData[GPUIndex].R.GetFloat();
+                                float CPUHeight = HeightMap[CPUIndex];  // Current CPU (has user edits)
+
+                                // Skip invalid GPU data
+                                if (FMath::IsNaN(GPUHeight) || !FMath::IsFinite(GPUHeight))
                                 {
-                                    NewHeight = CPUBackup[CPUIndex];
+                                    continue;
+                                }
+
+                                GPUHeight = FMath::Clamp(GPUHeight, -10000.0f, 10000.0f);
+
+                                // SIMPLE RULE: Only apply if GPU is LOWER than CPU
+                                // This means erosion happened and we should update CPU
+                                // If GPU >= CPU, either no erosion or user raised terrain - keep CPU value
+                                const float ErosionThreshold = 0.1f;
+
+                                if (GPUHeight < CPUHeight - ErosionThreshold)
+                                {
+                                    // GPU is lower = erosion happened, apply it
+                                    HeightMap[CPUIndex] = GPUHeight;
+                                    ErosionPixelsApplied++;
                                 }
                                 else
                                 {
-                                    NewHeight = FMath::Clamp(NewHeight, -10000.0f, 10000.0f);
+                                    // GPU >= CPU, keep CPU value (preserves user raises)
+                                    PixelsSkipped++;
                                 }
-                                
-                                HeightMap[CPUIndex] = NewHeight;
                             }
                         }
                     }
-                    
-                    UE_LOG(LogTemp, Verbose, TEXT("GPU sync successful (range: %.2f)"), HeightRange);
+
+                    static int32 DeltaSyncLogCount = 0;
+                    if (DeltaSyncLogCount++ < 2)
+                    {
+                        UE_LOG(LogTemp, Log, TEXT("Erosion sync: %d pixels updated"), ErosionPixelsApplied);
+                    }
+
+                    // Sync complete - diagnostic logging removed for performance
                 }
-                
-                ValidateAndRepairChunkBoundaries();
-                
-                for (int32 i = 0; i < TerrainChunks.Num(); i++)
+
+                // GPU RENDERING MODE: Skip mesh regeneration entirely!
+                // The material samples HeightRenderTexture directly via WPO
+                // Heights are already updated in the GPU texture, no CPU mesh work needed
+                if (bUseGPUHeightmapRendering && bGPUInitialized)
                 {
-                    PendingChunkUpdates.Add(i);
+                    // No mesh regeneration needed - material WPO handles heights
+                }
+                else if (!bEnableGPUErosion)
+                {
+                    ValidateAndRepairChunkBoundaries();
+
+                    // Gradual chunk updates when erosion is OFF
+                    for (int32 i = 0; i < TerrainChunks.Num(); i++)
+                    {
+                        PendingChunkUpdates.Add(i);
+                    }
+                }
+                else
+                {
+                    // Fallback: Force immediate atomic update if GPU rendering is off but erosion is on
+                    TArray<int32> AllChunks;
+                    AllChunks.Reserve(TerrainChunks.Num());
+                    for (int32 i = 0; i < TerrainChunks.Num(); i++)
+                    {
+                        AllChunks.Add(i);
+                    }
+                    ForceUpdateChunkGroup(AllChunks);
                 }
                 
                 bPendingGPUReadback = false;
@@ -3693,6 +4431,50 @@ void ADynamicTerrain::SyncGPUToCPU()
 }
 
 
+// Lightweight height sync for water - skips validation and mesh updates
+void ADynamicTerrain::SyncGPUHeightsForWater()
+{
+    if (!HeightRenderTexture || !bGPUInitialized || !bEnableGPUErosion)
+    {
+        return;  // Only needed when erosion is active
+    }
+
+    // Simple fast readback - just update HeightMap for water to read
+    ENQUEUE_RENDER_COMMAND(FastHeightSyncForWater)(
+        [this](FRHICommandListImmediate& RHICmdList)
+        {
+            FTextureRHIRef TextureRHI = HeightRenderTexture->GetRenderTargetResource()->GetRenderTargetTexture();
+            if (!TextureRHI) return;
+
+            TArray<FFloat16Color> SurfaceData;
+            FIntRect Rect(0, 0, GPUTextureWidth, GPUTextureHeight);
+
+            RHICmdList.ReadSurfaceFloatData(TextureRHI, Rect, SurfaceData, CubeFace_PosX, 0, 0);
+
+            AsyncTask(ENamedThreads::GameThread, [this, SurfaceData]()
+            {
+                // Fast copy - no validation, no mesh updates
+                // Just update heights so water can read them
+                for (int32 Y = 0; Y < FMath::Min(TerrainHeight, GPUTextureHeight); Y++)
+                {
+                    for (int32 X = 0; X < FMath::Min(TerrainWidth, GPUTextureWidth); X++)
+                    {
+                        int32 GPUIndex = Y * GPUTextureWidth + X;
+                        int32 CPUIndex = Y * TerrainWidth + X;
+
+                        if (GPUIndex < SurfaceData.Num() && CPUIndex < HeightMap.Num())
+                        {
+                            float GPUHeight = SurfaceData[GPUIndex].R.GetFloat();
+                            if (!FMath::IsNaN(GPUHeight) && FMath::IsFinite(GPUHeight))
+                            {
+                                HeightMap[CPUIndex] = FMath::Clamp(GPUHeight, -10000.0f, 10000.0f);
+                            }
+                        }
+                    }
+                }
+            });
+        });
+}
 
 
 // ============================================================================
@@ -3710,35 +4492,44 @@ void ADynamicTerrain::ExecuteTerrainComputeShader(float DeltaTime)
     {
         return;
     }
-    
-    if (!HeightRenderTexture || !ErosionRenderTexture)
+
+    // Double buffer validation
+    if (!HeightRenderTexture_A || !HeightRenderTexture_B || !ErosionRenderTexture)
     {
-        UE_LOG(LogTemp, Error, TEXT("GPU textures not initialized: Height=%s, Erosion=%s"),
-               HeightRenderTexture ? TEXT("Valid") : TEXT("Null"),
+        UE_LOG(LogTemp, Error, TEXT("GPU textures not initialized: HeightA=%s, HeightB=%s, Erosion=%s"),
+               HeightRenderTexture_A ? TEXT("Valid") : TEXT("Null"),
+               HeightRenderTexture_B ? TEXT("Valid") : TEXT("Null"),
                ErosionRenderTexture ? TEXT("Valid") : TEXT("Null"));
         return;
     }
-    
-    // Throttle execution to improve performance
-    static float LastExecutionTime = 0.0f;
+
+    // ========== SINGLE BUFFER MODE ==========
+    // Using single buffer for simplicity - compute reads AND writes to same texture (A).
+    // Double buffering caused issues: swap=vibration, copy=data loss.
+    // If visual pulsing occurs during erosion, we can revisit with triple buffering.
+
+    // ========== NO THROTTLING - RUN EVERY FRAME ==========
+    // Removed 30Hz throttling to match water simulation rate (60Hz)
+    // This eliminates visual "jumping" caused by terrain/water rate mismatch
+    float ShaderDeltaTime = DeltaTime;
     float CurrentTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
-    if (!bHasPendingBrush && CurrentTime - LastExecutionTime < 0.033f) return;
-    LastExecutionTime = CurrentTime;
-    
-    // Skip accumulator for brush operations - execute immediately
-    if (!bHasPendingBrush)
-    {
-        GPUUpdateAccumulator += DeltaTime;
-        if (GPUUpdateAccumulator < GPUUpdateInterval) return;
-    }
-    
-    GPUUpdateAccumulator = 0.0f;
     
     // ===== GET AUTHORITATIVE SHADER PARAMETERS ON GAME THREAD =====
     FVector4f TerrainParams;
     if (CachedMasterController)
     {
         TerrainParams = CachedMasterController->GetShaderTerrainParams();
+
+        // CRITICAL: Validate dimensions match between authority and GPU texture
+        int32 AuthWidth = (int32)TerrainParams.X;
+        int32 AuthHeight = (int32)TerrainParams.Y;
+        if (AuthWidth != GPUTextureWidth || AuthHeight != GPUTextureHeight)
+        {
+            UE_LOG(LogTemp, Error, TEXT("DIMENSION MISMATCH! Shader expects %dx%d but GPU texture is %dx%d"),
+                   AuthWidth, AuthHeight, GPUTextureWidth, GPUTextureHeight);
+            // Force shader to use actual GPU texture dimensions
+            TerrainParams = FVector4f(GPUTextureWidth, GPUTextureHeight, TerrainParams.Z, TerrainParams.W);
+        }
     }
     else
     {
@@ -3748,7 +4539,7 @@ void ADynamicTerrain::ExecuteTerrainComputeShader(float DeltaTime)
     }
     
     ENQUEUE_RENDER_COMMAND(TerrainComputeCommand)(
-        [this, DeltaTime, TerrainParams](FRHICommandListImmediate& RHICmdList)
+        [this, ShaderDeltaTime, TerrainParams](FRHICommandListImmediate& RHICmdList)
         {
             // ONE-TIME LOG: Confirm shader is dispatching
             static bool bLoggedOnce = false;
@@ -3767,12 +4558,23 @@ void ADynamicTerrain::ExecuteTerrainComputeShader(float DeltaTime)
             
             FRDGBuilder GraphBuilder(RHICmdList);
             
-            // ===== REGISTER HEIGHT TEXTURE (INPUT/OUTPUT) =====
-            FTextureRenderTargetResource* HeightResource = HeightRenderTexture->GetRenderTargetResource();
+            // ===== SINGLE BUFFER MODE =====
+            // Using HeightReadTexture (A) for both read AND write.
+            // This is simpler and avoids sync issues from double buffering.
+            // May have some visual artifacts during erosion due to read-write overlap,
+            // but avoids the vibration/data-loss issues from buffer swapping/copying.
+
+            // Register single buffer for both UAV (write) and SRV (read)
+            FTextureRenderTargetResource* HeightResource = HeightReadTexture->GetRenderTargetResource();
             TRefCountPtr<IPooledRenderTarget> PooledHeightTexture = CreateRenderTarget(
-                HeightResource->GetRenderTargetTexture(), TEXT("HeightTexture"));
+                HeightResource->GetRenderTargetTexture(), TEXT("HeightTextureSingle"));
             FRDGTextureRef HeightTextureRDG = GraphBuilder.RegisterExternalTexture(PooledHeightTexture);
-            
+
+            // For single buffer, both UAV and SRV point to same texture
+            // The SRV will read slightly stale data from neighboring pixels (race condition)
+            // but this is more stable than the buffer alternation artifacts
+            FRDGTextureRef HeightTextureInputRDG = HeightTextureRDG;
+
             // ===== REGISTER EROSION TEXTURE (OUTPUT) =====
             FTextureRenderTargetResource* ErosionResource = ErosionRenderTexture->GetRenderTargetResource();
             TRefCountPtr<IPooledRenderTarget> PooledErosionTexture = CreateRenderTarget(
@@ -3783,7 +4585,8 @@ void ADynamicTerrain::ExecuteTerrainComputeShader(float DeltaTime)
             FTerrainComputeCS::FParameters* PassParameters =
                 GraphBuilder.AllocParameters<FTerrainComputeCS::FParameters>();
             
-            PassParameters->HeightTexture = GraphBuilder.CreateUAV(HeightTextureRDG);
+            PassParameters->HeightTexture = GraphBuilder.CreateUAV(HeightTextureRDG);  // Write buffer (output)
+            PassParameters->HeightTextureInput = GraphBuilder.CreateSRV(HeightTextureInputRDG);  // Read buffer (input)
             PassParameters->TerrainParams = TerrainParams;  // Use captured authoritative params
             
             // ===== WATER DATA CONNECTION FOR EROSION =====
@@ -3846,22 +4649,81 @@ void ADynamicTerrain::ExecuteTerrainComputeShader(float DeltaTime)
                 FlowVelocityRDG = DummyTexture;
             }
             
+            // ===== WIND DATA CONNECTION FOR OROGRAPHIC EFFECTS =====
+            FRDGTextureRef WindFieldRDG = nullptr;
+            FRDGTextureRef MoistureRDG = nullptr;
+
+            // Try to get real wind texture if atmosphere system is connected
+            if (bEnableOrographicEffects && ConnectedAtmosphere &&
+                ConnectedAtmosphere->WindFieldTexture)
+            {
+                FTextureRenderTargetResource* WindResource =
+                    ConnectedAtmosphere->WindFieldTexture->GetRenderTargetResource();
+                if (WindResource)
+                {
+                    TRefCountPtr<IPooledRenderTarget> WindPool = CreateRenderTarget(
+                        WindResource->GetRenderTargetTexture(),
+                        TEXT("RealWindField"));
+                    WindFieldRDG = GraphBuilder.RegisterExternalTexture(WindPool);
+                }
+
+                // Also get moisture texture if available
+                if (ConnectedAtmosphere->MoistureTexture)
+                {
+                    FTextureRenderTargetResource* MoistureResource =
+                        ConnectedAtmosphere->MoistureTexture->GetRenderTargetResource();
+                    if (MoistureResource)
+                    {
+                        TRefCountPtr<IPooledRenderTarget> MoisturePool = CreateRenderTarget(
+                            MoistureResource->GetRenderTargetTexture(),
+                            TEXT("RealMoisture"));
+                        MoistureRDG = GraphBuilder.RegisterExternalTexture(MoisturePool);
+                    }
+                }
+
+                static bool bLoggedRealWind = false;
+                if (!bLoggedRealWind)
+                {
+                    UE_LOG(LogTemp, Warning, TEXT("GPU Erosion: Using REAL wind/moisture data"));
+                    bLoggedRealWind = true;
+                }
+            }
+
+            // Use real textures if available, otherwise use dummy
+            if (!WindFieldRDG)
+            {
+                WindFieldRDG = DummyTexture;
+            }
+            if (!MoistureRDG)
+            {
+                MoistureRDG = DummyTexture;
+            }
+
             // Bind shader resources
             PassParameters->WaterDepthTexture = GraphBuilder.CreateSRV(WaterDepthRDG);
             PassParameters->FlowVelocityTexture = GraphBuilder.CreateSRV(FlowVelocityRDG);
-            PassParameters->MoistureTexture = GraphBuilder.CreateSRV(DummyTexture);
-            PassParameters->WindFieldTexture = GraphBuilder.CreateSRV(DummyTexture);
+            PassParameters->MoistureTexture = GraphBuilder.CreateSRV(MoistureRDG);
+            PassParameters->WindFieldTexture = GraphBuilder.CreateSRV(WindFieldRDG);
             PassParameters->HardnessTexture = GraphBuilder.CreateSRV(DummyTexture);
             PassParameters->ErosionOutputTexture = GraphBuilder.CreateUAV(ErosionTextureRDG);
             
             PassParameters->TextureSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-            PassParameters->DeltaTime = DeltaTime;
+            PassParameters->DeltaTime = ShaderDeltaTime;  // Use accumulated time for frame-rate independence
             
             // Set simulation mode based on enabled features
             uint32 SimMode = 0;
             if (bEnableGPUErosion) SimMode |= 1;
             if (bEnableOrographicEffects) SimMode |= 2;
             PassParameters->SimulationMode = SimMode;
+
+            // DEBUG: Log simulation mode once
+            static bool bLoggedSimMode = false;
+            if (!bLoggedSimMode)
+            {
+                UE_LOG(LogTemp, Warning, TEXT("GPU Compute SimMode=%d (Erosion=%d, Orographic=%d, Brush=%d)"),
+                       SimMode, bEnableGPUErosion ? 1 : 0, bEnableOrographicEffects ? 1 : 0, bHasPendingBrush ? 1 : 0);
+                bLoggedSimMode = true;
+            }
             
             // Set erosion parameters
             PassParameters->ErosionParams = FVector4f(
@@ -3882,7 +4744,15 @@ void ADynamicTerrain::ExecuteTerrainComputeShader(float DeltaTime)
             // Handle brush operations
             PassParameters->BrushParams = PendingBrushParams;
             PassParameters->BrushActive = bHasPendingBrush ? 1 : 0;
-            
+
+            // DEBUG: Log brush params when active
+            if (bHasPendingBrush)
+            {
+                UE_LOG(LogTemp, Warning,
+                       TEXT("SHADER BRUSH ACTIVE: Pos(%.1f,%.1f) Radius=%.1f Strength=%.1f"),
+                       PendingBrushParams.X, PendingBrushParams.Y, PendingBrushParams.Z, PendingBrushParams.W);
+            }
+
             UE_LOG(LogTemp, VeryVerbose,
                    TEXT("Shader Params: Dims(%.0f,%.0f) Scale=%.2f BrushActive=%d"),
                    TerrainParams.X, TerrainParams.Y, TerrainParams.Z, bHasPendingBrush ? 1 : 0);
@@ -3902,7 +4772,9 @@ void ADynamicTerrain::ExecuteTerrainComputeShader(float DeltaTime)
             
             // Execute the graph
             GraphBuilder.Execute();
-            
+
+            // SINGLE BUFFER MODE: No copy needed - compute wrote directly to HeightReadTexture
+
             // Clear brush flag after execution
             if (bHasPendingBrush)
             {
@@ -3910,6 +4782,9 @@ void ADynamicTerrain::ExecuteTerrainComputeShader(float DeltaTime)
             }
         }
     );
+
+    // CRITICAL FIX: Mark GPU data as dirty so visual sync happens
+    bGPUDataDirty = true;
 }
 
 
@@ -3989,50 +4864,17 @@ void ADynamicTerrain::UpdateGPUBrush(FVector WorldPosition, float Radius, float 
            TextureCoords.X, TextureCoords.Y, RadiusInTexels, AdjustedStrength);
     
     // Execute compute shader immediately
-    ExecuteTerrainComputeShader(0.0f);
-    
-    // ALWAYS sync GPU to CPU for terrain modifications
+    // CRITICAL: Pass non-zero DeltaTime for brush - shader multiplies HeightChange by DeltaTime!
+    // Using 1.0 means brush strength is applied directly
+    float BrushDeltaTime = 1.0f;
+
+    ExecuteTerrainComputeShader(BrushDeltaTime);
+
+    // Wait for render thread to complete shader execution
+    FlushRenderingCommands();
+
+    // Sync GPU to CPU for terrain modifications (async)
     SyncGPUToCPU();
-    
-    // Find all affected chunks (continue with existing logic)
-    TSet<int32> AffectedChunks;
-    int32 RadiusInIndices = FMath::CeilToInt(RadiusInTexels);
-    int32 CenterX = FMath::RoundToInt(TextureCoords.X);
-    int32 CenterY = FMath::RoundToInt(TextureCoords.Y);
-    
-    for (int32 Y = CenterY - RadiusInIndices; Y <= CenterY + RadiusInIndices; Y++)
-    {
-        for (int32 X = CenterX - RadiusInIndices; X <= CenterX + RadiusInIndices; X++)
-        {
-            if (X >= 0 && X < TerrainWidth && Y >= 0 && Y < TerrainHeight)
-            {
-                float Distance = FVector2D::Distance(FVector2D(X, Y), TextureCoords);
-                if (Distance <= RadiusInIndices)
-                {
-                    int32 ChunkIndex = GetChunkIndexFromCoordinates(X, Y);
-                    if (ChunkIndex >= 0)
-                    {
-                        AffectedChunks.Add(ChunkIndex);
-                    }
-                }
-            }
-        }
-    }
-    
-    // Update chunks based on size
-    if (AffectedChunks.Num() > 15 || Radius > 2000.0f)
-    {
-        UE_LOG(LogTemp, Warning, TEXT("GPU: Large brush - updating %d chunks"), AffectedChunks.Num());
-        ForceUpdateChunkGroup(AffectedChunks.Array());
-    }
-    else
-    {
-        // Update chunks individually for small brushes
-        for (int32 ChunkIndex : AffectedChunks)
-        {
-            UpdateChunk(ChunkIndex);
-        }
-    }
 }
 
 
@@ -4097,47 +4939,95 @@ void ADynamicTerrain::UpdateGPUChunkMaterialParams(UMaterialInstanceDynamic* Dyn
                                                    const FTerrainChunk& Chunk)
 {
     if (!DynMaterial || !HeightRenderTexture) return;
-    
-    if (DynMaterial)
-    {
-        DynMaterial->SetTextureParameterValue(FName("HeightmapTexture"), HeightRenderTexture);
-        UE_LOG(LogTemp, Warning, TEXT("Bound HeightTexture to chunk %d"), Chunk.ChunkX);
-    }
-    
-    // Bind height texture
-    DynMaterial->SetTextureParameterValue(FName("HeightmapTexture"), HeightRenderTexture);
-    
+
+    // Bind current height texture - the stable read buffer (not being written to)
+    DynMaterial->SetTextureParameterValue(FName("HeightmapTexture"), HeightReadTexture);
+
+    // NOTE: We do NOT set HeightmapTexturePrev because with only 2 buffers,
+    // HeightWriteTexture is actively being modified by compute during the frame.
+    // Material-side interpolation requires 3 buffers to work correctly.
+
+    // Blend factor always 1.0 - use current buffer fully, no interpolation
+    DynMaterial->SetScalarParameterValue(FName("HeightBlendFactor"), 1.0f);
+
     // CRITICAL: Correct UV mapping that matches CPU chunk layout exactly
     int32 TerrainStartX = Chunk.ChunkX * (ChunkSize - ChunkOverlap);
     int32 TerrainStartY = Chunk.ChunkY * (ChunkSize - ChunkOverlap);
-    
-    // Include the overlap in the UV range to prevent gaps
+
+    // UV coordinates map chunk's local UVs (0-1) to global heightmap UVs
+    // CRITICAL: Use (ChunkSize-1) for scale so the LAST vertex maps to the correct texel
+    // Without this, chunk boundaries sample different heightmap locations = visible seams
     float UVStartX = (float)TerrainStartX / (float)TerrainWidth;
     float UVStartY = (float)TerrainStartY / (float)TerrainHeight;
-    float UVScaleX = (float)ChunkSize / (float)TerrainWidth;
-    float UVScaleY = (float)ChunkSize / (float)TerrainHeight;
-    
+    float UVScaleX = (float)(ChunkSize - 1) / (float)TerrainWidth;
+    float UVScaleY = (float)(ChunkSize - 1) / (float)TerrainHeight;
+
+    // Split UV transform into two Float2 parameters for easier material setup
     DynMaterial->SetVectorParameterValue(
-        FName("ChunkUVTransform"),
-        FLinearColor(UVStartX, UVStartY, UVScaleX, UVScaleY)
+        FName("ChunkUVStart"),
+        FLinearColor(UVStartX, UVStartY, 0, 0)
     );
-    
+    DynMaterial->SetVectorParameterValue(
+        FName("ChunkUVScale"),
+        FLinearColor(UVScaleX, UVScaleY, 0, 0)
+    );
+
+    // Terrain dimensions for height sampling and normal calculation
+    // xy = texture dimensions (for texel size), z = terrain scale, w = max height
     DynMaterial->SetVectorParameterValue(
         FName("TerrainParams"),
         FLinearColor(TerrainWidth, TerrainHeight, TerrainScale, MaxTerrainHeight)
     );
-    
+
+    // Texel size in UV space - needed for normal calculation
+    // Material samples neighboring texels to compute gradient
+    float TexelSizeU = 1.0f / (float)TerrainWidth;
+    float TexelSizeV = 1.0f / (float)TerrainHeight;
+    DynMaterial->SetVectorParameterValue(
+        FName("TexelSize"),
+        FLinearColor(TexelSizeU, TexelSizeV, 0, 0)
+    );
+
+    // Terrain world bounds for world position calculations
+    FVector TerrainOrigin = GetActorLocation();
+    float TerrainWorldSizeX = TerrainWidth * TerrainScale;
+    float TerrainWorldSizeY = TerrainHeight * TerrainScale;
+    DynMaterial->SetVectorParameterValue(
+        FName("TerrainWorldBounds"),
+        FLinearColor(TerrainOrigin.X, TerrainOrigin.Y, TerrainWorldSizeX, TerrainWorldSizeY)
+    );
+
+    // Flag for GPU rendering mode
+    DynMaterial->SetScalarParameterValue(FName("UseGPUHeightmap"), bUseGPUHeightmapRendering ? 1.0f : 0.0f);
+
     DynMaterial->SetScalarParameterValue(FName("ChunkSize"), ChunkSize);
     DynMaterial->SetScalarParameterValue(FName("ChunkOverlap"), ChunkOverlap);
-    
+
     // Force immediate update
     DynMaterial->SetScalarParameterValue(FName("UpdateTime"), GetWorld()->GetTimeSeconds());
-    
+
+    // Water-specific height texture - updated every frame for continuous water visuals
+    // Terrain uses HeightmapTexture (stable buffer, no interpolation with 2-buffer system)
+    // Water uses WaterHeightTexture for smoother flow without double-buffer swap artifacts
+    if (WaterHeightTexture)
+    {
+        DynMaterial->SetTextureParameterValue(FName("WaterHeightTexture"), WaterHeightTexture);
+    }
+
     // Water integration if needed
     if (WaterSystem && WaterSystem->bUseShaderWater)
     {
         WaterSystem->ApplyVolumetricWaterToMaterial(DynMaterial);
     }
+
+    // Hardness texture for debug visualization and material effects
+    if (HardnessRenderTexture)
+    {
+        DynMaterial->SetTextureParameterValue(FName("HardnessTexture"), HardnessRenderTexture);
+    }
+
+    // Debug visualization flag - when enabled, material blends hardness colors over terrain
+    DynMaterial->SetScalarParameterValue(FName("ShowHardnessDebug"), bShowHardnessDebug ? 1.0f : 0.0f);
 }
 
 
@@ -4146,51 +5036,17 @@ void ADynamicTerrain::UpdateGPUChunkMaterial(FTerrainChunk& Chunk)
     UMaterialInstanceDynamic* DynMaterial = Cast<UMaterialInstanceDynamic>(
         Chunk.MeshComponent->GetMaterial(0)
     );
-    
+
     if (!DynMaterial && CurrentActiveMaterial)
     {
         DynMaterial = UMaterialInstanceDynamic::Create(CurrentActiveMaterial, this);
         Chunk.MeshComponent->SetMaterial(0, DynMaterial);
     }
-    
+
     if (DynMaterial)
     {
-        // Bind height texture
-        DynMaterial->SetTextureParameterValue(FName("HeightmapTexture"), HeightRenderTexture);
-        
-        // CRITICAL FIX: Correct UV calculation accounting for overlap
-        // The chunk covers terrain indices from StartX to StartX + ChunkSize
-        int32 TerrainStartX = Chunk.ChunkX * (ChunkSize - ChunkOverlap);
-        int32 TerrainStartY = Chunk.ChunkY * (ChunkSize - ChunkOverlap);
-        
-        // UV coordinates map directly to heightmap texture coordinates
-        float UVStartX = (float)TerrainStartX / (float)TerrainWidth;
-        float UVStartY = (float)TerrainStartY / (float)TerrainHeight;
-        
-        // The chunk samples ChunkSize vertices, not (ChunkSize - ChunkOverlap)
-        float UVScaleX = (float)ChunkSize / (float)TerrainWidth;
-        float UVScaleY = (float)ChunkSize / (float)TerrainHeight;
-        
-        DynMaterial->SetVectorParameterValue(
-            FName("ChunkUVTransform"),
-            FLinearColor(UVStartX, UVStartY, UVScaleX, UVScaleY)
-        );
-        
-        // Pass terrain dimensions for vertex displacement
-        DynMaterial->SetVectorParameterValue(
-            FName("TerrainParams"),
-            FLinearColor(TerrainWidth, TerrainHeight, TerrainScale, MaxTerrainHeight)
-        );
-        
-        // Additional parameters for proper vertex displacement
-        DynMaterial->SetScalarParameterValue(FName("ChunkSize"), ChunkSize);
-        DynMaterial->SetScalarParameterValue(FName("ChunkOverlap"), ChunkOverlap);
-        
-        // Water integration
-        if (WaterSystem && WaterSystem->bUseShaderWater)
-        {
-            WaterSystem->ApplyVolumetricWaterToMaterial(DynMaterial);
-        }
+        // Use the unified parameter update function
+        UpdateGPUChunkMaterialParams(DynMaterial, Chunk);
     }
 }
 
@@ -4200,23 +5056,18 @@ void ADynamicTerrain::UpdateGPUChunkMaterial(FTerrainChunk& Chunk)
 void ADynamicTerrain::ForceGPUChunkVisualUpdate(const TArray<int32>& ChunkIndices)
 {
     if (!HeightRenderTexture) return;
-    
-    // Diagnostic: Log what we're updating
-    UE_LOG(LogTemp, Warning, TEXT("GPU: ForceUpdate called for %d chunks"), ChunkIndices.Num());
-    
-    // PERFORMANCE FIX: Async compute - no blocking wait (saves ~5-10ms during edits)
-    
+
     // Expand to include all neighbors
     TSet<int32> AllChunks;
     for (int32 ChunkIndex : ChunkIndices)
     {
         if (!TerrainChunks.IsValidIndex(ChunkIndex)) continue;
-        
+
         const FTerrainChunk& Chunk = TerrainChunks[ChunkIndex];
-        
+
         // Add a 2-chunk radius around each affected chunk for large brushes
         int32 Radius = (ChunkIndices.Num() > 15) ? 2 : 1;
-        
+
         for (int32 dy = -Radius; dy <= Radius; dy++)
         {
             for (int32 dx = -Radius; dx <= Radius; dx++)
@@ -4230,11 +5081,8 @@ void ADynamicTerrain::ForceGPUChunkVisualUpdate(const TArray<int32>& ChunkIndice
             }
         }
     }
-    
-    UE_LOG(LogTemp, Warning, TEXT("GPU: Updating %d total chunks (including neighbors)"), AllChunks.Num());
-    
-    // Update all chunks
-    int32 UpdatedCount = 0;
+
+    // Update all chunks using unified parameter function
     for (int32 ChunkIndex : AllChunks)
     {
         if (TerrainChunks.IsValidIndex(ChunkIndex))
@@ -4245,53 +5093,25 @@ void ADynamicTerrain::ForceGPUChunkVisualUpdate(const TArray<int32>& ChunkIndice
                 // Get or create material
                 UMaterialInstanceDynamic* DynMaterial = Cast<UMaterialInstanceDynamic>(
                     Chunk.MeshComponent->GetMaterial(0));
-                    
-                if (!DynMaterial)
+
+                if (!DynMaterial && CurrentActiveMaterial)
                 {
-                    if (CurrentActiveMaterial)
-                    {
-                        DynMaterial = UMaterialInstanceDynamic::Create(CurrentActiveMaterial, this);
-                        Chunk.MeshComponent->SetMaterial(0, DynMaterial);
-                        UE_LOG(LogTemp, Warning, TEXT("Created new material for chunk %d"), ChunkIndex);
-                    }
-                    else
-                    {
-                        UE_LOG(LogTemp, Error, TEXT("No active material for chunk %d!"), ChunkIndex);
-                        continue;
-                    }
+                    DynMaterial = UMaterialInstanceDynamic::Create(CurrentActiveMaterial, this);
+                    Chunk.MeshComponent->SetMaterial(0, DynMaterial);
                 }
-                
-                // Update material with current height texture
-                DynMaterial->SetTextureParameterValue(FName("HeightmapTexture"), HeightRenderTexture);
-                
-                // Force a unique time value to ensure shader updates
-                float UniqueTime = GetWorld()->GetTimeSeconds() + ChunkIndex * 0.001f;
-                DynMaterial->SetScalarParameterValue(FName("ForceUpdateTime"), UniqueTime);
-                
-                // Set UV parameters
-                int32 TerrainStartX = Chunk.ChunkX * (ChunkSize - ChunkOverlap);
-                int32 TerrainStartY = Chunk.ChunkY * (ChunkSize - ChunkOverlap);
-                
-                DynMaterial->SetVectorParameterValue(
-                    FName("ChunkUVTransform"),
-                    FLinearColor(
-                        (float)TerrainStartX / TerrainWidth,
-                        (float)TerrainStartY / TerrainHeight,
-                        (float)ChunkSize / TerrainWidth,
-                        (float)ChunkSize / TerrainHeight
-                    )
-                );
-                
-                // Force mesh to update
-                Chunk.MeshComponent->MarkRenderStateDirty();
-                Chunk.MeshComponent->UpdateBounds();
-                
-                UpdatedCount++;
+
+                if (DynMaterial)
+                {
+                    // Use unified parameter update function
+                    UpdateGPUChunkMaterialParams(DynMaterial, Chunk);
+
+                    // Force mesh to update visuals
+                    Chunk.MeshComponent->MarkRenderStateDirty();
+                    Chunk.MeshComponent->UpdateBounds();
+                }
             }
         }
     }
-    
-    UE_LOG(LogTemp, Warning, TEXT("GPU: Successfully updated %d chunks"), UpdatedCount);
 }
 
 // Helper function to update material parameters (thread-safe)
@@ -4299,7 +5119,9 @@ void ADynamicTerrain::ForceGPUChunkVisualUpdate(const TArray<int32>& ChunkIndice
 void ADynamicTerrain::SyncGPUChunkVisuals()
 {
     if (!HeightRenderTexture) return;
-    
+
+    // Use the consolidated UpdateGPUChunkMaterialParams function
+    // This ensures consistent parameters across all update paths
     for (FTerrainChunk& Chunk : TerrainChunks)
     {
         if (Chunk.MeshComponent && Chunk.bIsVisible)
@@ -4307,42 +5129,17 @@ void ADynamicTerrain::SyncGPUChunkVisuals()
             UMaterialInstanceDynamic* DynMaterial = Cast<UMaterialInstanceDynamic>(
                 Chunk.MeshComponent->GetMaterial(0)
             );
-            
+
             if (!DynMaterial && CurrentActiveMaterial)
             {
                 DynMaterial = UMaterialInstanceDynamic::Create(CurrentActiveMaterial, this);
                 Chunk.MeshComponent->SetMaterial(0, DynMaterial);
             }
-            
+
             if (DynMaterial)
             {
-                DynMaterial->SetTextureParameterValue(
-                    FName("HeightmapTexture"),
-                    HeightRenderTexture
-                );
-                
-                // FIX: Match CPU's exact coordinate mapping
-                int32 TerrainStartX = Chunk.ChunkX * (ChunkSize - ChunkOverlap);
-                int32 TerrainStartY = Chunk.ChunkY * (ChunkSize - ChunkOverlap);
-                
-                // Each vertex i maps to terrain coordinate (TerrainStartX + i)
-                // So UV = (TerrainStartX + i) / TerrainWidth
-                DynMaterial->SetVectorParameterValue(
-                    FName("ChunkUVTransform"),
-                    FLinearColor(
-                        (float)TerrainStartX / TerrainWidth,    // UV start X
-                        (float)TerrainStartY / TerrainHeight,   // UV start Y
-                        1.0f / TerrainWidth,                    // UV step per vertex X
-                        1.0f / TerrainHeight                    // UV step per vertex Y
-                    )
-                );
-                
-                DynMaterial->SetScalarParameterValue(FName("ChunkSize"), ChunkSize);
-                
-                if (WaterSystem && WaterSystem->bUseShaderWater)
-                {
-                    WaterSystem->ApplyVolumetricWaterToMaterial(DynMaterial);
-                }
+                // Use the unified parameter update function
+                UpdateGPUChunkMaterialParams(DynMaterial, Chunk);
             }
         }
     }
@@ -4454,13 +5251,47 @@ void ADynamicTerrain::DebugErosion()
 void ADynamicTerrain::DebugAuthority()
 {
     UE_LOG(LogTemp, Warning, TEXT("=== TERRAIN AUTHORITY DEBUG ==="));
-    UE_LOG(LogTemp, Warning, TEXT("CPU Has Authority: %s"), bCPUHasAuthority ? TEXT("YES") : TEXT("NO"));
-    UE_LOG(LogTemp, Warning, TEXT("Compute Mode: %s"),
-           CurrentComputeMode == ETerrainComputeMode::GPU ? TEXT("GPU") : TEXT("CPU"));
-    UE_LOG(LogTemp, Warning, TEXT("GPU Initialized: %s"), bGPUInitialized ? TEXT("Yes") : TEXT("No"));
-    UE_LOG(LogTemp, Warning, TEXT("Pending GPU Init: %s"), bPendingGPUInit ? TEXT("Yes") : TEXT("No"));
-    
+    UE_LOG(LogTemp, Warning, TEXT("bUseGPUTerrain: %s"), bUseGPUTerrain ? TEXT("YES") : TEXT("NO"));
+    UE_LOG(LogTemp, Warning, TEXT("bGPUInitialized: %s"), bGPUInitialized ? TEXT("YES") : TEXT("NO"));
+    UE_LOG(LogTemp, Warning, TEXT("bPendingGPUInit: %s"), bPendingGPUInit ? TEXT("YES") : TEXT("NO"));
+    UE_LOG(LogTemp, Warning, TEXT("bEnableGPUErosion: %s"), bEnableGPUErosion ? TEXT("YES") : TEXT("NO"));
+    UE_LOG(LogTemp, Warning, TEXT("CurrentComputeMode: %s"),
+           CurrentComputeMode == ETerrainComputeMode::GPU ? TEXT("GPU") :
+           CurrentComputeMode == ETerrainComputeMode::CPU ? TEXT("CPU") : TEXT("Switching"));
+    UE_LOG(LogTemp, Warning, TEXT("bCPUHasAuthority: %s"), bCPUHasAuthority ? TEXT("YES") : TEXT("NO"));
+    UE_LOG(LogTemp, Warning, TEXT("bGPUDataDirty: %s"), bGPUDataDirty ? TEXT("YES") : TEXT("NO"));
+
+    // GPU Resources
+    UE_LOG(LogTemp, Warning, TEXT("--- GPU Resources ---"));
+    UE_LOG(LogTemp, Warning, TEXT("HeightRenderTexture: %s"),
+           HeightRenderTexture ? TEXT("Valid") : TEXT("NULL"));
+    UE_LOG(LogTemp, Warning, TEXT("ErosionRenderTexture: %s"),
+           ErosionRenderTexture ? TEXT("Valid") : TEXT("NULL"));
+
+    // Water connection
+    UE_LOG(LogTemp, Warning, TEXT("--- Water Connection ---"));
+    UE_LOG(LogTemp, Warning, TEXT("ConnectedWaterSystem: %s"),
+           ConnectedWaterSystem ? TEXT("Connected") : TEXT("NULL"));
+    if (ConnectedWaterSystem)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("  ErosionWaterDepthRT: %s"),
+               ConnectedWaterSystem->ErosionWaterDepthRT ? TEXT("Valid") : TEXT("NULL"));
+        UE_LOG(LogTemp, Warning, TEXT("  ErosionFlowVelocityRT: %s"),
+               ConnectedWaterSystem->ErosionFlowVelocityRT ? TEXT("Valid") : TEXT("NULL"));
+    }
+
+    // Atmosphere connection
+    UE_LOG(LogTemp, Warning, TEXT("--- Atmosphere Connection ---"));
+    UE_LOG(LogTemp, Warning, TEXT("ConnectedAtmosphere: %s"),
+           ConnectedAtmosphere ? TEXT("Connected") : TEXT("NULL"));
+    if (ConnectedAtmosphere)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("  WindFieldTexture: %s"),
+               ConnectedAtmosphere->WindFieldTexture ? TEXT("Valid") : TEXT("NULL"));
+    }
+
     // Sample heights to verify terrain exists
+    UE_LOG(LogTemp, Warning, TEXT("--- Terrain Data ---"));
     if (HeightMap.Num() > 0)
     {
         float MinH = FLT_MAX, MaxH = -FLT_MAX;
@@ -4472,10 +5303,10 @@ void ADynamicTerrain::DebugAuthority()
                 MaxH = FMath::Max(MaxH, H);
             }
         }
-        
+
         UE_LOG(LogTemp, Warning, TEXT("CPU Heights: Min=%.2f, Max=%.2f, Range=%.2f"),
                MinH, MaxH, MaxH - MinH);
-        
+
         if (MaxH - MinH < 1.0f)
         {
             UE_LOG(LogTemp, Error, TEXT("WARNING: CPU terrain appears flat!"));
@@ -4485,4 +5316,133 @@ void ADynamicTerrain::DebugAuthority()
     {
         UE_LOG(LogTemp, Error, TEXT("CPU HeightMap is EMPTY!"));
     }
+
+    UE_LOG(LogTemp, Warning, TEXT("============================"));
+}
+
+void ADynamicTerrain::ForceGPUMode()
+{
+    UE_LOG(LogTemp, Warning, TEXT("=== FORCING GPU MODE ==="));
+
+    // CRITICAL: Validate HeightMap before attempting GPU mode
+    int32 ExpectedSize = TerrainWidth * TerrainHeight;
+    if (HeightMap.Num() < ExpectedSize || ExpectedSize <= 0)
+    {
+        UE_LOG(LogTemp, Error, TEXT("Cannot force GPU mode - HeightMap has %d elements, need %d!"),
+               HeightMap.Num(), ExpectedSize);
+        UE_LOG(LogTemp, Error, TEXT("Terrain must be fully initialized first."));
+        return;
+    }
+
+    // Validate HeightMap has actual terrain data
+    float MinH = TNumericLimits<float>::Max();
+    float MaxH = TNumericLimits<float>::Lowest();
+    for (int32 i = 0; i < FMath::Min(1000, HeightMap.Num()); i++)
+    {
+        MinH = FMath::Min(MinH, HeightMap[i]);
+        MaxH = FMath::Max(MaxH, HeightMap[i]);
+    }
+    float HeightRange = MaxH - MinH;
+
+    if (HeightRange < 1.0f)
+    {
+        UE_LOG(LogTemp, Error, TEXT("Cannot force GPU mode - HeightMap appears flat (range: %.2f)!"),
+               HeightRange);
+        return;
+    }
+
+    UE_LOG(LogTemp, Log, TEXT("HeightMap validated: %d elements, range: %.2f"), HeightMap.Num(), HeightRange);
+
+    // Step 1: Enable GPU terrain flag
+    bUseGPUTerrain = true;
+
+    // Enable all GPU terrain effects
+    bEnableGPUErosion = true;
+    bEnableOrographicEffects = true;
+    UE_LOG(LogTemp, Warning, TEXT("GPU effects ENABLED - erosion=%d, orographic=%d"),
+           bEnableGPUErosion ? 1 : 0, bEnableOrographicEffects ? 1 : 0);
+
+    // Step 2: Initialize GPU if not done
+    if (!bGPUInitialized)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("Initializing GPU resources..."));
+        InitializeGPUTerrainWithData();
+    }
+
+    // Step 3: Switch compute mode (only if init succeeded)
+    if (bGPUInitialized)
+    {
+        CurrentComputeMode = ETerrainComputeMode::GPU;
+        bCPUHasAuthority = false;
+        UE_LOG(LogTemp, Warning, TEXT("Switched to GPU mode!"));
+
+        // Force upload CPU data to GPU
+        TransferHeightmapToGPU();
+        FlushRenderingCommands();
+
+        // Connect water system if available
+        if (WaterSystem && !ConnectedWaterSystem)
+        {
+            ConnectToGPUWaterSystem(WaterSystem);
+        }
+
+        // Connect atmosphere if available
+        if (AtmosphericSystem && !ConnectedAtmosphere)
+        {
+            ConnectToGPUAtmosphere(AtmosphericSystem);
+        }
+
+        UE_LOG(LogTemp, Warning, TEXT("GPU Mode ACTIVE - Run DebugAuthority to verify"));
+    }
+    else
+    {
+        UE_LOG(LogTemp, Error, TEXT("Failed to initialize GPU resources!"));
+        bUseGPUTerrain = false;
+        bEnableGPUErosion = false;
+    }
+}
+
+void ADynamicTerrain::ForceCPUMode()
+{
+    UE_LOG(LogTemp, Warning, TEXT("=== FORCING CPU MODE ==="));
+
+    // Sync any GPU changes back first
+    if (bGPUInitialized && CurrentComputeMode == ETerrainComputeMode::GPU)
+    {
+        SyncGPUToCPU();
+        FlushRenderingCommands();
+    }
+
+    // Switch to CPU mode
+    CurrentComputeMode = ETerrainComputeMode::CPU;
+    bCPUHasAuthority = true;
+    bUseGPUTerrain = false;
+
+    // Queue all chunks for update
+    for (int32 i = 0; i < TerrainChunks.Num(); i++)
+    {
+        PendingChunkUpdates.Add(i);
+    }
+
+    UE_LOG(LogTemp, Warning, TEXT("CPU Mode ACTIVE"));
+}
+
+void ADynamicTerrain::ToggleGPUErosion()
+{
+    bEnableGPUErosion = !bEnableGPUErosion;
+    UE_LOG(LogTemp, Warning, TEXT("=== GPU EROSION %s ==="), bEnableGPUErosion ? TEXT("ENABLED") : TEXT("DISABLED"));
+    UE_LOG(LogTemp, Warning, TEXT("Current state: Erosion=%d, Orographic=%d, ComputeMode=%s"),
+           bEnableGPUErosion ? 1 : 0,
+           bEnableOrographicEffects ? 1 : 0,
+           CurrentComputeMode == ETerrainComputeMode::GPU ? TEXT("GPU") : TEXT("CPU"));
+}
+
+void ADynamicTerrain::ToggleGPUOrographic()
+{
+    bEnableOrographicEffects = !bEnableOrographicEffects;
+    UE_LOG(LogTemp, Warning, TEXT("=== GPU OROGRAPHIC %s ==="), bEnableOrographicEffects ? TEXT("ENABLED") : TEXT("DISABLED"));
+    UE_LOG(LogTemp, Warning, TEXT("Current state: Erosion=%d, Orographic=%d, ComputeMode=%s"),
+           bEnableGPUErosion ? 1 : 0,
+           bEnableOrographicEffects ? 1 : 0,
+           CurrentComputeMode == ETerrainComputeMode::GPU ? TEXT("GPU") : TEXT("CPU"));
 }

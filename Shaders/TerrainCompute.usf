@@ -6,7 +6,10 @@
 #define THREADGROUP_SIZE_Y 8
 
 // Shader resources
-RWTexture2D<float> HeightTexture;
+// NOTE: HeightTexture uses float4 (PF_FloatRGBA) for CPU readback compatibility
+// Height is stored in R channel only, GBA are unused
+RWTexture2D<float4> HeightTexture;          // OUTPUT: Write results here
+Texture2D<float4> HeightTextureInput;        // INPUT: Read neighbors from here (prevents UAV race conditions)
 Texture2D<float> WaterDepthTexture;
 Texture2D<float2> FlowVelocityTexture;
 Texture2D<float> MoistureTexture;
@@ -31,8 +34,19 @@ uint BrushActive;
 #define MIN_WATER_DEPTH 0.01
 #define MIN_FLOW_SPEED 0.001
 #define MAX_EROSION_RATE 100.0
-#define MIN_HEIGHT -1000.0
-#define MAX_HEIGHT 10000.0
+// Height range should accommodate any terrain configuration
+// These are safety clamps to prevent NaN/Inf, not terrain limits
+#define MIN_HEIGHT -100000.0
+#define MAX_HEIGHT 100000.0
+
+// ===== THERMAL EROSION CONSTANTS =====
+// Maximum stable slope angle (tangent of angle of repose)
+// tan(35 degrees) ≈ 0.7, tan(45 degrees) = 1.0
+#define MAX_STABLE_SLOPE 0.7
+// Rate at which material slumps when slope exceeds maximum
+#define THERMAL_EROSION_RATE 0.1
+// Hardness effect on stable slope (harder rock = steeper stable slopes)
+#define HARDNESS_SLOPE_MULTIPLIER 0.5
 
 // ===== SAFE MATH HELPERS =====
 
@@ -69,27 +83,75 @@ float2 SafeNormalize(float2 v)
 
 // ===== TERRAIN SAMPLING =====
 
-// Helper function to sample neighboring heights using UAV
-float SampleHeightUAV(int2 Coord)
+// Helper function to sample neighboring heights
+// TODO: Once double-buffering is working, switch to HeightTextureInput for race-free reads
+float SampleHeightInput(int2 Coord)
 {
     // Clamp to texture bounds
     int2 ClampedCoord = clamp(Coord, int2(0, 0), int2(TerrainParams.xy) - int2(1, 1));
+
+    // For now, read from UAV directly (may have minor race conditions at thread boundaries)
+    // This is temporary until we fix the input copy texture issue
     float height = HeightTexture[ClampedCoord].r;
-    
+
     // Validate the sampled height
     return SafeFloat(height);
+}
+
+// ===== THERMAL EROSION (SLOPE SLUMPING) =====
+
+// Calculate thermal erosion - material slumps when slope exceeds angle of repose
+// Returns height change (positive = material removed from here, deposited downslope)
+float CalculateThermalErosion(int2 PixelCoord, float Height, float Hardness)
+{
+    float TerrainScale = max(TerrainParams.z, MIN_TERRAIN_SCALE);
+
+    // Sample all 4 neighbors
+    float HeightL = SampleHeightInput(PixelCoord + int2(-1, 0));
+    float HeightR = SampleHeightInput(PixelCoord + int2(1, 0));
+    float HeightT = SampleHeightInput(PixelCoord + int2(0, -1));
+    float HeightB = SampleHeightInput(PixelCoord + int2(0, 1));
+
+    // Calculate slopes to each neighbor (height difference / horizontal distance)
+    float SlopeL = (Height - HeightL) / TerrainScale;
+    float SlopeR = (Height - HeightR) / TerrainScale;
+    float SlopeT = (Height - HeightT) / TerrainScale;
+    float SlopeB = (Height - HeightB) / TerrainScale;
+
+    // Maximum stable slope depends on hardness (harder = steeper allowed)
+    float MaxSlope = MAX_STABLE_SLOPE * (1.0 + Hardness * HARDNESS_SLOPE_MULTIPLIER);
+
+    // Calculate excess slope for each direction (only positive = we're higher than stable)
+    float ExcessL = max(0.0, SlopeL - MaxSlope);
+    float ExcessR = max(0.0, SlopeR - MaxSlope);
+    float ExcessT = max(0.0, SlopeT - MaxSlope);
+    float ExcessB = max(0.0, SlopeB - MaxSlope);
+
+    // Total excess material that needs to slump
+    float TotalExcess = ExcessL + ExcessR + ExcessT + ExcessB;
+
+    // Apply thermal erosion rate (scaled by terrain scale for physical correctness)
+    float ThermalLoss = TotalExcess * THERMAL_EROSION_RATE * TerrainScale;
+
+    // Hardness reduces thermal erosion (hard rock resists crumbling)
+    ThermalLoss = SafeDivide(ThermalLoss, 1.0 + Hardness * 2.0);
+
+    // Clamp to prevent excessive changes
+    return clamp(ThermalLoss, 0.0, MAX_EROSION_RATE * 0.5);
 }
 
 // ===== EROSION CALCULATION =====
 
 float CalculateErosion(float2 UV, float Height, float WaterDepth, float2 FlowVel, float Hardness)
 {
-    // Early exit for no water
-    if (WaterDepth < MIN_WATER_DEPTH)
-        return 0.0;
-    
-    // Validate inputs
+    // Validate inputs first
     WaterDepth = SafeFloat(WaterDepth, 0.0, 1000.0);
+
+    // SMOOTH falloff instead of hard cutoff to prevent boundary discontinuities
+    // Erosion fades in gradually from 0 at MIN_WATER_DEPTH to full at 5x MIN_WATER_DEPTH
+    float WaterFalloff = saturate((WaterDepth - MIN_WATER_DEPTH) / (MIN_WATER_DEPTH * 4.0));
+    if (WaterFalloff <= 0.0)
+        return 0.0;
     FlowVel = float2(SafeFloat(FlowVel.x, -1000.0, 1000.0),
                       SafeFloat(FlowVel.y, -1000.0, 1000.0));
     Hardness = SafeFloat(Hardness, 0.0, 10.0);
@@ -108,10 +170,10 @@ float CalculateErosion(float2 UV, float Height, float WaterDepth, float2 FlowVel
     int2 PixelCoord = int2(UV * TerrainParams.xy);
     
     // Sample neighboring heights with validation
-    float HeightL = SampleHeightUAV(PixelCoord + int2(-1, 0));
-    float HeightR = SampleHeightUAV(PixelCoord + int2(1, 0));
-    float HeightT = SampleHeightUAV(PixelCoord + int2(0, -1));
-    float HeightB = SampleHeightUAV(PixelCoord + int2(0, 1));
+    float HeightL = SampleHeightInput(PixelCoord + int2(-1, 0));
+    float HeightR = SampleHeightInput(PixelCoord + int2(1, 0));
+    float HeightT = SampleHeightInput(PixelCoord + int2(0, -1));
+    float HeightB = SampleHeightInput(PixelCoord + int2(0, 1));
     
     // CRITICAL FIX: Safe gradient calculation with proper scale
     float2 Gradient = float2(HeightR - HeightL, HeightB - HeightT);
@@ -143,10 +205,13 @@ float CalculateErosion(float2 UV, float Height, float WaterDepth, float2 FlowVel
     
     // Net erosion (positive = erosion, negative = deposition)
     float NetErosion = ErosionRate - Deposition;
-    
+
+    // Apply smooth water falloff to prevent hard edges at water boundaries
+    NetErosion *= WaterFalloff;
+
     // CRITICAL: Clamp to prevent extreme changes
     NetErosion = clamp(NetErosion, -MAX_EROSION_RATE, MAX_EROSION_RATE);
-    
+
     return NetErosion;
 }
 
@@ -175,10 +240,10 @@ float2 CalculateOrographicEffects(float2 UV, float Height)
     int2 PixelCoord = int2(UV * TerrainParams.xy);
     
     // Sample neighboring heights
-    float HeightL = SampleHeightUAV(PixelCoord + int2(-1, 0));
-    float HeightR = SampleHeightUAV(PixelCoord + int2(1, 0));
-    float HeightT = SampleHeightUAV(PixelCoord + int2(0, -1));
-    float HeightB = SampleHeightUAV(PixelCoord + int2(0, 1));
+    float HeightL = SampleHeightInput(PixelCoord + int2(-1, 0));
+    float HeightR = SampleHeightInput(PixelCoord + int2(1, 0));
+    float HeightT = SampleHeightInput(PixelCoord + int2(0, -1));
+    float HeightB = SampleHeightInput(PixelCoord + int2(0, 1));
     
     // Safe terrain gradient
     float2 TerrainGradient = float2(HeightR - HeightL, HeightB - HeightT);
@@ -218,7 +283,8 @@ void TerrainComputeCS(uint3 ThreadId : SV_DispatchThreadID)
     if (any(ThreadId.xy >= uint2(TerrainParams.xy)))
         return;
     
-    // Read current height with validation
+    // Read current height from UAV (reading our OWN pixel is safe - no race condition)
+    // Only NEIGHBOR reads need the input copy texture
     float Height = HeightTexture[ThreadId.xy].r;
     Height = SafeFloat(Height);
     float OriginalHeight = Height;
@@ -249,21 +315,30 @@ void TerrainComputeCS(uint3 ThreadId : SV_DispatchThreadID)
         }
     }
     
-    // Apply erosion
+    // Apply erosion (hydraulic + thermal)
     float ErosionAmount = 0.0;
     if ((SimulationMode & 1) != 0)
     {
         float WaterDepth = WaterDepthTexture.SampleLevel(TextureSampler, UV, 0).r;
         float2 FlowVel = FlowVelocityTexture.SampleLevel(TextureSampler, UV, 0).xy;
         float Hardness = HardnessTexture.SampleLevel(TextureSampler, UV, 0).r;
-        
-        ErosionAmount = CalculateErosion(UV, Height, WaterDepth, FlowVel, Hardness);
-        
+
+        // Hydraulic erosion (water-based)
+        float HydraulicErosion = CalculateErosion(UV, Height, WaterDepth, FlowVel, Hardness);
+
+        // Thermal erosion (slope-based slumping) - always active when erosion enabled
+        // This creates natural slopes instead of vertical cuts
+        int2 PixelCoord = int2(UV * TerrainParams.xy);
+        float ThermalErosion = CalculateThermalErosion(PixelCoord, Height, Hardness);
+
+        // Combine both erosion types
+        ErosionAmount = HydraulicErosion + ThermalErosion;
+
         // Apply erosion with safe delta time
         float SafeDelta = clamp(DeltaTime, 0.0, 1.0);
         float HeightDelta = ErosionAmount * SafeDelta;
         HeightDelta = clamp(HeightDelta, -100.0, 100.0);  // Max 100m change per frame
-        
+
         Height -= HeightDelta;
     }
     
@@ -287,9 +362,10 @@ void TerrainComputeCS(uint3 ThreadId : SV_DispatchThreadID)
     
     // CRITICAL: Final validation and clamping
     Height = SafeFloat(Height, MIN_HEIGHT, MAX_HEIGHT);
-    
+
     // Write validated results
-    HeightTexture[ThreadId.xy] = Height;
+    // HeightTexture is float4 (RGBA) but we only use R channel for height
+    HeightTexture[ThreadId.xy] = float4(Height, 0, 0, 1);
     ErosionOutputTexture[ThreadId.xy] = SafeFloat(ErosionAmount, -1000.0, 1000.0);
 }
 

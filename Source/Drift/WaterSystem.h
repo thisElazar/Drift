@@ -1539,9 +1539,11 @@ private:
     public:
         // Set precipitation input from atmosphere
         void SetPrecipitationInput(UTextureRenderTarget2D* PrecipTexture);
-   
-    // Add to protected section:
+
     protected:
+        // Accumulate precipitation from atmosphere into water depth
+        void AccumulatePrecipitation(float DeltaTime);
+
         UPROPERTY()
         UTextureRenderTarget2D* PrecipitationInputTexture = nullptr;
 };

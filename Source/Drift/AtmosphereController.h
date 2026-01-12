@@ -48,6 +48,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "Engine/TextureRenderTarget2D.h"
+#include "MasterController.h"
 #include "AtmosphereController.generated.h"
 
 // Forward declarations
@@ -91,7 +92,7 @@ class AVolumetricCloud;
  */
 
 UCLASS(BlueprintType, Blueprintable)
-class DRIFT_API AAtmosphereController : public AActor
+class DRIFT_API AAtmosphereController : public AActor, public IScalableSystem
 {
     GENERATED_BODY()
 
@@ -617,12 +618,16 @@ public:
         UFUNCTION(BlueprintPure, Category = "Atmosphere GPU")
         int32 GetGridSizeY() const { return GridSizeY; }
     
+    // ===== IScalableSystem Interface =====
+    virtual void ConfigureFromMaster(const FWorldScalingConfig& Config) override;
+    virtual void SynchronizeCoordinates(const FWorldCoordinateSystem& Coords) override;
+    virtual bool IsSystemScaled() const override { return bIsScaled; }
+
 protected:
-
-    
-    
-    
-
+    // Scaling state
+    bool bIsScaled = false;
+    FWorldScalingConfig CachedScalingConfig;
+    FWorldCoordinateSystem CachedCoordinates;
 };
 
 // ============================================================================

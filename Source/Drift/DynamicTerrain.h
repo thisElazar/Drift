@@ -566,7 +566,7 @@ public:
     TArray<float> HeightMap;
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Terrain")
-        bool bEnableGPUErosion = true;
+        bool bEnableGPUErosion = false;  // TEMPORARILY DISABLED to test shader corruption
     
 private:
     // ===== INTERNAL COMPONENTS =====
@@ -631,8 +631,10 @@ private:
     
     // ===== CHUNK BOUNDARY SYSTEM =====
     
-    /** Boundary validation tolerance for tear detection */
-    static constexpr float BOUNDARY_HEIGHT_TOLERANCE = 5.0f;
+    /** Boundary validation tolerance for tear detection
+     *  For terrain with -1000 to 5624 range, natural slopes can be 50+ units.
+     *  Tolerance of 100 allows ~1.5% slopes between adjacent pixels. */
+    static constexpr float BOUNDARY_HEIGHT_TOLERANCE = 100.0f;
     
     /** Maximum neighbors to update atomically */
     static constexpr int32 MAX_ATOMIC_NEIGHBORS = 9;
@@ -691,7 +693,11 @@ private:
     // GPU sync state
     float GPUSyncTimer = 0.0f;
     bool bGPUDataDirty = false;
-    
+
+    // User edit protection - prevents GPU sync from overwriting recent edits
+    float LastUserEditTime = 0.0f;
+    static constexpr float UserEditProtectionDuration = 0.5f;  // Protect edits for 500ms
+
     // Helper method
     void SyncGPUChunkVisuals();
     
@@ -727,12 +733,52 @@ public:
         bool bUseGPUTerrain = false;
 
         UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Terrain")
-        bool bEnableOrographicEffects = true;
+        bool bEnableOrographicEffects = false;  // TEMPORARILY DISABLED to test shader corruption
         
-        // GPU Resources
+        // GPU Resources - Double Buffered Height Textures
+        // Double buffering eliminates visual pulsing during GPU sync
+        // Materials read from HeightReadTexture (stable), compute writes to HeightWriteTexture
+        UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GPU Terrain|Resources")
+        UTextureRenderTarget2D* HeightRenderTexture_A = nullptr;  // Buffer A
+
+        UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GPU Terrain|Resources")
+        UTextureRenderTarget2D* HeightRenderTexture_B = nullptr;  // Buffer B
+
+        // Pointers to current read/write buffers (swapped after each compute pass)
+        UTextureRenderTarget2D* HeightReadTexture = nullptr;   // Stable - materials sample this
+        UTextureRenderTarget2D* HeightWriteTexture = nullptr;  // Being updated by compute
+
+        // Legacy pointer for compatibility - points to HeightReadTexture
         UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GPU Terrain|Resources")
         UTextureRenderTarget2D* HeightRenderTexture = nullptr;
-        
+
+        int32 CurrentHeightBufferIndex = 0;  // 0 = A is read, B is write; 1 = B is read, A is write
+        bool bFirstComputeExecution = true;  // Skip swap on first compute (nothing to swap yet)
+
+        // Buffer interpolation for smooth transitions
+        // BlendFactor animates from 0→1 between compute passes
+        // Material lerps: finalHeight = lerp(PreviousBuffer, CurrentBuffer, BlendFactor)
+        UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GPU Terrain|Interpolation")
+        float HeightBufferBlendFactor = 1.0f;  // 0 = previous buffer, 1 = current buffer
+
+        float TimeSinceLastSwap = 0.0f;
+        float SwapInterpolationDuration = 0.1f;  // Seconds to blend between buffers
+
+        /** Swap height buffers after compute pass completes */
+        void SwapHeightBuffers();
+
+        /** Update blend factor for smooth interpolation */
+        void UpdateHeightBufferInterpolation(float DeltaTime);
+
+        // Water-specific height texture - updated EVERY FRAME (no double buffering)
+        // This ensures water flow visuals are smooth and continuous
+        // Water material samples this, terrain material uses the interpolated double buffers
+        UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GPU Terrain|Resources")
+        UTextureRenderTarget2D* WaterHeightTexture = nullptr;
+
+        /** Update water height texture with current terrain data (called every frame) */
+        void UpdateWaterHeightTexture();
+
         UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GPU Terrain|Resources")
         UTextureRenderTarget2D* ErosionRenderTexture = nullptr;
         
@@ -742,6 +788,14 @@ public:
         UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GPU Terrain|Resources")
         UTextureRenderTarget2D* NormalRenderTexture = nullptr;
         
+        // GPU Rendering - render directly from GPU heightmap, no mesh regeneration
+        UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Terrain|Rendering")
+        bool bUseGPUHeightmapRendering = true;  // Use material WPO instead of mesh geometry
+
+        // Debug visualization - show hardness as color overlay on terrain
+        UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Terrain|Debug")
+        bool bShowHardnessDebug = false;
+
         // GPU Parameters
         UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GPU Terrain|Erosion",
                   meta = (ClampMin = "0.0", ClampMax = "1.0"))
@@ -768,10 +822,19 @@ public:
         
         UFUNCTION(BlueprintCallable, Category = "GPU Terrain")
         void SyncGPUToCPU();
-        
+
+        // Lightweight height-only sync for water flow calculations
+        // Runs frequently (30Hz) but skips validation and mesh updates
+        void SyncGPUHeightsForWater();
+        float WaterHeightSyncTimer = 0.0f;
+        const float WaterHeightSyncInterval = 0.033f;  // 30Hz for smooth water
+
         UFUNCTION(BlueprintCallable, Category = "GPU Terrain")
         void SyncCPUToGPU();
-        
+
+        /** Sync hardness data from GeologyController to GPU texture */
+        void SyncHardnessToGPU();
+
         UFUNCTION(BlueprintCallable, Category = "GPU Terrain")
         void ToggleGPUTerrain(bool bEnable);
         
@@ -812,8 +875,6 @@ public:
     
     // Helper for safe neighbor averaging
     float GetSafeNeighborAverage(int32 X, int32 Y) const;
-    
-    void DebugAuthority();
 
         // Internal GPU functions
         void CreateGPUResources();
@@ -822,6 +883,7 @@ public:
         void ProcessGPUErosion(float DeltaTime);
         void ProcessOrographicEffects(float DeltaTime);
         void ApplyGPUModifications();
+        void VerifyGPUUpload();  // Verifies GPU texture matches CPU data
         
         // Readback management
         FRenderCommandFence GPUReadbackFence;
@@ -846,10 +908,25 @@ public:
     // Validation function
        UFUNCTION(BlueprintCallable, Category = "GPU Terrain")
        void ValidateGPUUpload();
-       
-       // Console command
-       UFUNCTION(Exec, Category = "GPU Terrain")
-    
+
+    // Console commands for debugging
+    UFUNCTION(Exec)
+    void DebugAuthority();
+
+    UFUNCTION(Exec)
+    void ForceGPUMode();
+
+    UFUNCTION(Exec)
+    void ForceCPUMode();
+
+    /** Toggle GPU erosion on/off for debugging */
+    UFUNCTION(Exec)
+    void ToggleGPUErosion();
+
+    /** Toggle GPU orographic effects on/off for debugging */
+    UFUNCTION(Exec)
+    void ToggleGPUOrographic();
+
     // New function for GPU init with data
     void InitializeGPUTerrainWithData();
 

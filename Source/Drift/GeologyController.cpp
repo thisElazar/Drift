@@ -502,11 +502,126 @@ void AGeologyController::UpdateGeologySystem(float DeltaTime)
         return;
     }
     
+    // Process soil moisture drainage and evapotranspiration
+    // This is the critical intermediate layer between surface water and groundwater
+    ProcessSoilMoistureTick(DeltaTime);
+
     // Process user-created springs
     ProcessUserSprings(DeltaTime);
-    
+
     // Update debug visualization
     UpdateWaterTableDebugVisualization();
+}
+
+
+// ============================================================================
+// SECTION 5.5: SOIL MOISTURE LAYER
+// ============================================================================
+// The critical intermediate buffer between surface water and groundwater.
+// Water infiltrates into soil, sits there for plants to use, then slowly
+// drains to the water table. This creates realistic moisture persistence.
+
+void AGeologyController::ProcessSoilMoistureTick(float DeltaTime)
+{
+    if (GeologyGrid.Num() == 0 || !MasterController) return;
+
+    float CellArea = MasterController->GetTerrainScale() * MasterController->GetTerrainScale();
+    float TotalDrainageVolume = 0.0f;
+    float TotalEvapVolume = 0.0f;
+
+    // Process each cell's soil moisture
+    for (int32 i = 0; i < GeologyGrid.Num(); i++)
+    {
+        FSimplifiedGeology& Cell = GeologyGrid[i];
+
+        if (Cell.SoilMoisture <= 0.0f) continue;
+
+        // Get soil capacity for this rock type
+        float SoilCapacity = GetSoilCapacity(Cell.SurfaceRock);
+        float CurrentWaterVolume = Cell.SoilMoisture * SoilCapacity * CellArea;
+
+        // 1. DRAINAGE TO WATER TABLE (slow, permeability-dependent)
+        // More permeable soils drain faster
+        float EffectiveDrainageRate = SoilDrainageRate * Cell.Permeability;
+        float DrainageAmount = Cell.SoilMoisture * EffectiveDrainageRate * DeltaTime;
+        DrainageAmount = FMath::Min(DrainageAmount, Cell.SoilMoisture);
+
+        // 2. EVAPOTRANSPIRATION (moisture returns to atmosphere)
+        // TODO: Modulate by temperature from AtmosphericSystem
+        // TODO: Modulate by vegetation density from EcosystemManager
+        float EvapAmount = Cell.SoilMoisture * SoilEvapotranspirationRate * DeltaTime;
+        EvapAmount = FMath::Min(EvapAmount, Cell.SoilMoisture - DrainageAmount);
+
+        // Apply changes
+        Cell.SoilMoisture -= (DrainageAmount + EvapAmount);
+        Cell.SoilMoisture = FMath::Max(0.0f, Cell.SoilMoisture);
+
+        // Track volumes for water budget
+        float DrainageVolume = DrainageAmount * SoilCapacity * CellArea;
+        float EvapVolume = EvapAmount * SoilCapacity * CellArea;
+
+        TotalDrainageVolume += DrainageVolume;
+        TotalEvapVolume += EvapVolume;
+    }
+
+    // Transfer drained water to water table (conserved)
+    if (TotalDrainageVolume > 0.0f)
+    {
+        AddWaterToWaterTable(TotalDrainageVolume);
+        TotalSoilMoistureVolume -= TotalDrainageVolume;
+    }
+
+    // Transfer evaporated water to atmosphere (conserved)
+    if (TotalEvapVolume > 0.0f && MasterController)
+    {
+        FVector CenterLocation = TargetTerrain ? TargetTerrain->GetActorLocation() : FVector::ZeroVector;
+        MasterController->TransferSurfaceToAtmosphere(CenterLocation, TotalEvapVolume);
+        TotalSoilMoistureVolume -= TotalEvapVolume;
+    }
+
+    // Ensure tracking stays non-negative
+    TotalSoilMoistureVolume = FMath::Max(0.0f, TotalSoilMoistureVolume);
+}
+
+void AGeologyController::AddWaterToSoilMoisture(FVector Location, float VolumeM3)
+{
+    if (VolumeM3 <= 0.0f || !MasterController) return;
+
+    FVector2D Coords = WorldToGridCoordinates(Location);
+    int32 X = FMath::FloorToInt(Coords.X);
+    int32 Y = FMath::FloorToInt(Coords.Y);
+
+    if (!IsValidGridCoordinate(X, Y)) return;
+
+    int32 Index = GetGridIndex(X, Y);
+    FSimplifiedGeology& Cell = GeologyGrid[Index];
+
+    // Calculate how much this cell can absorb
+    float SoilCapacity = GetSoilCapacity(Cell.SurfaceRock);
+    float CellArea = MasterController->GetTerrainScale() * MasterController->GetTerrainScale();
+    float MaxCellVolume = Cell.StorageCoefficient * SoilCapacity * CellArea;
+    float CurrentVolume = Cell.SoilMoisture * SoilCapacity * CellArea;
+    float AvailableSpace = MaxCellVolume - CurrentVolume;
+
+    // Absorb what we can
+    float AbsorbedVolume = FMath::Min(VolumeM3, AvailableSpace);
+    if (AbsorbedVolume > 0.0f)
+    {
+        Cell.SoilMoisture += AbsorbedVolume / (SoilCapacity * CellArea);
+        Cell.SoilMoisture = FMath::Clamp(Cell.SoilMoisture, 0.0f, 1.0f);
+        TotalSoilMoistureVolume += AbsorbedVolume;
+    }
+
+    // IMPORTANT: Excess stays as surface water - it does NOT go directly to groundwater!
+    // The caller (WaterSystem) should handle excess by keeping it on the surface
+    // This prevents the "water disappearing too fast" problem
+
+    // Log for debugging water budget
+    if (VolumeM3 > AbsorbedVolume)
+    {
+        UE_LOG(LogTemp, VeryVerbose, TEXT("[SOIL MOISTURE] Absorbed %.4f of %.4f m³ - soil saturated at %s"),
+            AbsorbedVolume, VolumeM3, *Location.ToString());
+    }
 }
 
 
@@ -635,39 +750,15 @@ void AGeologyController::ReduceSoilMoisture(FVector Location, float Amount)
 
 void AGeologyController::ApplyInfiltration(FVector Location, float WaterAmount)
 {
-    if (!MasterController) return;
-    
-    FVector2D Coords = WorldToGridCoordinates(Location);
-    int32 X = FMath::FloorToInt(Coords.X);
-    int32 Y = FMath::FloorToInt(Coords.Y);
-    
-    if (IsValidGridCoordinate(X, Y))
-    {
-        int32 Index = GetGridIndex(X, Y);
-        FSimplifiedGeology& Geology = GeologyGrid[Index];
-        
-        // Update soil moisture (existing code)
-        float SoilCapacity = GetSoilCapacity(Geology.SurfaceRock);
-        float SoilSpace = (1.0f - Geology.SoilMoisture) * SoilCapacity;
-        float ToSoil = FMath::Min(WaterAmount, SoilSpace);
-        
-        Geology.SoilMoisture += ToSoil / SoilCapacity;
-        
-        // Excess goes to water table
-        float ToWaterTable = WaterAmount - ToSoil;
-        if (ToWaterTable > 0.0f && MasterController)
-        {
-            // Raise water table and hydraulic head
-            float CellArea = MasterController->GetTerrainScale() * MasterController->GetTerrainScale();
-            float WaterTableRise = ToWaterTable / (CellArea * Geology.StorageCoefficient);
-            
-            // Add to global water table instead of per-cell
-            if (MasterController)
-            {
-                MasterController->TransferSurfaceToGroundwater( Location, ToWaterTable);
-            }
-        }
-    }
+    // REDESIGNED: Now uses the soil moisture layer properly
+    // Water goes into soil moisture buffer, NOT directly to groundwater
+    // The soil moisture tick handles slow drainage to water table over time
+    // This creates the "residence time" that plants need!
+
+    AddWaterToSoilMoisture(Location, WaterAmount);
+
+    // NOTE: If soil is saturated, excess water stays on surface (handled by caller)
+    // This is intentional - prevents water from "disappearing" too fast
 }
 
 

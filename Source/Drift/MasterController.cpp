@@ -2512,6 +2512,19 @@ void AMasterWorldController::TransferGroundwaterToSurface(FVector WorldLocation,
            Volume, *WorldLocation.ToString());
 }
 
+void AMasterWorldController::TransferSurfaceToSoilMoisture(FVector WorldLocation, float Volume)
+{
+    if (Volume <= 0.0f || !GeologyController) return;
+
+    // Route infiltration through the soil moisture layer
+    // Water will sit in soil for plants to use, then slowly drain to water table
+    GeologyController->AddWaterToSoilMoisture(WorldLocation, Volume);
+
+    // Clear, semantic logging
+    UE_LOG(LogTemp, VeryVerbose, TEXT("[INFILTRATION→SOIL] %.4f m³ at %s"),
+           Volume, *WorldLocation.ToString());
+}
+
 void AMasterWorldController::TransferSurfaceToAtmosphereBulk(
     const TArray<FVector>& Locations,
     const TArray<float>& Volumes)

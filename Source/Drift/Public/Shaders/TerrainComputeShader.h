@@ -18,9 +18,14 @@ public:
     SHADER_USE_PARAMETER_STRUCT(FTerrainComputeCS, FGlobalShader);
     
     BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-        // Input/Output height texture (read-write)
-        SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float>, HeightTexture)
-        
+        // Output height texture (write-only for results)
+        // NOTE: Uses float4 (PF_FloatRGBA) for CPU readback compatibility - height in R channel
+        SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, HeightTexture)
+
+        // Input height texture (read-only for neighbor sampling - prevents UAV race conditions)
+        // CRITICAL: Must be a COPY of HeightTexture from BEFORE this dispatch
+        SHADER_PARAMETER_RDG_TEXTURE_SRV(Texture2D<float4>, HeightTextureInput)
+
         // Water depth for erosion calculations
         SHADER_PARAMETER_RDG_TEXTURE_SRV(Texture2D<float>, WaterDepthTexture)
         

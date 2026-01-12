@@ -142,14 +142,12 @@ bool UTemporalManager::ShouldSystemUpdate(ESystemType SystemType, float UpdateFr
 {
     if (!IsSystemTypeValid(SystemType) || bPauseAllSystems)
     {
-        UE_LOG(LogTemp, Log, TEXT("TemporalManager: Fail 145"));
         return false;
     }
     
     // Performance throttling - limit systems per frame
     if (ShouldThrottleSystemUpdates())
     {
-        UE_LOG(LogTemp, Log, TEXT("TemporalManager: Fail 152"));
         return false;
     }
     
@@ -340,7 +338,6 @@ void UTemporalManager::UpdateTemporalState(float RealDeltaTime)
         
         if (TimeScale)
         {
-            UE_LOG(LogTemp, Log, TEXT("TemporalManager: UpdateTemporalStateCalled"));
             float ScaledDelta = RealDeltaTime * (*TimeScale) * MasterTimeScale;
             SystemTimePair.Value += ScaledDelta;
             TemporalState.SystemDeltas.Add(SystemType, ScaledDelta);

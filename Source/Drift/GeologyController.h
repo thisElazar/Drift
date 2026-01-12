@@ -222,15 +222,42 @@ public:
     float GlobalPorosity = 0.3f;  // 30% void space in rock
 
     // ===== WATER CYCLE INTEGRATION =====
-    
+
     UFUNCTION(BlueprintCallable, Category = "Water Cycle")
     void SetWaterTableDepth(FVector Location, float Depth);
-    
+
     UFUNCTION(BlueprintCallable, Category = "Water Cycle")
     void ReduceSoilMoisture(FVector Location, float Amount);
-    
+
     UFUNCTION(BlueprintCallable, Category = "Water Cycle")
     float GetSoilMoistureAt(FVector Location) const;
+
+    // ===== SOIL MOISTURE LAYER =====
+    // Intermediate buffer between surface water and groundwater
+    // This is where plants get their water from!
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Soil Moisture",
+        meta = (ClampMin = "0.0001", ClampMax = "0.01"))
+    float SoilDrainageRate = 0.001f;  // Rate soil moisture drains to water table (per second)
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Soil Moisture",
+        meta = (ClampMin = "0.0", ClampMax = "0.001"))
+    float SoilEvapotranspirationRate = 0.0001f;  // Rate moisture evaporates from soil (per second)
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Soil Moisture")
+    float TotalSoilMoistureVolume = 0.0f;  // Total water stored in soil (m³)
+
+    /** Process soil moisture drainage and evapotranspiration each tick */
+    UFUNCTION(BlueprintCallable, Category = "Soil Moisture")
+    void ProcessSoilMoistureTick(float DeltaTime);
+
+    /** Add water to soil moisture at a location (from surface infiltration) */
+    UFUNCTION(BlueprintCallable, Category = "Soil Moisture")
+    void AddWaterToSoilMoisture(FVector Location, float VolumeM3);
+
+    /** Get total soil moisture in the system */
+    UFUNCTION(BlueprintPure, Category = "Soil Moisture")
+    float GetTotalSoilMoistureVolume() const { return TotalSoilMoistureVolume; }
     
     UFUNCTION(BlueprintPure, Category = "Global Water Table")
     float GetWaterTableDepthAtLocation(FVector Location) const;

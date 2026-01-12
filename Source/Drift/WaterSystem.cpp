@@ -102,8 +102,14 @@
  * WATER CONSERVATION:
  * All water transfers go through MasterController:
  * - TransferSurfaceToAtmosphere() for evaporation
- * - TransferSurfaceToGroundwater() for infiltration
- * Perfect mass balance maintained (Â±0.0 mÂ³)
+ * - TransferSurfaceToSoilMoisture() for infiltration → soil moisture → water table
+ * - TransferSurfaceToGroundwater() for edge drainage (boundary water)
+ * Perfect mass balance maintained (±0.0 m³)
+ *
+ * SOIL MOISTURE LAYER:
+ * Infiltrated water goes to GeologyController's soil moisture buffer first,
+ * then slowly drains to water table. This creates the "residence time" that
+ * plants need to access water - the foundation of the ecosystem!
  */
 
 #include "WaterSystem.h"
@@ -347,13 +353,13 @@ void UWaterSystem::UpdateWaterSimulation(float DeltaTime)
     // Step 1: Track time for time-based effects
    // AccumulatedTime += DeltaTime;
    // AccumulatedScaledTime += DeltaTime * TimeScale;
-    
-    // Step 2: Process water sources (rain, rivers, etc.)
-  //  if (bEnableRain && RainIntensity > 0.0f)
-   // {
-       // ApplyRainfall(DeltaTime); // Use existing rain function
-   // }
-    
+
+    // Step 2: Process precipitation from atmosphere
+    if (OwnerTerrain && OwnerTerrain->AtmosphericSystem)
+    {
+        AccumulatePrecipitation(EffectiveDeltaTime);
+    }
+
     // Step 3: Calculate water flow forces
     CalculateWaterFlow(EffectiveDeltaTime);
     
@@ -1192,8 +1198,10 @@ void UWaterSystem::ProcessWaterEvaporation(float DeltaTime)
        
        if (TotalInfiltration > 0.0f)
        {
+           // Route infiltration through soil moisture layer (NOT directly to groundwater!)
+           // Water will sit in soil for plants to use, then slowly drain to water table
            FVector CenterLocation = OwnerTerrain->GetActorLocation();
-           CachedMasterController->TransferSurfaceToGroundwater(CenterLocation, TotalInfiltration);
+           CachedMasterController->TransferSurfaceToSoilMoisture(CenterLocation, TotalInfiltration);
        }
     
     // Mark that water has changed
@@ -8936,13 +8944,80 @@ void UWaterSystem::ResetGPUWaveSystem()
 
 void UWaterSystem::SetPrecipitationInput(UTextureRenderTarget2D* PrecipTexture)
 {
-    // Simple implementation - just store the reference
-    // The water compute shader can use this for flow accumulation
+    PrecipitationInputTexture = PrecipTexture;
+
     if (PrecipTexture)
     {
-        // Store for later use in flow calculations
-        // You can expand this to actually use precipitation in water flow
-        UE_LOG(LogTemp, Verbose, TEXT("WaterSystem: Precipitation texture set"));
+        UE_LOG(LogTemp, Verbose, TEXT("WaterSystem: Precipitation texture set (%dx%d)"),
+               PrecipTexture->SizeX, PrecipTexture->SizeY);
+    }
+}
+
+void UWaterSystem::AccumulatePrecipitation(float DeltaTime)
+{
+    if (!OwnerTerrain || !OwnerTerrain->AtmosphericSystem || !SimulationData.IsValid())
+    {
+        return;
+    }
+
+    UAtmosphericSystem* Atmosphere = OwnerTerrain->AtmosphericSystem;
+    const int32 Width = SimulationData.TerrainWidth;
+    const int32 Height = SimulationData.TerrainHeight;
+
+    // Sample precipitation at a lower resolution for performance
+    // Atmosphere grid is typically 64x64, terrain is 513x513
+    const int32 SampleStep = FMath::Max(1, Width / 64);
+
+    float TotalPrecipAdded = 0.0f;
+    int32 CellsWithPrecip = 0;
+
+    for (int32 Y = 0; Y < Height; Y += SampleStep)
+    {
+        for (int32 X = 0; X < Width; X += SampleStep)
+        {
+            // Get world position for this grid cell
+            FVector WorldPos = OwnerTerrain->GetActorLocation() +
+                               FVector(X * OwnerTerrain->TerrainScale,
+                                       Y * OwnerTerrain->TerrainScale,
+                                       0.0f);
+
+            // Query precipitation rate from atmosphere (mm/hour)
+            float PrecipRate = Atmosphere->GetPrecipitationAt(WorldPos);
+
+            if (PrecipRate > 0.01f)
+            {
+                // Convert mm/hour to simulation units per second
+                // 1 mm/hour = 0.001 m/hour = 0.001/3600 m/s ≈ 2.78e-7 m/s
+                // With terrain scale factor
+                float WaterToAdd = PrecipRate * 0.00001f * DeltaTime;
+
+                // Apply to a region of cells around this sample point
+                int32 RegionEndX = FMath::Min(X + SampleStep, Width);
+                int32 RegionEndY = FMath::Min(Y + SampleStep, Height);
+
+                for (int32 RY = Y; RY < RegionEndY; RY++)
+                {
+                    for (int32 RX = X; RX < RegionEndX; RX++)
+                    {
+                        int32 Index = RY * Width + RX;
+                        if (Index >= 0 && Index < SimulationData.WaterDepthMap.Num())
+                        {
+                            SimulationData.WaterDepthMap[Index] += WaterToAdd;
+                            TotalPrecipAdded += WaterToAdd;
+                        }
+                    }
+                }
+
+                CellsWithPrecip++;
+            }
+        }
+    }
+
+    // Track total water added for budget
+    if (TotalPrecipAdded > 0.0f)
+    {
+        TotalWaterAmount += TotalPrecipAdded;
+        bWaterChangedThisFrame = true;
     }
 }
 
