@@ -75,12 +75,23 @@ export class TerrainControls {
       case 'r':
         this.terrain.reset();
         break;
+      // Brush size: [ and ]
       case '[':
         this.terrain.brushRadius = Math.max(1, this.terrain.brushRadius - 1);
         this.updateToolDisplay();
         break;
       case ']':
-        this.terrain.brushRadius = Math.min(20, this.terrain.brushRadius + 1);
+        this.terrain.brushRadius = Math.min(30, this.terrain.brushRadius + 1);
+        this.updateToolDisplay();
+        break;
+      // Brush strength: - and + (= key)
+      case '-':
+        this.terrain.brushStrength = Math.max(0.5, this.terrain.brushStrength - 0.5);
+        this.updateToolDisplay();
+        break;
+      case '=':
+      case '+':
+        this.terrain.brushStrength = Math.min(20, this.terrain.brushStrength + 0.5);
         this.updateToolDisplay();
         break;
     }
@@ -91,11 +102,11 @@ export class TerrainControls {
     if (info) {
       info.innerHTML = `
         <h1>Drift Demo</h1>
-        <p>Tool: <strong>${this.currentTool}</strong> | Brush: ${this.terrain.brushRadius}</p>
+        <p>Tool: <strong>${this.currentTool}</strong> | Size: ${this.terrain.brushRadius} | Strength: ${this.terrain.brushStrength.toFixed(1)}</p>
         <p style="font-size: 12px; opacity: 0.7; margin-top: 5px;">
           Left-click: Use tool | Right-drag: Rotate | Scroll: Zoom<br>
           1: Raise | 2: Lower | 3: Water | 4: Spring<br>
-          [ / ]: Brush size | R: Reset terrain
+          [ / ]: Brush size | - / +: Strength | R: Reset terrain
         </p>
       `;
     }

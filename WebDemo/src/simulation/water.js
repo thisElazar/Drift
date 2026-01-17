@@ -33,6 +33,14 @@ export class Water {
     this.velocityX = new Float32Array(GRID_SIZE);
     this.velocityY = new Float32Array(GRID_SIZE);
 
+    // PHASE 1.5: Wave energy system for pressure-driven waves
+    this.previousDepth = new Float32Array(GRID_SIZE);      // For displacement detection
+    this.previousTerrain = new Float32Array(GRID_SIZE);    // For terrain change detection
+    this.waveEnergy = new Float32Array(GRID_SIZE);         // Wave energy at each cell
+    this.waveDirectionX = new Float32Array(GRID_SIZE);     // Wave propagation direction
+    this.waveDirectionY = new Float32Array(GRID_SIZE);
+    this.waveEnergyNext = new Float32Array(GRID_SIZE);     // Double buffer for wave energy
+
     // Springs: array of {x, y, flowRate}
     this.springs = [];
 
@@ -40,6 +48,13 @@ export class Water {
     this.flowRate = WATER_FLOW_RATE;
     this.evaporationRate = EVAPORATION_RATE;
     this.minDepth = WATER_MIN_DEPTH;
+
+    // Wave parameters
+    this.waveDecay = 0.96;          // How fast waves dissipate
+    this.wavePropagation = 0.35;    // How much energy spreads to neighbors
+    this.displacementSensitivity = 15.0;  // How much terrain changes create waves
+    this.impactWaveStrength = 2.0;  // Strength of wall impact waves
+    this.pressureWaveStrength = 0.8; // How much pressure gradients create waves
 
     this.dirty = false;
   }
@@ -58,7 +73,13 @@ export class Water {
   }
 
   // Add water at a position
+  // Amount is total water to add, distributed across the brush area
   addWater(centerX, centerY, amount = 10, radius = 3) {
+    // Scale amount by area so larger brushes spread water thinner
+    // (like a wider spray pattern adding the same total volume)
+    const area = Math.PI * radius * radius;
+    const perCellAmount = amount / Math.max(1, area * 0.5);  // Distribute across ~half the area (falloff)
+
     for (let dy = -radius; dy <= radius; dy++) {
       for (let dx = -radius; dx <= radius; dx++) {
         const x = Math.floor(centerX + dx);
@@ -71,7 +92,7 @@ export class Water {
 
         const falloff = 1 - (dist / radius);
         const idx = this.index(x, y);
-        this.depth[idx] += amount * falloff;
+        this.depth[idx] += perCellAmount * falloff;
       }
     }
     this.dirty = true;
@@ -106,25 +127,63 @@ export class Water {
     this.depthNext.fill(0);
     this.velocityX.fill(0);
     this.velocityY.fill(0);
+    // Reset wave energy system
+    this.previousDepth.fill(0);
+    this.previousTerrain.set(this.terrain.heightMap);
+    this.waveEnergy.fill(0);
+    this.waveEnergyNext.fill(0);
+    this.waveDirectionX.fill(0);
+    this.waveDirectionY.fill(0);
     this.dirty = true;
   }
 
-  // Main simulation step - pressure-based flow
+  // Main simulation step - pressure-based flow with wave energy
   simulate(dt = 1/60) {
     const terrain = this.terrain.heightMap;
 
     // Copy current depth to next buffer
     this.depthNext.set(this.depth);
+    this.waveEnergyNext.set(this.waveEnergy);
 
     // Process springs first
     for (const spring of this.springs) {
       if (this.inBounds(spring.x, spring.y)) {
         const idx = this.index(spring.x, spring.y);
         this.depthNext[idx] += spring.flowRate * dt;
+        // Springs create gentle waves
+        this.waveEnergyNext[idx] += spring.flowRate * 0.1 * dt;
       }
     }
 
-    // Pressure-based flow simulation
+    // PHASE 1.5: Detect terrain displacement and generate waves
+    for (let y = 1; y < this.height - 1; y++) {
+      for (let x = 1; x < this.width - 1; x++) {
+        const idx = this.index(x, y);
+        const waterHere = this.depth[idx];
+
+        if (waterHere > this.minDepth) {
+          // Detect terrain change (raising/lowering under water)
+          const terrainChange = terrain[idx] - this.previousTerrain[idx];
+          if (Math.abs(terrainChange) > 0.1) {
+            // Generate radial waves from displacement
+            const displacementEnergy = Math.abs(terrainChange) * this.displacementSensitivity;
+            this.waveEnergyNext[idx] += displacementEnergy;
+
+            // Set wave direction to radiate outward from center of change
+            // (normalized based on terrain gradient)
+            const gradX = (terrain[this.index(x+1, y)] - terrain[this.index(x-1, y)]) * 0.5;
+            const gradY = (terrain[this.index(x, y+1)] - terrain[this.index(x, y-1)]) * 0.5;
+            const gradMag = Math.sqrt(gradX * gradX + gradY * gradY) + 0.001;
+
+            // Wave direction is perpendicular/outward from terrain change
+            this.waveDirectionX[idx] += (terrainChange > 0 ? -gradX : gradX) / gradMag * displacementEnergy;
+            this.waveDirectionY[idx] += (terrainChange > 0 ? -gradY : gradY) / gradMag * displacementEnergy;
+          }
+        }
+      }
+    }
+
+    // Pressure-based flow simulation with wave generation
     for (let y = 1; y < this.height - 1; y++) {
       for (let x = 1; x < this.width - 1; x++) {
         const idx = this.index(x, y);
@@ -139,6 +198,11 @@ export class Water {
         let totalFlow = 0;
         let flowVelX = 0;
         let flowVelY = 0;
+        let blockedFlow = 0;  // Track flow blocked by walls
+
+        // Calculate surface gradient for pressure-driven waves
+        let surfaceGradX = 0;
+        let surfaceGradY = 0;
 
         // Check all 8 neighbors
         for (const [dx, dy, distMult] of NEIGHBORS) {
@@ -150,13 +214,24 @@ export class Water {
           const waterNeighbor = this.depth[nIdx];
           const surfaceNeighbor = terrainNeighbor + waterNeighbor;
 
+          // Accumulate surface gradient
+          if (dx !== 0) surfaceGradX += (surfaceNeighbor - surfaceHere) * dx / distMult;
+          if (dy !== 0) surfaceGradY += (surfaceNeighbor - surfaceHere) * dy / distMult;
+
           // Calculate pressure difference (water flows downhill)
           const pressureDiff = surfaceHere - surfaceNeighbor;
 
           if (pressureDiff > 0) {
+            // Check if flow is blocked by terrain wall
+            const heightDiff = terrainNeighbor - terrainHere;
+            if (heightDiff > waterHere * 0.5) {
+              // Wall impact - generate wave energy bouncing back
+              blockedFlow += pressureDiff * this.flowRate / distMult;
+              continue;
+            }
+
             // Flow rate based on pressure difference
-            // Limit flow to available water and prevent oscillation
-            const maxFlow = waterHere * 0.25; // Don't move more than 25% per step
+            const maxFlow = waterHere * 0.25;
             const flow = Math.min(
               pressureDiff * this.flowRate / distMult,
               maxFlow
@@ -174,6 +249,25 @@ export class Water {
           }
         }
 
+        // Wall impact creates sloshing waves
+        if (blockedFlow > 0.01) {
+          const impactEnergy = blockedFlow * this.impactWaveStrength;
+          this.waveEnergyNext[idx] += impactEnergy;
+          // Reverse wave direction on impact
+          this.waveDirectionX[idx] -= this.velocityX[idx] * impactEnergy * 0.5;
+          this.waveDirectionY[idx] -= this.velocityY[idx] * impactEnergy * 0.5;
+        }
+
+        // Pressure gradient creates waves
+        const gradMag = Math.sqrt(surfaceGradX * surfaceGradX + surfaceGradY * surfaceGradY);
+        if (gradMag > 0.1) {
+          const pressureEnergy = gradMag * this.pressureWaveStrength * waterHere * 0.1;
+          this.waveEnergyNext[idx] += pressureEnergy;
+          // Waves propagate down-gradient (toward lower surface)
+          this.waveDirectionX[idx] += surfaceGradX * pressureEnergy;
+          this.waveDirectionY[idx] += surfaceGradY * pressureEnergy;
+        }
+
         // Update velocity (smoothed)
         if (totalFlow > 0) {
           this.velocityX[idx] = this.velocityX[idx] * 0.8 + flowVelX * 0.2;
@@ -185,6 +279,51 @@ export class Water {
       }
     }
 
+    // Propagate wave energy to neighbors
+    for (let y = 1; y < this.height - 1; y++) {
+      for (let x = 1; x < this.width - 1; x++) {
+        const idx = this.index(x, y);
+        const energy = this.waveEnergy[idx];
+
+        if (energy > 0.01 && this.depth[idx] > this.minDepth) {
+          // Get wave direction
+          const dirX = this.waveDirectionX[idx];
+          const dirY = this.waveDirectionY[idx];
+          const dirMag = Math.sqrt(dirX * dirX + dirY * dirY) + 0.001;
+          const normDirX = dirX / dirMag;
+          const normDirY = dirY / dirMag;
+
+          // Spread energy to neighbors, biased in wave direction
+          for (const [dx, dy, distMult] of NEIGHBORS) {
+            const nx = x + dx;
+            const ny = y + dy;
+            const nIdx = this.index(nx, ny);
+
+            if (this.depth[nIdx] > this.minDepth) {
+              // Directional bias: more energy goes in wave direction
+              const dot = (dx * normDirX + dy * normDirY) / distMult;
+              const dirBias = Math.max(0.1, 0.5 + dot * 0.5);  // 0.1 to 1.0
+
+              const spreadEnergy = energy * this.wavePropagation * dirBias / 8;
+              this.waveEnergyNext[nIdx] += spreadEnergy;
+              this.waveEnergyNext[idx] -= spreadEnergy;
+
+              // Propagate direction too
+              this.waveDirectionX[nIdx] += normDirX * spreadEnergy * 0.5;
+              this.waveDirectionY[nIdx] += normDirY * spreadEnergy * 0.5;
+            }
+          }
+        }
+      }
+    }
+
+    // Apply decay to wave energy and direction
+    for (let i = 0; i < GRID_SIZE; i++) {
+      this.waveEnergyNext[i] *= this.waveDecay;
+      this.waveDirectionX[i] *= 0.92;
+      this.waveDirectionY[i] *= 0.92;
+    }
+
     // Apply evaporation (very subtle)
     for (let i = 0; i < GRID_SIZE; i++) {
       if (this.depthNext[i] > 0) {
@@ -192,10 +331,18 @@ export class Water {
       }
     }
 
+    // Store previous state for next frame's displacement detection
+    this.previousDepth.set(this.depth);
+    this.previousTerrain.set(terrain);
+
     // Swap buffers
-    const temp = this.depth;
+    let temp = this.depth;
     this.depth = this.depthNext;
     this.depthNext = temp;
+
+    temp = this.waveEnergy;
+    this.waveEnergy = this.waveEnergyNext;
+    this.waveEnergyNext = temp;
 
     this.dirty = true;
   }

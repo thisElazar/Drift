@@ -28,12 +28,15 @@ class App {
     this.controls = new TerrainControls(this.scene, this.terrain, this.terrainMesh);
     this.controls.updateToolDisplay();
 
-    // Connect water tools
+    // Connect water tools - use brush size and strength
     this.controls.onAddWater = (x, y) => {
-      this.water.addWater(x, y, 15, 4);
+      const amount = this.terrain.brushStrength * 50;  // Scale strength to total water volume
+      const radius = this.terrain.brushRadius;
+      this.water.addWater(x, y, amount, radius);
     };
     this.controls.onAddSpring = (x, y) => {
-      this.water.addSpring(x, y, 2);
+      const flowRate = this.terrain.brushStrength * 3;  // Scale strength to flow rate
+      this.water.addSpring(x, y, flowRate);
     };
 
     // Override terrain reset to also regenerate springs
@@ -80,7 +83,7 @@ class App {
 
     // Update meshes
     this.terrainMesh.update();
-    this.waterMesh.update();
+    this.waterMesh.update(dt);  // Pass dt for wave animation
     this.springMarkers.update();
 
     // Render
