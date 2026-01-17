@@ -48,6 +48,10 @@ export class Scene {
     // Lighting
     this.setupLighting();
 
+    // Sun animation
+    this.sunAngle = 0;
+    this.sunSpeed = 0.0375; // Radians per second (slow, speeds up with time scale)
+
     // Handle resize
     window.addEventListener('resize', () => this.onResize());
   }
@@ -103,6 +107,28 @@ export class Scene {
     this.sun.position.set(TERRAIN_WIDTH * 0.4, MAX_HEIGHT * 4, TERRAIN_HEIGHT * 0.2);
     this.scene.add(this.sun);
 
+    // Visible sun disc
+    const sunGeo = new THREE.CircleGeometry(TERRAIN_WIDTH * 0.08, 32);
+    const sunMat = new THREE.MeshBasicMaterial({
+      color: 0xffffdd,
+      fog: false,
+    });
+    this.sunDisc = new THREE.Mesh(sunGeo, sunMat);
+    this.sunDisc.position.copy(this.sun.position);
+    this.scene.add(this.sunDisc);
+
+    // Sun glow (larger, semi-transparent)
+    const glowGeo = new THREE.CircleGeometry(TERRAIN_WIDTH * 0.15, 32);
+    const glowMat = new THREE.MeshBasicMaterial({
+      color: 0xffeeaa,
+      transparent: true,
+      opacity: 0.3,
+      fog: false,
+    });
+    this.sunGlow = new THREE.Mesh(glowGeo, glowMat);
+    this.sunGlow.position.copy(this.sun.position);
+    this.scene.add(this.sunGlow);
+
     // Fill light from opposite side - cool and subtle
     const fill = new THREE.DirectionalLight(0xaabbcc, 0.3);
     fill.position.set(-TERRAIN_WIDTH * 0.3, MAX_HEIGHT * 2, -TERRAIN_HEIGHT * 0.4);
@@ -129,6 +155,34 @@ export class Scene {
 
   remove(object) {
     this.scene.remove(object);
+  }
+
+  update(dt) {
+    // Animate sun in a circle around the terrain
+    this.sunAngle += this.sunSpeed * dt;
+
+    const radius = TERRAIN_WIDTH * 1.5;
+    const height = MAX_HEIGHT * 4 + Math.sin(this.sunAngle * 0.5) * MAX_HEIGHT * 2;
+
+    this.sun.position.x = Math.cos(this.sunAngle) * radius;
+    this.sun.position.z = Math.sin(this.sunAngle) * radius;
+    this.sun.position.y = height;
+
+    // Sun always looks at center
+    this.sun.target.position.set(0, 0, 0);
+
+    // Move sun disc and glow to match light position (scaled out for sky)
+    const discRadius = TERRAIN_WIDTH * 2.5;
+    const discHeight = height * 1.5;
+    this.sunDisc.position.x = Math.cos(this.sunAngle) * discRadius;
+    this.sunDisc.position.z = Math.sin(this.sunAngle) * discRadius;
+    this.sunDisc.position.y = discHeight;
+
+    this.sunGlow.position.copy(this.sunDisc.position);
+
+    // Make sun disc and glow face the camera
+    this.sunDisc.lookAt(this.camera.position);
+    this.sunGlow.lookAt(this.camera.position);
   }
 
   render() {

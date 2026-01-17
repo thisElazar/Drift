@@ -9,37 +9,42 @@ export class SpringMarkers {
     // Container for all spring markers
     this.group = new THREE.Group();
 
-    // Shared geometry and material for markers
-    this.geometry = new THREE.ConeGeometry(3, 8, 8);
-    this.geometry.rotateX(Math.PI); // Point down
-    this.material = new THREE.MeshStandardMaterial({
-      color: 0x00ffff,
-      emissive: 0x004444,
+    // Simple subtle ring to mark spring location
+    this.ringGeometry = new THREE.RingGeometry(3, 5, 16);
+    this.ringMaterial = new THREE.MeshBasicMaterial({
+      color: 0x44aacc,
+      transparent: true,
+      opacity: 0.4,
+      side: THREE.DoubleSide,
     });
 
     this.markerPool = [];
     this.lastSpringCount = 0;
   }
 
-  update() {
+  update(dt = 1/60) {
     const springs = this.water.springs;
 
-    // Only rebuild if spring count changed
+    // Rebuild if spring count changed
     if (springs.length !== this.lastSpringCount) {
       this.rebuild();
       this.lastSpringCount = springs.length;
     }
 
-    // Update positions (springs stay in place, but terrain might change)
+    // Update marker positions
     for (let i = 0; i < springs.length; i++) {
       const spring = springs[i];
       const marker = this.markerPool[i];
-      if (marker) {
-        const terrainHeight = this.terrain.getHeight(spring.x, spring.y);
-        const worldX = (spring.x - this.terrain.width / 2) * WORLD_SCALE;
-        const worldZ = (spring.y - this.terrain.height / 2) * WORLD_SCALE;
-        marker.position.set(worldX, terrainHeight + 15, worldZ);
-      }
+      if (!marker) continue;
+
+      const terrainHeight = this.terrain.getHeight(spring.x, spring.y);
+      const waterDepth = this.water.getDepth(spring.x, spring.y);
+      const worldX = (spring.x - this.terrain.width / 2) * WORLD_SCALE;
+      const worldZ = (spring.y - this.terrain.height / 2) * WORLD_SCALE;
+
+      // Position just above water surface (or terrain if no water yet)
+      const surfaceY = terrainHeight + Math.max(0.5, waterDepth) + 0.2;
+      marker.position.set(worldX, surfaceY, worldZ);
     }
   }
 
@@ -56,7 +61,8 @@ export class SpringMarkers {
       let marker = this.markerPool[i];
 
       if (!marker) {
-        marker = new THREE.Mesh(this.geometry, this.material);
+        marker = new THREE.Mesh(this.ringGeometry, this.ringMaterial);
+        marker.rotation.x = -Math.PI / 2;  // Lay flat
         this.markerPool.push(marker);
         this.group.add(marker);
       }

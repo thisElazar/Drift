@@ -228,6 +228,7 @@ export class WaterMesh {
   updateWaveAnimation(dt) {
     this.time += dt;
     const positions = this.geometry.attributes.position.array;
+    const colors = this.geometry.attributes.color.array;
     const waterDepths = this.water.depth;
     const waveEnergy = this.water.waveEnergy;
     const waveDirectionX = this.water.waveDirectionX;
@@ -237,59 +238,108 @@ export class WaterMesh {
       for (let x = 0; x < GRID_WIDTH; x++) {
         const gridIdx = y * GRID_WIDTH + x;
         const vertIdx = gridIdx * 3;
+        const colorIdx = gridIdx * 4;
         const depth = waterDepths[gridIdx];
 
         if (depth > MIN_RENDER_DEPTH) {
           const worldX = x * WORLD_SCALE;
           const worldZ = y * WORLD_SCALE;
 
-          // === AMBIENT WAVES (wind-driven background) ===
-          // Primary wave - large slow swells
-          const wave1 = Math.sin(worldX * WAVE_SCALE + this.time * WAVE_SPEED) *
-                       Math.cos(worldZ * WAVE_SCALE * 0.7 + this.time * WAVE_SPEED * 0.6);
+          // Get flow data
+          const vx = this.water.velocityX[gridIdx];
+          const vy = this.water.velocityY[gridIdx];
+          const flowSpeed = Math.sqrt(vx * vx + vy * vy);
+          const flowDirX = flowSpeed > 0.01 ? vx / flowSpeed : 0;
+          const flowDirY = flowSpeed > 0.01 ? vy / flowSpeed : 0;
 
-          // Secondary wave - gentle crossing pattern
-          const wave2 = Math.sin((worldX - worldZ) * WAVE_SCALE * 1.2 + this.time * WAVE_SPEED * 0.9) * 0.4;
+          // Perpendicular to flow (for wave crests)
+          const perpX = -flowDirY;
+          const perpY = flowDirX;
 
           const depthFactor = Math.min(1.0, depth / 3.0);
-          const ambientWave = (wave1 + wave2) * AMBIENT_WAVE_HEIGHT * depthFactor;
+          const flowFactor = Math.min(1.0, flowSpeed * 0.5);  // 0-1 based on flow
 
-          // === PRESSURE-DRIVEN WAVES (from simulation) ===
+          // Get wave energy for this cell
           const energy = waveEnergy[gridIdx];
-          let pressureWave = 0;
 
-          if (energy > 0.05) {  // Higher threshold to reduce noise
+          // === ACTIVITY FACTOR ===
+          // Water should be flat when truly calm (no flow, no wave energy)
+          // Activity combines both flow and wave energy
+          const activityFromFlow = Math.min(1.0, flowSpeed * 3.0);
+          const activityFromEnergy = Math.min(1.0, energy * 0.8);
+          const activityLevel = Math.max(activityFromFlow, activityFromEnergy);
+
+          // Zero ambient waves when calm, full waves when active
+          const ambientActivity = activityLevel;
+
+          // === STILL WATER WAVES (when not flowing) ===
+          // Gentle omnidirectional ripples - but only when there's activity
+          const stillWave1 = Math.sin(worldX * WAVE_SCALE + this.time * WAVE_SPEED * 0.5) *
+                            Math.cos(worldZ * WAVE_SCALE * 0.8 + this.time * WAVE_SPEED * 0.4);
+          const stillWave2 = Math.sin((worldX + worldZ) * WAVE_SCALE * 0.6 + this.time * WAVE_SPEED * 0.3) * 0.5;
+          const stillWaves = (stillWave1 + stillWave2) * AMBIENT_WAVE_HEIGHT * (1 - flowFactor) * depthFactor * ambientActivity;
+
+          // === FLOW-ALIGNED WAVES (when flowing) ===
+          let flowWaves = 0;
+          if (flowSpeed > 0.1) {
+            // Coordinate along flow direction (for traveling waves)
+            const alongFlow = worldX * flowDirX + worldZ * flowDirY;
+            // Coordinate perpendicular to flow (for wave crests)
+            const acrossFlow = worldX * perpX + worldZ * perpY;
+
+            // Waves travel with the flow - crests perpendicular to flow direction
+            // Stretched along flow (low freq), compressed across flow (high freq)
+            const flowWave1 = Math.sin(acrossFlow * 0.12 + alongFlow * 0.03 - this.time * flowSpeed * 0.8);
+            const flowWave2 = Math.sin(acrossFlow * 0.08 - this.time * flowSpeed * 0.5) * 0.6;
+
+            // Turbulent chop in fast flow
+            const turbulence = flowSpeed > 0.5
+              ? Math.sin(alongFlow * 0.2 + this.time * 3) * Math.sin(acrossFlow * 0.15 + this.time * 2) * 0.3
+              : 0;
+
+            flowWaves = (flowWave1 + flowWave2 + turbulence) * AMBIENT_WAVE_HEIGHT * 1.5 * flowFactor * depthFactor;
+          }
+
+          // === PRESSURE/DISPLACEMENT WAVES ===
+          let pressureWave = 0;
+          if (energy > 0.05) {
             const dirX = waveDirectionX[gridIdx];
             const dirY = waveDirectionY[gridIdx];
             const dirMag = Math.sqrt(dirX * dirX + dirY * dirY) + 0.001;
             const normDirX = dirX / dirMag;
             const normDirY = dirY / dirMag;
 
-            // Smooth directional wave - travels in wave direction
-            const travelPhase = (worldX * normDirX + worldZ * normDirY) * 0.08;
-            const directionalWave = Math.sin(travelPhase + this.time * PRESSURE_WAVE_SPEED);
-
-            // Gentle radial pulse
-            const radialWave = Math.sin(this.time * PRESSURE_WAVE_SPEED * 0.8) * 0.3;
-
-            // Smooth energy response (square root for gentler curve)
+            const travelPhase = (worldX * normDirX + worldZ * normDirY) * 0.1;
             const energyFactor = Math.min(1.0, Math.sqrt(energy * WAVE_ENERGY_SCALE));
-            pressureWave = (directionalWave * 0.8 + radialWave * 0.2) * PRESSURE_WAVE_HEIGHT * energyFactor * depthFactor;
+            pressureWave = Math.sin(travelPhase + this.time * PRESSURE_WAVE_SPEED) *
+                          PRESSURE_WAVE_HEIGHT * energyFactor * depthFactor;
           }
 
-          // === FLOW-BASED RIPPLES (subtle) ===
-          const vx = this.water.velocityX[gridIdx];
-          const vy = this.water.velocityY[gridIdx];
-          const flowSpeed = Math.sqrt(vx * vx + vy * vy);
-          let flowWave = 0;
-          if (flowSpeed > 0.2) {  // Higher threshold
-            const flowDir = Math.atan2(vy, vx);
-            const flowPhase = (worldX * Math.cos(flowDir) + worldZ * Math.sin(flowDir)) * 0.15;
-            flowWave = Math.sin(flowPhase + this.time * 2.0) * Math.min(1.0, flowSpeed * 0.3) * depthFactor;
+          // === CAUSTIC SHIMMER (light patterns) ===
+          // Subtle brightness variation that follows flow
+          let caustic = 0;
+          if (depth > 0.5) {
+            const causticSpeed = flowSpeed > 0.1 ? flowSpeed * 2 : 0.5;
+            const causticPhase = flowSpeed > 0.1
+              ? worldX * flowDirX + worldZ * flowDirY  // Move with flow
+              : worldX + worldZ;  // Gentle drift when still
+
+            const c1 = Math.sin(causticPhase * 0.15 + this.time * causticSpeed);
+            const c2 = Math.sin((worldX * 0.12 - worldZ * 0.08) + this.time * 0.7);
+            caustic = (c1 * c2 + 1) * 0.5;  // 0 to 1
+
+            // Apply caustic as subtle color brightening
+            const causticStrength = 0.15 * Math.min(1, depth / 5);
+            const baseR = colors[colorIdx];
+            const baseG = colors[colorIdx + 1];
+            const baseB = colors[colorIdx + 2];
+            colors[colorIdx] = baseR + caustic * causticStrength;
+            colors[colorIdx + 1] = baseG + caustic * causticStrength * 1.1;
+            colors[colorIdx + 2] = baseB + caustic * causticStrength * 0.5;
           }
 
           // Combine all wave components
-          const targetWave = ambientWave + pressureWave + flowWave;
+          const targetWave = stillWaves + flowWaves + pressureWave;
 
           // Temporal smoothing to prevent flickering
           const prevWave = this.smoothedWaveHeights[gridIdx];
@@ -305,6 +355,7 @@ export class WaterMesh {
     }
 
     this.geometry.attributes.position.needsUpdate = true;
+    this.geometry.attributes.color.needsUpdate = true;
     this.geometry.computeVertexNormals();
   }
 

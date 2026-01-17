@@ -145,13 +145,28 @@ export class Water {
     this.depthNext.set(this.depth);
     this.waveEnergyNext.set(this.waveEnergy);
 
-    // Process springs first
+    // Process springs first - add water and create ripples
     for (const spring of this.springs) {
       if (this.inBounds(spring.x, spring.y)) {
         const idx = this.index(spring.x, spring.y);
         this.depthNext[idx] += spring.flowRate * dt;
-        // Springs create gentle waves
-        this.waveEnergyNext[idx] += spring.flowRate * 0.1 * dt;
+
+        // Springs create continuous ripples emanating outward
+        const springEnergy = spring.flowRate * 0.5 * dt;
+        this.waveEnergyNext[idx] += springEnergy;
+
+        // Also add energy to neighbors for visible ripple spread
+        for (const [dx, dy] of [[-1,0], [1,0], [0,-1], [0,1]]) {
+          const nx = spring.x + dx;
+          const ny = spring.y + dy;
+          if (this.inBounds(nx, ny)) {
+            const nIdx = this.index(nx, ny);
+            this.waveEnergyNext[nIdx] += springEnergy * 0.3;
+            // Set outward wave direction
+            this.waveDirectionX[nIdx] += dx * springEnergy;
+            this.waveDirectionY[nIdx] += dy * springEnergy;
+          }
+        }
       }
     }
 

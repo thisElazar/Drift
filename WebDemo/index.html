@@ -19,28 +19,109 @@
       width: 100vw;
       height: 100vh;
     }
-    #info {
+    .panel {
       position: absolute;
+      color: #fff;
+      background: rgba(0,0,0,0.7);
+      padding: 12px 16px;
+      border-radius: 8px;
+      font-size: 13px;
+      backdrop-filter: blur(4px);
+    }
+    .panel h2 {
+      font-size: 15px;
+      margin-bottom: 8px;
+      color: #88ccff;
+      border-bottom: 1px solid rgba(255,255,255,0.2);
+      padding-bottom: 6px;
+    }
+    #controls-panel {
       top: 10px;
       left: 10px;
-      color: #fff;
-      background: rgba(0,0,0,0.6);
-      padding: 10px 15px;
-      border-radius: 6px;
-      font-size: 14px;
+      min-width: 200px;
     }
-    #info h1 {
+    #controls-panel .tool-name {
       font-size: 18px;
-      margin-bottom: 5px;
+      font-weight: bold;
+      color: #fff;
+      margin-bottom: 6px;
+    }
+    #controls-panel .stats {
+      font-size: 11px;
+      opacity: 0.7;
+      margin-top: 8px;
+    }
+    #instructions-panel {
+      top: 10px;
+      right: 10px;
+      width: 220px;
+    }
+    #instructions-panel .tool-list {
+      list-style: none;
+      font-size: 12px;
+    }
+    #instructions-panel .tool-list li {
+      margin-bottom: 6px;
+      padding-left: 0;
+    }
+    #instructions-panel .tool-list .key {
+      display: inline-block;
+      background: rgba(255,255,255,0.15);
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-family: monospace;
+      font-size: 11px;
+      margin-right: 6px;
+      min-width: 18px;
+      text-align: center;
+    }
+    #instructions-panel .tool-list .desc {
+      opacity: 0.8;
+    }
+    #instructions-panel .controls-section {
+      margin-top: 10px;
+      padding-top: 8px;
+      border-top: 1px solid rgba(255,255,255,0.15);
+      font-size: 11px;
+      opacity: 0.7;
     }
   </style>
 </head>
 <body>
   <div id="app"></div>
-  <div id="info">
-    <h1>Drift Demo</h1>
-    <p>Drag to orbit | Scroll to zoom</p>
+
+  <div id="controls-panel" class="panel">
+    <h2>System</h2>
+    <div class="tool-name">raise</div>
+    <div class="brush-info">Size: 8 | Strength: 2.0</div>
+    <div class="stats">60 FPS | Water: 0 | Springs: 0</div>
   </div>
+
+  <div id="instructions-panel" class="panel">
+    <h2>Tools</h2>
+    <ul class="tool-list">
+      <li><span class="key">1</span><strong>Raise</strong> <span class="desc">- Build up terrain</span></li>
+      <li><span class="key">2</span><strong>Lower</strong> <span class="desc">- Dig into terrain</span></li>
+      <li><span class="key">3</span><strong>Water</strong> <span class="desc">- Add water splash</span></li>
+      <li><span class="key">4</span><strong>Spring</strong> <span class="desc">- Create water source</span></li>
+      <li><span class="key">5</span><strong>Remove</strong> <span class="desc">- Delete springs</span></li>
+    </ul>
+    <div class="controls-section">
+      <strong>Mouse:</strong> Left-click to use tool<br>
+      Right-drag to look, Scroll to zoom<br><br>
+      <strong>Camera:</strong>
+      <span class="key">W</span><span class="key">A</span><span class="key">S</span><span class="key">D</span> Move
+      <span class="key">Q</span><span class="key">E</span> Down/Up<br><br>
+      <strong>Keys:</strong><br>
+      <span class="key">[</span><span class="key">]</span> Brush size<br>
+      <span class="key">-</span><span class="key">+</span> Brush strength<br>
+      <span class="key">&lt;</span><span class="key">&gt;</span> Time scale<br>
+      <span class="key">P</span> Pause<br>
+      <span class="key">R</span> Reset terrain<br>
+      <span class="key">C</span> Clear water
+    </div>
+  </div>
+
   <script type="module" src="/src/main.js"></script>
 </body>
 </html>

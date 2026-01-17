@@ -38,6 +38,22 @@ class App {
       const flowRate = this.terrain.brushStrength * 3;  // Scale strength to flow rate
       this.water.addSpring(x, y, flowRate);
     };
+    this.controls.onRemoveSpring = (x, y) => {
+      this.water.removeSpringNear(x, y, this.terrain.brushRadius);
+    };
+    this.controls.onClearWater = () => {
+      this.water.depth.fill(0);
+      this.water.waveEnergy.fill(0);
+      this.water.dirty = true;
+    };
+
+    // Connect time controls
+    this.controls.onTimeScaleChange = (delta) => {
+      this.timeScale = Math.max(0.25, Math.min(4.0, this.timeScale + delta));
+    };
+    this.controls.onTogglePause = () => {
+      this.paused = !this.paused;
+    };
 
     // Override terrain reset to also regenerate springs
     const originalReset = this.terrain.reset.bind(this.terrain);
@@ -55,6 +71,15 @@ class App {
     this.simAccumulator = 0;
     this.simStep = 1 / 60; // 60 simulation steps per second
 
+    // Time control
+    this.timeScale = 1.0;
+    this.paused = false;
+
+    // FPS tracking
+    this.frameCount = 0;
+    this.fpsTime = 0;
+    this.currentFps = 60;
+
     // Start render loop
     this.animate();
 
@@ -67,8 +92,28 @@ class App {
 
     // Calculate delta time
     const now = performance.now();
-    const dt = (now - this.lastTime) / 1000;
+    const rawDt = (now - this.lastTime) / 1000;
     this.lastTime = now;
+
+    // Apply time scale (0 if paused)
+    const dt = this.paused ? 0 : rawDt * this.timeScale;
+
+    // FPS calculation (always runs, uses raw dt)
+    this.frameCount++;
+    this.fpsTime += rawDt;
+    if (this.fpsTime >= 0.5) {  // Update every 0.5 seconds
+      this.currentFps = this.frameCount / this.fpsTime;
+      this.frameCount = 0;
+      this.fpsTime = 0;
+      // Update stats display
+      this.controls.updateStats(
+        this.currentFps,
+        this.water.getTotalWater(),
+        this.water.springs.length,
+        this.timeScale,
+        this.paused
+      );
+    }
 
     // Accumulate time for fixed-step simulation
     this.simAccumulator += dt;
@@ -81,10 +126,16 @@ class App {
       steps++;
     }
 
+    // Update camera (fly controls)
+    this.controls.updateCamera(rawDt);  // Use raw dt so camera works when paused
+
     // Update meshes
     this.terrainMesh.update();
     this.waterMesh.update(dt);  // Pass dt for wave animation
-    this.springMarkers.update();
+    this.springMarkers.update(dt);  // Pass dt for fountain animation
+
+    // Update scene (sun animation)
+    this.scene.update(dt);
 
     // Render
     this.scene.render();
