@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Drift - Web Demo</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      overflow: hidden;
+      background: #1a1a2e;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+    #app {
+      width: 100vw;
+      height: 100vh;
+    }
+    #info {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      color: #fff;
+      background: rgba(0,0,0,0.6);
+      padding: 10px 15px;
+      border-radius: 6px;
+      font-size: 14px;
+    }
+    #info h1 {
+      font-size: 18px;
+      margin-bottom: 5px;
+    }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="info">
+    <h1>Drift Demo</h1>
+    <p>Drag to orbit | Scroll to zoom</p>
+  </div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
