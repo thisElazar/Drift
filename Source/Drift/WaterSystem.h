@@ -257,7 +257,7 @@ struct FWaterSimulationData
     TArray<float> WaterDepthMap;      // Water depth in world units (0-1000+)
     TArray<float> WaterVelocityX;     // Flow velocity East/West (-100 to +100)
     TArray<float> WaterVelocityY;     // Flow velocity North/South (-100 to +100)
-    //TArray<float> SedimentMap;        // Suspended sediment for erosion (0-10)
+    TArray<float> SedimentMap;        // Suspended sediment concentration [0-10 kg/m³]
     TArray<float> FoamMap;            // Foam intensity for rendering (0-1)
 
     // System state
@@ -281,7 +281,7 @@ struct FWaterSimulationData
         WaterDepthMap.SetNum(TotalSize);
         WaterVelocityX.SetNum(TotalSize);
         WaterVelocityY.SetNum(TotalSize);
-       // SedimentMap.SetNum(TotalSize);
+        SedimentMap.SetNum(TotalSize);
         FoamMap.SetNum(TotalSize);
 
         // Initialize all to zero
@@ -290,7 +290,7 @@ struct FWaterSimulationData
             WaterDepthMap[i] = 0.0f;
             WaterVelocityX[i] = 0.0f;
             WaterVelocityY[i] = 0.0f;
-           // SedimentMap[i] = 0.0f;
+            SedimentMap[i] = 0.0f;
             FoamMap[i] = 0.0f;
         }
 
@@ -635,8 +635,55 @@ public:
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Physics")
     float MinWaterDepth = 0.01f;         // Ignore tiny amounts (performance)
-    
-    
+
+    // Flow rate multiplier - controls how much water moves per frame
+    // Lower = slower, more viscous water that pools better
+    // Higher = faster, more fluid water
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Physics",
+              meta = (ClampMin = "0.001", ClampMax = "0.5"))
+    float FlowRateMultiplier = 0.01f;
+
+    // Depth-dependent cohesion - deeper water resists outflow (like pressure)
+    // ReferenceDepth: depth at which cohesion reaches maximum
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Physics|Cohesion",
+              meta = (ClampMin = "0.1", ClampMax = "10.0"))
+    float CohesionReferenceDepth = 1.0f;
+
+    // CohesionStrength: max outflow reduction at depth (0.7 = 70% reduction)
+    // Higher = more stable pools, lower = more fluid behavior
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Physics|Cohesion",
+              meta = (ClampMin = "0.0", ClampMax = "0.95"))
+    float CohesionStrength = 0.7f;
+
+
+    // ===== SEDIMENT TRANSPORT SETTINGS =====
+
+    // Rate at which flowing water picks up sediment from terrain
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sediment Transport",
+              meta = (ClampMin = "0.0", ClampMax = "5.0"))
+    float SedimentPickupRate = 1.0f;
+
+    // Rate at which sediment settles out of water onto terrain
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sediment Transport",
+              meta = (ClampMin = "0.0", ClampMax = "5.0"))
+    float SedimentDepositRate = 1.0f;
+
+    // Multiplier for sediment carrying capacity (higher = muddier water)
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sediment Transport",
+              meta = (ClampMin = "0.1", ClampMax = "10.0"))
+    float SedimentCapacityMultiplier = 1.0f;
+
+    // Extra settling rate in still/slow water (lake bottom formation)
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sediment Transport",
+              meta = (ClampMin = "0.0", ClampMax = "2.0"))
+    float StandingWaterSettlingRate = 0.5f;
+
+    // Minimum flow speed for erosion to occur (below this, only deposition)
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sediment Transport",
+              meta = (ClampMin = "0.0", ClampMax = "5.0"))
+    float MinFlowSpeedForErosion = 0.5f;
+
+
     // ===== EDGE DRAINAGE SETTINGS =====
     
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Edge Drainage")
@@ -856,6 +903,10 @@ public:
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Shader")
     UTexture2D* WaterDepthTexture = nullptr;
+
+    // PHASE 1.5: Previous frame depth for displacement detection (splashing/sloshing)
+    UPROPERTY(Transient)
+    UTexture2D* PreviousWaterDepthTexture = nullptr;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water Shader")
     UTexture2D* WaterDataTexture = nullptr;  // RGBA: Depth, Speed, FlowX, FlowY
@@ -1272,6 +1323,10 @@ private:
     void ApplyWaterFlow(float DeltaTime);
     void ProcessWaterEvaporation(float DeltaTime);
     void UpdateWeatherSystem(float DeltaTime);
+
+    // Sediment transport simulation
+    void ApplySedimentTransport(float DeltaTime);
+    void UpdateSedimentTexture();
     
     
     // Helper functions
@@ -1454,6 +1509,9 @@ public:
 
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Erosion")
     UTextureRenderTarget2D* ErosionFlowVelocityRT = nullptr;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Sediment")
+    UTextureRenderTarget2D* ErosionSedimentRT = nullptr;
 
     UFUNCTION(BlueprintCallable, Category = "Erosion")
     void CreateErosionTextures();

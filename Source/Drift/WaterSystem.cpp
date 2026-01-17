@@ -185,7 +185,7 @@ UWaterSystem::UWaterSystem()
     bEnableWaterSimulation = true;
     WaterFlowSpeed = 50.0f;
     WaterEvaporationRate = 0.001f;
-    WaterAbsorptionRate = 0.02f;
+    WaterAbsorptionRate = 0.003f;  // Reduced from 0.02 - allows rivers to form before soaking in
     WaterDamping = 0.95f;
     MaxWaterVelocity = 100.0f;
     MinWaterDepth = 0.01f;
@@ -315,7 +315,7 @@ void UWaterSystem::UpdateWaterSimulation(float DeltaTime)
     // ===== TEMPORAL PAUSE CHECK: RESPECT MASTER TIME CONTROL =====
     UTemporalManager* TemporalManager = GetWorld() ?
         GetWorld()->GetGameInstance()->GetSubsystem<UTemporalManager>() : nullptr;
-    
+
     // When paused, skip physics but keep visual updates responsive
     if (TemporalManager && TemporalManager->IsPaused())
     {
@@ -326,6 +326,20 @@ void UWaterSystem::UpdateWaterSimulation(float DeltaTime)
             UpdateWaterShaderParameters();
         }
         return; // Skip all physics updates
+    }
+
+    // ===== TOOL EDIT PAUSE: FREEZE WATER WHILE SCULPTING =====
+    // Water stays "attached" to terrain during edits - no flow, no sources
+    // Prevents tidal waves from springs and lets water move with terrain
+    if (OwnerTerrain && OwnerTerrain->IsToolEditActive())
+    {
+        // Keep visuals updated so water appears on raised/lowered terrain
+        if (bUseShaderWater)
+        {
+            UpdateWaterDepthTexture();
+            UpdateWaterShaderParameters();
+        }
+        return; // Skip all physics - flow, precipitation, evaporation
     }
     
     // ===== GET PROPERLY SCALED DELTA TIME =====
@@ -375,7 +389,10 @@ void UWaterSystem::UpdateWaterSimulation(float DeltaTime)
     
     // Step 4: Move water based on flow
     ApplyWaterFlow(EffectiveDeltaTime);
-    
+
+    // Step 4b: Transport sediment with water flow
+    ApplySedimentTransport(EffectiveDeltaTime);
+
     // Step 5: Handle evaporation and absorption
     ProcessWaterEvaporation(EffectiveDeltaTime);
     
@@ -1014,48 +1031,58 @@ void UWaterSystem::ApplyWaterFlow(float DeltaTime)
                 Flows[7] = diagonalSpeed * 0.5f;
             }
             
-            // Apply flow rate scaling
-            float FlowRate = SimulationData.WaterDepthMap[Index] * DeltaTime * 0.1f;
+            // Apply flow rate scaling - tunable via FlowRateMultiplier
+            float FlowRate = SimulationData.WaterDepthMap[Index] * DeltaTime * FlowRateMultiplier;
             for (int i = 0; i < 8; i++)
             {
                 Flows[i] *= FlowRate;
             }
             
-            // Apply peak suppression (existing code)
-            float NeighborAvg = 0.0f;
+            // FIXED: Compare WATER SURFACE elevations, not just water depths
+            // A pool at a valley bottom should NOT drain just because it has more water than dry neighbors
+            // Only accelerate outflow if water SURFACE is elevated relative to neighbor SURFACES
+            float CenterTerrainHeight = GetTerrainHeightSafe(X, Y);
+            float CenterSurface = CenterTerrainHeight + SimulationData.WaterDepthMap[Index];
+
+            float NeighborSurfaceAvg = 0.0f;
             int32 NeighborCount = 0;
-            
+
             for (int32 dy = -1; dy <= 1; dy++)
             {
                 for (int32 dx = -1; dx <= 1; dx++)
                 {
                     if (dx == 0 && dy == 0) continue;
-                    
+
                     int32 NX = X + dx;
                     int32 NY = Y + dy;
-                    
+
                     if (NX >= 0 && NX < Width && NY >= 0 && NY < Height)
                     {
                         int32 NIndex = NY * Width + NX;
-                        NeighborAvg += SimulationData.WaterDepthMap[NIndex];
+                        float NeighborTerrain = GetTerrainHeightSafe(NX, NY);
+                        float NeighborSurface = NeighborTerrain + SimulationData.WaterDepthMap[NIndex];
+                        NeighborSurfaceAvg += NeighborSurface;
                         NeighborCount++;
                     }
                 }
             }
-            
+
             float OutflowMultiplier = 1.0f;
             if (NeighborCount > 0)
             {
-                NeighborAvg /= NeighborCount;
-                float HeightDiff = SimulationData.WaterDepthMap[Index] - NeighborAvg;
-                
-                if (HeightDiff > 0.5f)
+                NeighborSurfaceAvg /= NeighborCount;
+                // Compare SURFACE elevations: terrain + water
+                float SurfaceDiff = CenterSurface - NeighborSurfaceAvg;
+
+                // Only boost outflow if water SURFACE is significantly elevated
+                // A pool at a valley bottom will have SurfaceDiff <= 0 and won't drain
+                if (SurfaceDiff > 0.5f)
                 {
-                    OutflowMultiplier = 1.0f + (HeightDiff * 0.5f);
-                    OutflowMultiplier = FMath::Min(OutflowMultiplier, 3.0f);
+                    OutflowMultiplier = 1.0f + (SurfaceDiff * 0.3f);  // Reduced from 0.5f
+                    OutflowMultiplier = FMath::Min(OutflowMultiplier, 2.0f);  // Reduced from 3.0f
                 }
             }
-            
+
             // Apply multiplier to all flows
             for (int i = 0; i < 8; i++)
             {
@@ -1068,7 +1095,30 @@ void UWaterSystem::ApplyWaterFlow(float DeltaTime)
             {
                 TotalOutflow += Flows[i];
             }
-            
+
+            // DEPTH-DEPENDENT COHESION: Deeper water is more stable (like real pressure)
+            // - Shallow water (splashes): flows freely, preserves dynamic behavior
+            // - Deep water (pool bottoms): resists outflow, allows accumulation
+            // Tunable via CohesionReferenceDepth and CohesionStrength
+            if (CohesionStrength > 0.0f)
+            {
+                // Normalized depth: 0 = shallow/surface, 1+ = deep
+                float NormalizedDepth = FMath::Clamp(SimulationData.WaterDepthMap[Index] / CohesionReferenceDepth, 0.0f, 1.0f);
+
+                // Cohesion scales with depth squared (pressure increases non-linearly)
+                float CohesionFactor = NormalizedDepth * NormalizedDepth * CohesionStrength;
+
+                // Reduce outflow based on cohesion - deep water stays, shallow water splashes
+                TotalOutflow *= (1.0f - CohesionFactor);
+
+                // Also scale individual flows to maintain distribution ratios
+                float CohesionScale = (1.0f - CohesionFactor);
+                for (int i = 0; i < 8; i++)
+                {
+                    Flows[i] *= CohesionScale;
+                }
+            }
+
             if (TotalOutflow > SimulationData.WaterDepthMap[Index])
             {
                 float Scale = SimulationData.WaterDepthMap[Index] / TotalOutflow;
@@ -1209,6 +1259,126 @@ void UWaterSystem::ProcessWaterEvaporation(float DeltaTime)
     {
         bWaterChangedThisFrame = true;
         bVolumeNeedsUpdate = true;
+    }
+}
+
+// ===== SEDIMENT TRANSPORT =====
+
+void UWaterSystem::ApplySedimentTransport(float DeltaTime)
+{
+    if (!SimulationData.IsValid() || SimulationData.SedimentMap.Num() == 0)
+    {
+        return;
+    }
+
+    TArray<float> NewSediment = SimulationData.SedimentMap;
+    const int32 Width = SimulationData.TerrainWidth;
+    const int32 Height = SimulationData.TerrainHeight;
+
+    // Sediment advects with water flow - follows same 8-directional pattern as water
+    for (int32 Y = 0; Y < Height; Y++)
+    {
+        for (int32 X = 0; X < Width; X++)
+        {
+            int32 Index = Y * Width + X;
+
+            // Need water to transport sediment
+            float WaterDepth = SimulationData.WaterDepthMap[Index];
+            if (WaterDepth <= MinWaterDepth)
+            {
+                continue;
+            }
+
+            float CurrentSediment = SimulationData.SedimentMap[Index];
+            if (CurrentSediment <= 0.0f)
+            {
+                continue;
+            }
+
+            // Get water velocity
+            float VelX = SimulationData.WaterVelocityX[Index];
+            float VelY = SimulationData.WaterVelocityY[Index];
+
+            // 8-directional decomposition (same as water flow)
+            float Flows[8] = {0}; // E, NE, N, NW, W, SW, S, SE
+            const float sqrt2inv = 0.7071f;
+
+            // Cardinal directions
+            Flows[0] = FMath::Max(0.0f, VelX);      // East
+            Flows[4] = FMath::Max(0.0f, -VelX);     // West
+            Flows[2] = FMath::Max(0.0f, -VelY);     // North
+            Flows[6] = FMath::Max(0.0f, VelY);      // South
+
+            // Diagonal flows
+            if (VelX > 0 && VelY < 0) // NE
+            {
+                Flows[1] = FMath::Sqrt(VelX * VelX + VelY * VelY) * sqrt2inv * 0.5f;
+            }
+            if (VelX < 0 && VelY < 0) // NW
+            {
+                Flows[3] = FMath::Sqrt(VelX * VelX + VelY * VelY) * sqrt2inv * 0.5f;
+            }
+            if (VelX < 0 && VelY > 0) // SW
+            {
+                Flows[5] = FMath::Sqrt(VelX * VelX + VelY * VelY) * sqrt2inv * 0.5f;
+            }
+            if (VelX > 0 && VelY > 0) // SE
+            {
+                Flows[7] = FMath::Sqrt(VelX * VelX + VelY * VelY) * sqrt2inv * 0.5f;
+            }
+
+            // Sediment transport rate - proportional to water velocity and current sediment
+            // Use same FlowRateMultiplier as water for consistency
+            float TransportRate = CurrentSediment * DeltaTime * FlowRateMultiplier;
+            for (int i = 0; i < 8; i++)
+            {
+                Flows[i] *= TransportRate;
+            }
+
+            // Calculate total outflow
+            float TotalOutflow = 0.0f;
+            for (int i = 0; i < 8; i++)
+            {
+                TotalOutflow += Flows[i];
+            }
+
+            // Clamp to available sediment
+            if (TotalOutflow > CurrentSediment)
+            {
+                float Scale = CurrentSediment / TotalOutflow;
+                for (int i = 0; i < 8; i++)
+                {
+                    Flows[i] *= Scale;
+                }
+                TotalOutflow = CurrentSediment;
+            }
+
+            // Remove sediment from current cell
+            NewSediment[Index] -= TotalOutflow;
+
+            // Distribute to 8 neighbors
+            const int32 dx[8] = {1, 1, 0, -1, -1, -1, 0, 1};
+            const int32 dy[8] = {0, -1, -1, -1, 0, 1, 1, 1};
+
+            for (int i = 0; i < 8; i++)
+            {
+                int32 NX = X + dx[i];
+                int32 NY = Y + dy[i];
+
+                if (NX >= 0 && NX < Width && NY >= 0 && NY < Height)
+                {
+                    int32 NIndex = NY * Width + NX;
+                    NewSediment[NIndex] += Flows[i];
+                }
+                // Sediment leaving edges is lost (washed away)
+            }
+        }
+    }
+
+    // Apply updates
+    for (int32 i = 0; i < SimulationData.SedimentMap.Num(); i++)
+    {
+        SimulationData.SedimentMap[i] = FMath::Max(0.0f, NewSediment[i]);
     }
 }
 
@@ -4755,9 +4925,22 @@ void UWaterSystem::CreateWaterDepthTexture()
     WaterDepthTexture->AddressY = TextureAddress::TA_Clamp;
     WaterDepthTexture->SRGB = false;
     WaterDepthTexture->CompressionSettings = TextureCompressionSettings::TC_Grayscale;
-    
+
     // Force immediate GPU upload
     WaterDepthTexture->UpdateResource();
+
+    // PHASE 1.5: Create previous depth texture for displacement detection
+    PreviousWaterDepthTexture = UTexture2D::CreateTransient(Width, Height, PF_G8);
+    if (PreviousWaterDepthTexture)
+    {
+        PreviousWaterDepthTexture->Filter = TextureFilter::TF_Bilinear;
+        PreviousWaterDepthTexture->AddressX = TextureAddress::TA_Clamp;
+        PreviousWaterDepthTexture->AddressY = TextureAddress::TA_Clamp;
+        PreviousWaterDepthTexture->SRGB = false;
+        PreviousWaterDepthTexture->CompressionSettings = TextureCompressionSettings::TC_Grayscale;
+        PreviousWaterDepthTexture->UpdateResource();
+        UE_LOG(LogTemp, Log, TEXT("PHASE 1.5: Previous water depth texture created for displacement detection"));
+    }
     
     // Simple validation without blocking
     if (WaterDepthTexture)
@@ -4966,6 +5149,19 @@ void UWaterSystem::UpdateWaterDepthTexture()
         UE_LOG(LogTemp, VeryVerbose, TEXT("Water texture updated - Pixels with water: %d, Max depth: %.2f, Min non-zero: %.2f"),
                NonZeroPixels, MaxWaterDepth, MinNonZeroDepth);
         LastLogTime = CurrentTime;
+    }
+
+    // PHASE 1.5: Copy current depth to previous depth for next frame's displacement detection
+    if (PreviousWaterDepthTexture)
+    {
+        FTexture2DMipMap& PrevMip = PreviousWaterDepthTexture->GetPlatformData()->Mips[0];
+        void* PrevData = PrevMip.BulkData.Lock(LOCK_READ_WRITE);
+        if (PrevData)
+        {
+            FMemory::Memcpy(PrevData, TextureData.GetData(), TextureData.Num() * sizeof(uint8));
+            PrevMip.BulkData.Unlock();
+            PreviousWaterDepthTexture->UpdateResource();
+        }
     }
 }
 
@@ -7279,11 +7475,29 @@ void UWaterSystem::ExecuteWaveComputeShader()
         UE_LOG(LogTemp, Warning, TEXT("Wave Shader Params: Scale=%.2f, Speed=%.2f, Wind=%.2f, Damping=%.2f"),
                ClampedWaveScale, ClampedWaveSpeed, WindStrength, WaveDamping);
     }
-    
+
+    // PHASE 1.5: Capture texture resources on game thread for safe render thread access
+    FRHITexture* CapturedPrevDepthRHI = nullptr;
+    if (PreviousWaterDepthTexture && PreviousWaterDepthTexture->GetResource())
+    {
+        CapturedPrevDepthRHI = PreviousWaterDepthTexture->GetResource()->GetTexture2DRHI();
+    }
+
+    FRHITexture* CapturedTerrainHeightRHI = nullptr;
+    if (OwnerTerrain && OwnerTerrain->WaterHeightTexture)
+    {
+        FTextureRenderTargetResource* TerrainHeightResource = OwnerTerrain->WaterHeightTexture->GetRenderTargetResource();
+        if (TerrainHeightResource)
+        {
+            CapturedTerrainHeightRHI = TerrainHeightResource->GetRenderTargetTexture();
+        }
+    }
+
     // Enqueue render command
     ENQUEUE_RENDER_COMMAND(FWaveComputeCommand)(
         [this, World, CurrentTime, DeltaTime, WindDirection, WindStrength,
-         TerrainWidth, TerrainHeight, ClampedWaveScale, ClampedWaveSpeed, WaveDamping]
+         TerrainWidth, TerrainHeight, ClampedWaveScale, ClampedWaveSpeed, WaveDamping,
+         CapturedPrevDepthRHI, CapturedTerrainHeightRHI]
         (FRHICommandListImmediate& RHICmdList)
         {
             // Verify shader is compiled and available
@@ -7344,7 +7558,7 @@ void UWaterSystem::ExecuteWaveComputeShader()
                     // Setup shader parameters
                     FWaveComputeCS::FParameters* PassParameters =
                         GraphBuilder.AllocParameters<FWaveComputeCS::FParameters>();
-                    
+
                     // Bind textures
                     PassParameters->WaterDepthTexture = GraphBuilder.CreateSRV(
                         FRDGTextureSRVDesc::Create(DepthTextureRDG));
@@ -7352,6 +7566,44 @@ void UWaterSystem::ExecuteWaveComputeShader()
                         FRDGTextureUAVDesc(FlowTextureRDG));
                     PassParameters->WaveOutputTexture = GraphBuilder.CreateUAV(
                         FRDGTextureUAVDesc(WaveOutputRDG));
+
+                    // PHASE 1.5: Previous depth for displacement detection
+                    // Use captured RHI texture (thread-safe)
+                    if (CapturedPrevDepthRHI)
+                    {
+                        FRDGTextureRef PrevDepthRDG = GraphBuilder.RegisterExternalTexture(
+                            CreateRenderTarget(CapturedPrevDepthRHI, TEXT("PreviousDepthTexture")));
+                        PassParameters->PreviousDepthTexture = GraphBuilder.CreateSRV(
+                            FRDGTextureSRVDesc::Create(PrevDepthRDG));
+                    }
+                    else
+                    {
+                        // Fallback to current depth (first frame or texture unavailable)
+                        PassParameters->PreviousDepthTexture = GraphBuilder.CreateSRV(
+                            FRDGTextureSRVDesc::Create(DepthTextureRDG));
+                    }
+
+                    // PHASE 1.5: Terrain height for pressure gradient
+                    // Use captured RHI texture (thread-safe)
+                    if (CapturedTerrainHeightRHI)
+                    {
+                        FRDGTextureRef TerrainHeightRDG = GraphBuilder.RegisterExternalTexture(
+                            CreateRenderTarget(CapturedTerrainHeightRHI, TEXT("TerrainHeightTexture")));
+                        PassParameters->TerrainHeightTexture = GraphBuilder.CreateSRV(
+                            FRDGTextureSRVDesc::Create(TerrainHeightRDG));
+                    }
+                    else
+                    {
+                        // Create dummy terrain height texture
+                        FRDGTextureDesc DummyDesc = FRDGTextureDesc::Create2D(
+                            FIntPoint(SimulationData.TerrainWidth, SimulationData.TerrainHeight),
+                            PF_R32_FLOAT,
+                            FClearValueBinding::Black,
+                            TexCreate_ShaderResource);
+                        FRDGTextureRef DummyTerrainRDG = GraphBuilder.CreateTexture(DummyDesc, TEXT("DummyTerrainHeight"));
+                        PassParameters->TerrainHeightTexture = GraphBuilder.CreateSRV(
+                            FRDGTextureSRVDesc::Create(DummyTerrainRDG));
+                    }
                     
                     // Set simulation parameters with validated values
                     PassParameters->Time = CurrentTime;
@@ -9092,8 +9344,17 @@ void UWaterSystem::CreateErosionTextures()
     ErosionFlowVelocityRT->AddressY = TA_Clamp;
     ErosionFlowVelocityRT->bCanCreateUAV = true;  // Enable compute shader writes
     ErosionFlowVelocityRT->UpdateResourceImmediate(true);
-    
-    UE_LOG(LogTemp, Warning, TEXT(" Created erosion textures: %dx%d (Depth: R32F, Velocity: RG16F)"),
+
+    // ===== CREATE SEDIMENT CONCENTRATION RENDER TARGET (R32F) =====
+    ErosionSedimentRT = NewObject<UTextureRenderTarget2D>(this);
+    ErosionSedimentRT->RenderTargetFormat = RTF_R32f;
+    ErosionSedimentRT->InitCustomFormat(Width, Height, PF_R32_FLOAT, false);
+    ErosionSedimentRT->AddressX = TA_Clamp;
+    ErosionSedimentRT->AddressY = TA_Clamp;
+    ErosionSedimentRT->bCanCreateUAV = true;  // Enable compute shader writes
+    ErosionSedimentRT->UpdateResourceImmediate(true);
+
+    UE_LOG(LogTemp, Warning, TEXT(" Created erosion textures: %dx%d (Depth: R32F, Velocity: RG16F, Sediment: R32F)"),
            Width, Height);
     
     // Initial population with current simulation data
@@ -9107,29 +9368,32 @@ void UWaterSystem::UpdateErosionTextures()
     {
         return;
     }
-    
+
     int32 Width = SimulationData.TerrainWidth;
     int32 Height = SimulationData.TerrainHeight;
-    
+
     // Prepare data on game thread
     TArray<float> DepthData;
     TArray<FFloat16> VelocityData;
-    
+    TArray<float> SedimentData;
+
     DepthData.SetNumUninitialized(Width * Height);
     VelocityData.SetNumUninitialized(Width * Height * 2); // 2 channels (X, Y)
-    
+    SedimentData.SetNumUninitialized(Width * Height);
+
     // Copy simulation data to upload buffers
     for (int32 i = 0; i < SimulationData.WaterDepthMap.Num(); i++)
     {
         DepthData[i] = SimulationData.WaterDepthMap[i];
         VelocityData[i * 2 + 0] = FFloat16(SimulationData.WaterVelocityX[i]);
         VelocityData[i * 2 + 1] = FFloat16(SimulationData.WaterVelocityY[i]);
+        SedimentData[i] = (SimulationData.SedimentMap.Num() > i) ? SimulationData.SedimentMap[i] : 0.0f;
     }
-    
+
     // Enqueue render command for GPU upload
     ENQUEUE_RENDER_COMMAND(UpdateErosionTextures)(
         [this, DepthData = MoveTemp(DepthData), VelocityData = MoveTemp(VelocityData),
-         Width, Height](FRHICommandListImmediate& RHICmdList)
+         SedimentData = MoveTemp(SedimentData), Width, Height](FRHICommandListImmediate& RHICmdList)
         {
             // ===== UPDATE WATER DEPTH TEXTURE =====
             FTextureRenderTargetResource* DepthResource = ErosionWaterDepthRT->GetRenderTargetResource();
@@ -9137,12 +9401,12 @@ void UWaterSystem::UpdateErosionTextures()
             {
                 // MODERN UE5: Use FTextureRHIRef instead of deprecated FTexture2DRHIRef
                 FTextureRHIRef DepthTexture = DepthResource->GetRenderTargetTexture();
-                
+
                 if (DepthTexture.IsValid())
                 {
                     uint32 Stride = Width * sizeof(float);
                     FUpdateTextureRegion2D Region(0, 0, 0, 0, Width, Height);
-                    
+
                     // Modern RHI texture update
                     RHICmdList.UpdateTexture2D(
                         DepthTexture,
@@ -9153,19 +9417,19 @@ void UWaterSystem::UpdateErosionTextures()
                     );
                 }
             }
-            
+
             // ===== UPDATE FLOW VELOCITY TEXTURE =====
             FTextureRenderTargetResource* VelocityResource = ErosionFlowVelocityRT->GetRenderTargetResource();
             if (VelocityResource)
             {
                 // MODERN UE5: Use FTextureRHIRef instead of deprecated FTexture2DRHIRef
                 FTextureRHIRef VelocityTexture = VelocityResource->GetRenderTargetTexture();
-                
+
                 if (VelocityTexture.IsValid())
                 {
                     uint32 Stride = Width * sizeof(FFloat16) * 2; // 2 channels
                     FUpdateTextureRegion2D Region(0, 0, 0, 0, Width, Height);
-                    
+
                     // Modern RHI texture update
                     RHICmdList.UpdateTexture2D(
                         VelocityTexture,
@@ -9176,8 +9440,38 @@ void UWaterSystem::UpdateErosionTextures()
                     );
                 }
             }
+
+            // ===== UPDATE SEDIMENT CONCENTRATION TEXTURE =====
+            if (ErosionSedimentRT)
+            {
+                FTextureRenderTargetResource* SedimentResource = ErosionSedimentRT->GetRenderTargetResource();
+                if (SedimentResource)
+                {
+                    FTextureRHIRef SedimentTexture = SedimentResource->GetRenderTargetTexture();
+
+                    if (SedimentTexture.IsValid())
+                    {
+                        uint32 Stride = Width * sizeof(float);
+                        FUpdateTextureRegion2D Region(0, 0, 0, 0, Width, Height);
+
+                        RHICmdList.UpdateTexture2D(
+                            SedimentTexture,
+                            0,  // Mip level
+                            Region,
+                            Stride,
+                            (const uint8*)SedimentData.GetData()
+                        );
+                    }
+                }
+            }
         }
     );
+}
+
+void UWaterSystem::UpdateSedimentTexture()
+{
+    // Convenience function - calls full update which includes sediment
+    UpdateErosionTextures();
 }
 
 
@@ -9202,7 +9496,15 @@ void UWaterSystem::CleanupErosionTextures()
         ErosionFlowVelocityRT->ConditionalBeginDestroy();
         ErosionFlowVelocityRT = nullptr;
     }
-    
+
+    // Release sediment texture
+    if (ErosionSedimentRT)
+    {
+        ErosionSedimentRT->ReleaseResource();
+        ErosionSedimentRT->ConditionalBeginDestroy();
+        ErosionSedimentRT = nullptr;
+    }
+
     UE_LOG(LogTemp, Log, TEXT(" Erosion textures cleaned up"));
 }
 

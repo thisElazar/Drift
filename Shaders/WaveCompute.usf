@@ -1,6 +1,7 @@
 // WaveCompute.usf - Phase 1: Unified Water Physics with Wave Energy Propagation
 // GPU-based wave computation + wave energy propagation + vorticity caching
 // PHASE 1: Wave energy system with fetch/seiche emergence
+// PHASE 1.5: Pressure-gradient waves + displacement detection (splashing/sloshing)
 // PHASE 2: Will add persistent foam and advanced coupling
 
 #include "/Engine/Public/Platform.ush"
@@ -9,6 +10,8 @@
 // ===== SHADER PARAMETERS =====
 // Input textures
 Texture2D<float> WaterDepthTexture;
+Texture2D<float> PreviousDepthTexture;  // PHASE 1.5: For displacement detection
+Texture2D<float> TerrainHeightTexture;  // PHASE 1.5: For pressure gradient
 RWTexture2D<float4> FlowDataTexture;  // NOW READ/WRITE for wave energy + vorticity
 Texture2D<float4> AtmosphereStateTexture;
 
@@ -39,7 +42,47 @@ SamplerState TextureSampler;
 #define BREAKING_FOAM_BOOST 3.0f
 #define BREAKING_TURBULENCE 0.25f
 
+// PHASE 1.5: Pressure wave constants
+#define PRESSURE_WAVE_STRENGTH 0.8f    // How much pressure gradients drive waves
+#define DISPLACEMENT_SENSITIVITY 2.0f  // Sensitivity to depth changes
+#define DISPLACEMENT_ENERGY_SCALE 50.0f // Energy generated per unit displacement
+#define SLOSH_REFLECTION_BOOST 0.5f    // Extra energy when waves hit walls
+
 // ===== HELPER FUNCTIONS =====
+
+// PHASE 1.5: Calculate water surface gradient (pressure gradient)
+// Water surface = terrain height + water depth
+// Pressure drives flow from high to low surface
+float2 CalculateSurfaceGradient(int2 coord, int2 gridSize)
+{
+    if (coord.x < 1 || coord.x >= gridSize.x - 1 ||
+        coord.y < 1 || coord.y >= gridSize.y - 1)
+        return float2(0, 0);
+
+    // Sample water surface height (terrain + depth) at neighbors
+    float surfaceRight = TerrainHeightTexture[coord + int2(1, 0)].r + WaterDepthTexture[coord + int2(1, 0)].r;
+    float surfaceLeft  = TerrainHeightTexture[coord + int2(-1, 0)].r + WaterDepthTexture[coord + int2(-1, 0)].r;
+    float surfaceUp    = TerrainHeightTexture[coord + int2(0, -1)].r + WaterDepthTexture[coord + int2(0, -1)].r;
+    float surfaceDown  = TerrainHeightTexture[coord + int2(0, 1)].r + WaterDepthTexture[coord + int2(0, 1)].r;
+
+    // Gradient points from low to high (we want waves to go high to low)
+    return float2(
+        (surfaceRight - surfaceLeft) * 0.5f,
+        (surfaceDown - surfaceUp) * 0.5f
+    );
+}
+
+// PHASE 1.5: Detect water displacement (terrain rising/falling or water added/removed)
+float CalculateDisplacement(int2 coord)
+{
+    float currentDepth = WaterDepthTexture[coord].r;
+    float previousDepth = PreviousDepthTexture[coord].r;
+
+    // Displacement = change in depth (positive = water pushed up, negative = water dropped)
+    float displacement = currentDepth - previousDepth;
+
+    return displacement;
+}
 
 // Calculate vorticity from velocity field (now cached in FlowDataTexture.A)
 float CalculateVorticity(int2 coord, int2 gridSize)
@@ -104,13 +147,42 @@ void WaveComputeCS(uint3 ThreadId : SV_DispatchThreadID)
     // ==========================================
     float2 windDir = WindParams.xy;
     float windSpeed = WindParams.z;
-    
+
     // Wind work on water surface: Power ∝ U³
     float windStress = windSpeed * windSpeed * windSpeed * 0.001f;
     float energyInput = windStress * DeltaTime;
-    
+
     waveEnergy += energyInput;
-    
+
+    // ==========================================
+    // 2.5 PRESSURE GRADIENT WAVES (PHASE 1.5)
+    // ==========================================
+    // Water surface slope creates pressure that drives waves
+    float2 surfaceGradient = CalculateSurfaceGradient(coord, gridSize);
+    float surfaceSlope = length(surfaceGradient);
+
+    // Steeper slopes generate more wave energy (water wants to level out)
+    float pressureEnergy = surfaceSlope * surfaceSlope * PRESSURE_WAVE_STRENGTH * depth;
+    waveEnergy += pressureEnergy * DeltaTime;
+
+    // ==========================================
+    // 2.6 DISPLACEMENT WAVE GENERATION (PHASE 1.5)
+    // ==========================================
+    // Detect sudden changes in water depth (terrain pushed into water, water added, etc.)
+    float displacement = CalculateDisplacement(coord);
+    float absDisplacement = abs(displacement) * DISPLACEMENT_SENSITIVITY;
+
+    // Significant displacement creates radial wave energy
+    if (absDisplacement > 0.01f)
+    {
+        // Energy proportional to displacement squared (like kinetic energy)
+        float displacementEnergy = absDisplacement * absDisplacement * DISPLACEMENT_ENERGY_SCALE;
+        waveEnergy += displacementEnergy;
+
+        // Displacement also creates vorticity (swirling)
+        vorticity += displacement * 0.5f;
+    }
+
     // ==========================================
     // 3. WAVE ENERGY PROPAGATION
     // ==========================================
@@ -131,14 +203,18 @@ void WaveComputeCS(uint3 ThreadId : SV_DispatchThreadID)
         energyGradient.y = (E_down - E_up) * 0.5f;
     }
     
-    // Propagation direction = down-gradient + wind + flow advection
+    // Propagation direction = down-gradient + wind + flow advection + PRESSURE (PHASE 1.5)
+    // Pressure gradient makes waves flow from high water surface to low
     float2 propagationDir = float2(0, 0);
-    if (length(energyGradient) > 0.001f || windSpeed > 0.1f || length(velocity) > 0.1f)
+    float2 pressureDirection = -surfaceGradient * PRESSURE_WAVE_STRENGTH;  // Waves go downhill
+
+    if (length(energyGradient) > 0.001f || windSpeed > 0.1f || length(velocity) > 0.1f || surfaceSlope > 0.001f)
     {
         propagationDir = normalize(
-            -energyGradient * 0.3f +      // Diffusion
-            windDir * windSpeed * 0.4f +  // Wind forcing
-            velocity * 0.3f               // Flow advection
+            -energyGradient * 0.2f +      // Diffusion (reduced)
+            windDir * windSpeed * 0.25f + // Wind forcing (reduced)
+            velocity * 0.25f +            // Flow advection
+            pressureDirection * 0.3f      // PHASE 1.5: Pressure-driven (waves flow to lower surface)
         );
     }
     
@@ -250,16 +326,29 @@ void WaveComputeCS(uint3 ThreadId : SV_DispatchThreadID)
     if (nearShore && neighborCount > 0)
     {
         shoreNormal = normalize(shoreNormal);
-        
+
         // Reflection coefficient (steep shores reflect more)
         float shoreSlope = length(float2(
             WaterDepthTexture[coord + int2(1, 0)].r - WaterDepthTexture[coord + int2(-1, 0)].r,
             WaterDepthTexture[coord + int2(0, 1)].r - WaterDepthTexture[coord + int2(0, -1)].r
         ));
-        float reflectionCoeff = lerp(0.8f, 0.2f, saturate(shoreSlope / 0.5f));
-        
+        float reflectionCoeff = lerp(0.9f, 0.3f, saturate(shoreSlope / 0.5f));
+
+        // PHASE 1.5: Enhanced sloshing - waves hitting walls bounce back harder
+        // Check if waves are traveling toward the shore
+        float waveTowardShore = dot(propagationDir, shoreNormal);
+        if (waveTowardShore > 0.1f)
+        {
+            // Waves hitting the wall - create splash energy
+            float impactEnergy = waveEnergy * waveTowardShore * SLOSH_REFLECTION_BOOST;
+            waveEnergy += impactEnergy;
+
+            // Wall impact creates foam and vorticity
+            vorticity += waveTowardShore * 0.3f;
+        }
+
         // Boost energy in reflection (creates standing waves/seiches)
-        waveEnergy += waveEnergy * reflectionCoeff * 0.3f;
+        waveEnergy += waveEnergy * reflectionCoeff * 0.4f;
     }
     
     // ==========================================

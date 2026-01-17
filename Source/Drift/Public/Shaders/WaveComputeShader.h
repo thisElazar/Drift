@@ -23,9 +23,10 @@ public:
     BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
         // Input textures
         SHADER_PARAMETER_RDG_TEXTURE_SRV(Texture2D<float>, WaterDepthTexture)
+        SHADER_PARAMETER_RDG_TEXTURE_SRV(Texture2D<float>, PreviousDepthTexture)   // PHASE 1.5: For displacement detection
+        SHADER_PARAMETER_RDG_TEXTURE_SRV(Texture2D<float>, TerrainHeightTexture)   // PHASE 1.5: For pressure gradient
         SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, FlowDataTexture)
-    
-        
+
         // Output texture
         SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, WaveOutputTexture)
         
