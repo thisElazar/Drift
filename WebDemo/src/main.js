@@ -1,5 +1,5 @@
 import { Scene } from './rendering/scene.js';
-import { Terrain } from './simulation/terrain.js';
+import { Terrain, TerrainPreset } from './simulation/terrain.js';
 import { Water } from './simulation/water.js';
 import { TerrainMesh } from './rendering/terrainMesh.js';
 import { WaterMesh } from './rendering/waterMesh.js';
@@ -49,7 +49,7 @@ class App {
 
     // Connect time controls
     this.controls.onTimeScaleChange = (delta) => {
-      this.timeScale = Math.max(0.25, Math.min(4.0, this.timeScale + delta));
+      this.timeScale = Math.max(0.25, Math.min(20.0, this.timeScale + delta));
     };
     this.controls.onTogglePause = () => {
       this.paused = !this.paused;
@@ -65,6 +65,9 @@ class App {
 
     // Auto-generate springs on startup
     this.water.autoGenerateSprings();
+
+    // Setup terrain preset buttons
+    this.setupPresetButtons();
 
     // Simulation timing
     this.lastTime = performance.now();
@@ -85,6 +88,23 @@ class App {
 
     console.log('Drift Web Demo initialized');
     console.log('Grid size:', this.terrain.width, 'x', this.terrain.height);
+  }
+
+  setupPresetButtons() {
+    const buttons = document.querySelectorAll('.preset-btn');
+    buttons.forEach(btn => {
+      btn.addEventListener('click', () => {
+        // Update active state
+        buttons.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+
+        // Generate new terrain with preset
+        const preset = btn.dataset.preset;
+        this.terrain.generate(preset);
+        this.water.reset();
+        this.water.autoGenerateSprings();
+      });
+    });
   }
 
   animate() {

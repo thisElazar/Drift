@@ -12,12 +12,21 @@ import {
   DEFAULT_BRUSH_STRENGTH,
 } from './constants.js';
 
+// Terrain generation presets
+export const TerrainPreset = {
+  DEFAULT: 'default',
+  HILLS: 'hills',
+  MOUNTAINS: 'mountains',
+  PLAINS: 'plains',
+};
+
 export class Terrain {
   constructor() {
     this.width = GRID_WIDTH;
     this.height = GRID_HEIGHT;
     this.heightMap = new Float32Array(GRID_SIZE);
     this.dirty = false; // Flag for mesh updates
+    this.currentPreset = TerrainPreset.DEFAULT;
 
     this.brushRadius = DEFAULT_BRUSH_RADIUS;
     this.brushStrength = DEFAULT_BRUSH_STRENGTH;
@@ -49,13 +58,52 @@ export class Terrain {
   }
 
   // Generate terrain using fractal Brownian motion
-  generate(seed = Math.random() * 1000) {
+  generate(preset = null, seed = Math.random() * 1000) {
+    if (preset) this.currentPreset = preset;
+
+    // Preset parameters
+    let noiseScale, octaves, persistence, heightMult, falloffPower, baseHeight;
+
+    switch (this.currentPreset) {
+      case TerrainPreset.HILLS:
+        noiseScale = 0.012;
+        octaves = 4;
+        persistence = 0.4;
+        heightMult = 0.4;
+        falloffPower = 1.5;
+        baseHeight = 20;
+        break;
+      case TerrainPreset.MOUNTAINS:
+        noiseScale = 0.02;
+        octaves = 6;
+        persistence = 0.55;
+        heightMult = 1.0;
+        falloffPower = 3;
+        baseHeight = -50;
+        break;
+      case TerrainPreset.PLAINS:
+        noiseScale = 0.008;
+        octaves = 3;
+        persistence = 0.3;
+        heightMult = 0.15;
+        falloffPower = 1.2;
+        baseHeight = 30;
+        break;
+      default: // DEFAULT
+        noiseScale = NOISE_SCALE;
+        octaves = NOISE_OCTAVES;
+        persistence = NOISE_PERSISTENCE;
+        heightMult = 0.7;
+        falloffPower = 2;
+        baseHeight = 0;
+    }
+
     for (let y = 0; y < this.height; y++) {
       for (let x = 0; x < this.width; x++) {
         // Get noise value (-1 to 1 range)
-        const nx = (x + seed) * NOISE_SCALE;
-        const ny = (y + seed) * NOISE_SCALE;
-        let noiseVal = fbm(nx, ny, NOISE_OCTAVES, NOISE_PERSISTENCE);
+        const nx = (x + seed) * noiseScale;
+        const ny = (y + seed) * noiseScale;
+        let noiseVal = fbm(nx, ny, octaves, persistence);
 
         // Add some variation with a second layer
         noiseVal += 0.3 * fbm(nx * 2 + 100, ny * 2 + 100, 2, 0.5);
@@ -64,12 +112,12 @@ export class Terrain {
         const dx = (x / this.width) * 2 - 1;
         const dy = (y / this.height) * 2 - 1;
         const distFromCenter = Math.sqrt(dx * dx + dy * dy);
-        const falloff = 1 - Math.pow(distFromCenter, 2);
+        const falloff = 1 - Math.pow(distFromCenter, falloffPower);
 
         // Scale to height range
-        const height = noiseVal * falloff * MAX_HEIGHT * 0.7;
+        const height = baseHeight + noiseVal * Math.max(0, falloff) * MAX_HEIGHT * heightMult;
 
-        this.heightMap[this.index(x, y)] = height;
+        this.heightMap[this.index(x, y)] = Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, height));
       }
     }
     this.dirty = true;

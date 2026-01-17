@@ -61,9 +61,9 @@ export class Scene {
     const skyGeo = new THREE.SphereGeometry(TERRAIN_WIDTH * 4, 32, 32);
     const skyMat = new THREE.ShaderMaterial({
       uniforms: {
-        topColor: { value: new THREE.Color(0x0066aa) },    // Deep blue at top
-        middleColor: { value: new THREE.Color(0x88bbdd) }, // Light blue at horizon
-        bottomColor: { value: new THREE.Color(0x445566) }, // Dark blue-gray below
+        topColor: { value: new THREE.Color(0x66bbff) },    // Bright sky blue at top
+        middleColor: { value: new THREE.Color(0xaaccee) }, // Lighter blue at horizon
+        bottomColor: { value: new THREE.Color(0x667788) }, // Lighter blue-gray below
         offset: { value: 20 },
         exponent: { value: 0.6 }
       },
@@ -99,11 +99,11 @@ export class Scene {
 
   setupLighting() {
     // Hemisphere light - sky blue from above, warm ground bounce from below
-    const hemi = new THREE.HemisphereLight(0x87ceeb, 0x806040, 0.6);
+    const hemi = new THREE.HemisphereLight(0x87ceeb, 0x908060, 1.0);
     this.scene.add(hemi);
 
     // Main sun light - warm directional
-    this.sun = new THREE.DirectionalLight(0xfff4e5, 1.4);
+    this.sun = new THREE.DirectionalLight(0xfff4e5, 1.6);
     this.sun.position.set(TERRAIN_WIDTH * 0.4, MAX_HEIGHT * 4, TERRAIN_HEIGHT * 0.2);
     this.scene.add(this.sun);
 
@@ -130,12 +130,12 @@ export class Scene {
     this.scene.add(this.sunGlow);
 
     // Fill light from opposite side - cool and subtle
-    const fill = new THREE.DirectionalLight(0xaabbcc, 0.3);
+    const fill = new THREE.DirectionalLight(0xaabbcc, 0.5);
     fill.position.set(-TERRAIN_WIDTH * 0.3, MAX_HEIGHT * 2, -TERRAIN_HEIGHT * 0.4);
     this.scene.add(fill);
 
     // Subtle ambient to lift shadows
-    const ambient = new THREE.AmbientLight(0x404050, 0.25);
+    const ambient = new THREE.AmbientLight(0x606070, 0.4);
     this.scene.add(ambient);
   }
 

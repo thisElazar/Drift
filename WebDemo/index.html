@@ -51,6 +51,34 @@
       opacity: 0.7;
       margin-top: 8px;
     }
+    #controls-panel .terrain-presets {
+      margin-top: 10px;
+      padding-top: 8px;
+      border-top: 1px solid rgba(255,255,255,0.2);
+    }
+    #controls-panel .preset-label {
+      font-size: 11px;
+      opacity: 0.7;
+      margin-bottom: 6px;
+    }
+    #controls-panel .preset-btn {
+      background: rgba(255,255,255,0.1);
+      border: 1px solid rgba(255,255,255,0.2);
+      color: #fff;
+      padding: 4px 8px;
+      margin: 2px;
+      border-radius: 4px;
+      font-size: 11px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    #controls-panel .preset-btn:hover {
+      background: rgba(255,255,255,0.2);
+    }
+    #controls-panel .preset-btn.active {
+      background: rgba(136,204,255,0.4);
+      border-color: #88ccff;
+    }
     #instructions-panel {
       top: 10px;
       right: 10px;
@@ -95,6 +123,13 @@
     <div class="tool-name">raise</div>
     <div class="brush-info">Size: 8 | Strength: 2.0</div>
     <div class="stats">60 FPS | Water: 0 | Springs: 0</div>
+    <div class="terrain-presets">
+      <div class="preset-label">Terrain:</div>
+      <button class="preset-btn active" data-preset="default">Default</button>
+      <button class="preset-btn" data-preset="hills">Hills</button>
+      <button class="preset-btn" data-preset="mountains">Mountains</button>
+      <button class="preset-btn" data-preset="plains">Plains</button>
+    </div>
   </div>
 
   <div id="instructions-panel" class="panel">

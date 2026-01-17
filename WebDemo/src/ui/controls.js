@@ -45,7 +45,7 @@ export class TerrainControls {
 
     // WASD + QE for panning
     this.keys = { w: false, a: false, s: false, d: false, q: false, e: false };
-    this.panSpeed = 150;
+    this.panSpeed = 400;
 
     // Bind event handlers
     this.onMouseDown = this.onMouseDown.bind(this);
@@ -233,8 +233,8 @@ export class TerrainControls {
       this.hideBrushCursor();
     }
 
-    // Apply tool on left-button drag
-    if (this.isEditing && (event.buttons & 1)) {
+    // Apply tool on left-button drag (except spring which is single-click only)
+    if (this.isEditing && (event.buttons & 1) && this.currentTool !== Tool.SPRING) {
       this.applyToolAtMouse(event);
     }
   }
