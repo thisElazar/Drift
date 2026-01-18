@@ -109,22 +109,42 @@ export class Scene {
     this.sun.position.set(this.terrainWidth * 0.4, MAX_HEIGHT * 4, this.terrainHeight * 0.2);
     this.scene.add(this.sun);
 
-    // Visible sun disc
-    const sunGeo = new THREE.CircleGeometry(this.terrainWidth * 0.08, 32);
+    // Visible sun disc - clean bright yellow
+    const sunGeo = new THREE.CircleGeometry(this.terrainWidth * 0.06, 32);
     const sunMat = new THREE.MeshBasicMaterial({
-      color: 0xffffdd,
+      color: 0xffee44,
       fog: false,
     });
     this.sunDisc = new THREE.Mesh(sunGeo, sunMat);
     this.sunDisc.position.copy(this.sun.position);
     this.scene.add(this.sunDisc);
 
-    // Sun glow (larger, semi-transparent)
-    const glowGeo = new THREE.CircleGeometry(this.terrainWidth * 0.15, 32);
-    const glowMat = new THREE.MeshBasicMaterial({
-      color: 0xffeeaa,
+    // Sun glow (radial fade from center)
+    const glowGeo = new THREE.CircleGeometry(this.terrainWidth * 0.10, 32);
+    const glowMat = new THREE.ShaderMaterial({
+      uniforms: {
+        color: { value: new THREE.Color(0xffdd55) },
+        opacity: { value: 0.4 }
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform vec3 color;
+        uniform float opacity;
+        varying vec2 vUv;
+        void main() {
+          float dist = length(vUv - 0.5) * 2.0;
+          float alpha = opacity * (1.0 - smoothstep(0.0, 1.0, dist));
+          gl_FragColor = vec4(color, alpha);
+        }
+      `,
       transparent: true,
-      opacity: 0.3,
+      depthWrite: false,
       fog: false,
     });
     this.sunGlow = new THREE.Mesh(glowGeo, glowMat);

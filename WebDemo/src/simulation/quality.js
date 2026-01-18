@@ -68,17 +68,33 @@ export function loadSavedQuality() {
   return null;
 }
 
-// Auto-detect quality based on screen size
+// Check if device has touch capability
+function isTouchDevice() {
+  return (
+    'ontouchstart' in window ||
+    navigator.maxTouchPoints > 0 ||
+    navigator.msMaxTouchPoints > 0
+  );
+}
+
+// Auto-detect quality based on device type and screen size
 export function autoDetectQuality() {
   const width = window.innerWidth;
   const height = window.innerHeight;
   const minDim = Math.min(width, height);
 
+  // Touch devices default to LOW for better performance
+  // Users can upgrade quality manually if their device handles it well
+  if (isTouchDevice()) {
+    return QualityLevel.LOW;
+  }
+
+  // Desktop: use screen size to determine quality
   if (minDim < 500) {
-    return QualityLevel.LOW;      // Phone
+    return QualityLevel.LOW;
   } else if (minDim < 800) {
-    return QualityLevel.MEDIUM;   // Small tablet
+    return QualityLevel.MEDIUM;
   } else {
-    return QualityLevel.HIGH;     // Large tablet / desktop
+    return QualityLevel.HIGH;
   }
 }

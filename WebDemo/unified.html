@@ -1,0 +1,1061 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <title>Drift - Water Simulation</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    html, body {
+      overflow: hidden;
+      background: #1a1a2e;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      position: fixed;
+      width: 100%;
+      height: 100%;
+    }
+    /* Touch mode specific */
+    body.touch-mode {
+      touch-action: none;
+    }
+    #app {
+      width: 100vw;
+      height: 100vh;
+    }
+
+    /* ================================================================
+       SHARED STYLES
+       ================================================================ */
+    .panel {
+      position: absolute;
+      color: #fff;
+      background: rgba(0,0,0,0.7);
+      padding: 12px 16px;
+      border-radius: 8px;
+      font-size: 13px;
+      backdrop-filter: blur(4px);
+    }
+    .panel h2 {
+      font-size: 15px;
+      margin-bottom: 8px;
+      color: #88ccff;
+      border-bottom: 1px solid rgba(255,255,255,0.2);
+      padding-bottom: 6px;
+    }
+
+    /* Dropdown styles (shared) */
+    .dropdown {
+      position: absolute;
+      background: rgba(0,0,0,0.9);
+      border-radius: 6px;
+      padding: 4px;
+      display: none;
+      min-width: 140px;
+      z-index: 100;
+      border: 1px solid rgba(255,255,255,0.2);
+    }
+    .dropdown.visible {
+      display: block;
+    }
+    .dropdown button {
+      display: block;
+      width: 100%;
+      background: rgba(255,255,255,0.1);
+      border: none;
+      color: #fff;
+      padding: 8px 10px;
+      margin: 2px 0;
+      border-radius: 4px;
+      font-size: 12px;
+      cursor: pointer;
+      text-align: left;
+    }
+    .dropdown button:hover,
+    .dropdown button:active,
+    .dropdown button.active {
+      background: rgba(136,204,255,0.4);
+    }
+    .dropdown .mode-btn .mode-name {
+      font-weight: bold;
+      display: block;
+    }
+    .dropdown .mode-btn .mode-desc {
+      font-size: 10px;
+      opacity: 0.7;
+      margin-top: 2px;
+    }
+    .dropdown .mode-btn .high-score {
+      font-size: 10px;
+      color: #ffcc44;
+      margin-top: 2px;
+    }
+
+    /* ================================================================
+       DESKTOP MODE STYLES
+       ================================================================ */
+    .desktop-only {
+      display: none;
+    }
+    body.desktop-mode .desktop-only {
+      display: block;
+    }
+    body.desktop-mode .touch-only {
+      display: none !important;
+    }
+
+    #controls-panel {
+      top: 10px;
+      left: 10px;
+      min-width: 200px;
+    }
+    #controls-panel .tool-name {
+      font-size: 18px;
+      font-weight: bold;
+      color: #fff;
+      margin-bottom: 6px;
+    }
+    #controls-panel .stats {
+      font-size: 11px;
+      opacity: 0.7;
+      margin-top: 8px;
+    }
+    #controls-panel .terrain-presets {
+      margin-top: 10px;
+      padding-top: 8px;
+      border-top: 1px solid rgba(255,255,255,0.2);
+    }
+    #controls-panel .preset-label {
+      font-size: 11px;
+      opacity: 0.7;
+      margin-bottom: 6px;
+    }
+    #controls-panel .preset-btn {
+      background: rgba(255,255,255,0.1);
+      border: 1px solid rgba(255,255,255,0.2);
+      color: #fff;
+      padding: 4px 8px;
+      margin: 2px;
+      border-radius: 4px;
+      font-size: 11px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    #controls-panel .preset-btn:hover {
+      background: rgba(255,255,255,0.2);
+    }
+    #controls-panel .preset-btn.active {
+      background: rgba(136,204,255,0.4);
+      border-color: #88ccff;
+    }
+    #controls-panel .button-row {
+      margin-top: 10px;
+      padding-top: 8px;
+      border-top: 1px solid rgba(255,255,255,0.2);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      position: relative;
+      flex-wrap: wrap;
+    }
+    #controls-panel .btn-small {
+      background: rgba(255,255,255,0.1);
+      border: 1px solid rgba(255,255,255,0.2);
+      color: #fff;
+      padding: 4px 10px;
+      border-radius: 4px;
+      font-size: 11px;
+      cursor: pointer;
+    }
+    #controls-panel .btn-small:hover {
+      background: rgba(255,255,255,0.2);
+    }
+    #controls-panel .btn-icon {
+      padding: 4px 8px;
+      font-size: 14px;
+    }
+
+    /* Desktop dropdowns positioning */
+    body.desktop-mode #mode-dropdown {
+      top: 100%;
+      left: 0;
+      margin-top: 4px;
+    }
+    body.desktop-mode #quality-dropdown {
+      top: 100%;
+      left: 0;
+      margin-top: 4px;
+    }
+
+    #instructions-panel {
+      top: 10px;
+      right: 10px;
+      width: 220px;
+    }
+    #instructions-panel .tool-list {
+      list-style: none;
+      font-size: 12px;
+    }
+    #instructions-panel .tool-list li {
+      margin-bottom: 6px;
+      padding-left: 0;
+    }
+    #instructions-panel .tool-list .key {
+      display: inline-block;
+      background: rgba(255,255,255,0.15);
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-family: monospace;
+      font-size: 11px;
+      margin-right: 6px;
+      min-width: 18px;
+      text-align: center;
+    }
+    #instructions-panel .tool-list .desc {
+      opacity: 0.8;
+    }
+    #instructions-panel .controls-section {
+      margin-top: 10px;
+      padding-top: 8px;
+      border-top: 1px solid rgba(255,255,255,0.15);
+      font-size: 11px;
+      opacity: 0.7;
+    }
+
+    /* ================================================================
+       TOUCH MODE STYLES
+       ================================================================ */
+    .touch-only {
+      display: none;
+    }
+    body.touch-mode .touch-only {
+      display: block;
+    }
+    body.touch-mode .desktop-only {
+      display: none !important;
+    }
+    /* Dropdowns stay hidden until .visible is added, even in touch mode */
+    body.touch-mode .dropdown.touch-only,
+    body.touch-mode #mode-dropdown-touch,
+    body.touch-mode #quality-dropdown-touch {
+      display: none;
+    }
+    body.touch-mode .dropdown.touch-only.visible,
+    body.touch-mode #mode-dropdown-touch.visible,
+    body.touch-mode #quality-dropdown-touch.visible {
+      display: block;
+    }
+
+    /* Top bar */
+    #top-bar {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      right: 10px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 6px;
+      pointer-events: none;
+    }
+    #top-bar > * {
+      pointer-events: auto;
+    }
+    .top-btn {
+      background: rgba(0,0,0,0.6);
+      border: 1px solid rgba(255,255,255,0.2);
+      color: #fff;
+      padding: 6px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      backdrop-filter: blur(4px);
+      -webkit-tap-highlight-color: transparent;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .top-btn:active {
+      transform: scale(0.95);
+      background: rgba(136,204,255,0.4);
+    }
+    .top-btn-small {
+      width: 32px;
+      padding: 0;
+    }
+    #stats-display {
+      background: rgba(0,0,0,0.6);
+      padding: 6px 10px;
+      border-radius: 6px;
+      font-size: 11px;
+      color: #fff;
+      backdrop-filter: blur(4px);
+      height: 32px;
+      display: flex;
+      align-items: center;
+      border: 1px solid rgba(255,255,255,0.2);
+    }
+    #stats-display .title {
+      color: #88ccff;
+      font-weight: bold;
+    }
+
+    /* Touch mode dropdowns */
+    body.touch-mode #preset-dropdown,
+    body.touch-mode #mode-dropdown-touch,
+    body.touch-mode #quality-dropdown-touch {
+      position: absolute;
+      top: 48px;
+      left: 10px;
+    }
+    body.touch-mode #mode-dropdown-touch {
+      left: 10px;
+    }
+    body.touch-mode #preset-dropdown {
+      left: 90px;
+    }
+    body.touch-mode #quality-dropdown-touch {
+      left: auto;
+      right: 80px;
+    }
+
+    /* Side sliders (tablet only) */
+    .side-slider {
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 60px 0;
+    }
+    #size-slider-container { left: 6px; }
+    #strength-slider-container { right: 6px; }
+    .side-slider .slider-label {
+      position: absolute;
+      top: 0;
+      font-size: 9px;
+      font-weight: bold;
+      letter-spacing: 1px;
+      color: rgba(255,255,255,0.9);
+      text-shadow: 0 1px 4px rgba(0,0,0,0.9);
+    }
+    .side-slider input[type="range"] {
+      -webkit-appearance: none;
+      width: 100px;
+      height: 32px;
+      background: transparent;
+      cursor: pointer;
+      transform: rotate(-90deg);
+      margin: 0;
+    }
+    .side-slider input[type="range"]::-webkit-slider-track {
+      height: 6px;
+      background: rgba(255,255,255,0.3);
+      border-radius: 3px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.6);
+    }
+    .side-slider input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 24px;
+      height: 24px;
+      background: #88ccff;
+      border-radius: 50%;
+      margin-top: -9px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+    }
+
+    /* Bottom toolbar */
+    #bottom-bar {
+      position: absolute;
+      bottom: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0,0,0,0.75);
+      border-radius: 14px;
+      padding: 8px 12px;
+      backdrop-filter: blur(4px);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      border: 1px solid rgba(255,255,255,0.15);
+    }
+    .tool-btn {
+      width: 50px;
+      height: 50px;
+      border: 2px solid rgba(255,255,255,0.3);
+      border-radius: 10px;
+      background: rgba(255,255,255,0.1);
+      color: #fff;
+      font-size: 9px;
+      font-weight: bold;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: all 0.15s;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .tool-btn .icon { font-size: 20px; margin-bottom: 1px; }
+    .tool-btn:active { transform: scale(0.95); }
+    .tool-btn.active {
+      background: rgba(136,204,255,0.4);
+      border-color: #88ccff;
+    }
+    .brush-info {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 0 6px;
+      border-left: 1px solid rgba(255,255,255,0.2);
+      margin-left: 2px;
+    }
+    .brush-info .info-row { font-size: 10px; color: rgba(255,255,255,0.7); }
+    .brush-info .info-value { color: #88ccff; font-weight: bold; }
+
+    /* Phone layout adjustments */
+    @media (max-width: 500px) {
+      body.touch-mode .side-slider { display: none; }
+      body.touch-mode #bottom-bar {
+        flex-wrap: wrap;
+        justify-content: center;
+        max-width: 95%;
+        padding: 10px;
+        gap: 8px;
+      }
+      body.touch-mode #tool-row {
+        display: flex;
+        gap: 6px;
+        width: 100%;
+        justify-content: center;
+      }
+      body.touch-mode .tool-btn { width: 46px; height: 46px; font-size: 8px; }
+      body.touch-mode .tool-btn .icon { font-size: 18px; }
+      body.touch-mode #slider-row {
+        display: flex;
+        width: 100%;
+        gap: 12px;
+        padding-top: 8px;
+        border-top: 1px solid rgba(255,255,255,0.15);
+        margin-top: 4px;
+      }
+      body.touch-mode .phone-slider-group {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      body.touch-mode .phone-slider-group .slider-label {
+        display: flex;
+        justify-content: space-between;
+        font-size: 10px;
+        color: rgba(255,255,255,0.7);
+      }
+      body.touch-mode .phone-slider-group .slider-value { color: #88ccff; font-weight: bold; }
+      body.touch-mode .phone-slider-group input[type="range"] {
+        width: 100%;
+        height: 24px;
+        -webkit-appearance: none;
+        background: transparent;
+      }
+      body.touch-mode .phone-slider-group input[type="range"]::-webkit-slider-track {
+        height: 6px;
+        background: rgba(255,255,255,0.2);
+        border-radius: 3px;
+      }
+      body.touch-mode .phone-slider-group input[type="range"]::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        width: 20px;
+        height: 20px;
+        background: #88ccff;
+        border-radius: 50%;
+        margin-top: -7px;
+      }
+      body.touch-mode .brush-info { display: none; }
+      body.touch-mode .top-btn { font-size: 11px; padding: 5px 8px; height: 28px; }
+      body.touch-mode #stats-display { font-size: 10px; height: 28px; padding: 4px 8px; }
+      body.touch-mode .top-btn-small { width: 28px; }
+    }
+
+    @media (min-width: 501px) {
+      body.touch-mode #tool-row, body.touch-mode #slider-row { display: contents; }
+      body.touch-mode .phone-slider-group { display: none !important; }
+    }
+
+    /* ================================================================
+       HELP OVERLAY (touch mode)
+       ================================================================ */
+    #help-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0,0,0,0.85);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+    }
+    #help-overlay.visible { display: flex; }
+    #help-content {
+      background: rgba(30,30,50,0.95);
+      padding: 24px;
+      border-radius: 16px;
+      max-width: 300px;
+      color: #fff;
+      text-align: center;
+    }
+    #help-content h2 { color: #88ccff; margin-bottom: 16px; font-size: 18px; }
+    #help-content .gesture {
+      background: rgba(255,255,255,0.1);
+      padding: 8px 12px;
+      border-radius: 8px;
+      margin: 8px 0;
+      font-size: 13px;
+    }
+    #help-content .close-btn {
+      margin-top: 20px;
+      background: #88ccff;
+      color: #000;
+      border: none;
+      padding: 12px 32px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+
+    /* ================================================================
+       ARCADE HUD
+       ================================================================ */
+    #arcade-hud {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      display: none;
+      text-align: center;
+      color: #fff;
+      pointer-events: none;
+    }
+    #arcade-hud.visible { display: block; }
+    #arcade-hud .timer {
+      font-size: 28px;
+      font-weight: bold;
+      color: #88ccff;
+      margin-bottom: 8px;
+    }
+    #arcade-hud .timer.urgent {
+      color: #ff6666;
+      animation: pulse 0.5s infinite alternate;
+    }
+    #arcade-hud .score {
+      font-size: 48px;
+      font-weight: bold;
+      text-shadow: 0 2px 10px rgba(0,0,0,0.5);
+    }
+    #arcade-hud .combo { font-size: 24px; color: #ffcc44; margin-top: 8px; }
+    #arcade-hud .combo-bar {
+      width: 200px;
+      height: 4px;
+      background: rgba(255,255,255,0.2);
+      margin: 8px auto;
+      border-radius: 2px;
+    }
+    #arcade-hud .combo-bar-fill {
+      height: 100%;
+      background: #ffcc44;
+      border-radius: 2px;
+      transition: width 0.1s;
+    }
+    #arcade-hud .lives {
+      font-size: 24px;
+      margin-top: 12px;
+      display: flex;
+      justify-content: center;
+      gap: 4px;
+    }
+    #arcade-hud .heart { display: inline-block; position: relative; width: 24px; text-align: center; }
+    #arcade-hud .heart.full { color: #ff4466; }
+    #arcade-hud .heart.three-quarter {
+      background: linear-gradient(to right, #ff4466 75%, #664444 75%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    #arcade-hud .heart.half {
+      background: linear-gradient(to right, #ff4466 50%, #664444 50%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    #arcade-hud .heart.quarter {
+      background: linear-gradient(to right, #ff4466 25%, #664444 25%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    #arcade-hud .heart.empty { color: #664444; }
+    #arcade-hud .game-over { font-size: 36px; color: #ff6666; margin-top: 20px; }
+    #arcade-hud .final-score { font-size: 24px; margin-top: 10px; }
+    #arcade-hud .new-high-score {
+      font-size: 18px;
+      color: #ffcc44;
+      animation: pulse 0.5s infinite alternate;
+    }
+    @keyframes pulse {
+      from { opacity: 0.7; }
+      to { opacity: 1; }
+    }
+    #arcade-hud .game-buttons {
+      display: flex;
+      justify-content: center;
+      gap: 12px;
+      margin-top: 20px;
+    }
+    #arcade-hud .game-buttons button {
+      padding: 10px 24px;
+      font-size: 14px;
+      color: #fff;
+      border-radius: 6px;
+      cursor: pointer;
+      pointer-events: auto;
+    }
+    #arcade-hud .restart-btn {
+      background: rgba(136,204,255,0.4);
+      border: 1px solid #88ccff;
+    }
+    #arcade-hud .restart-btn:hover { background: rgba(136,204,255,0.6); }
+    #arcade-hud .quit-btn {
+      background: rgba(255,100,100,0.3);
+      border: 1px solid #ff6666;
+    }
+    #arcade-hud .quit-btn:hover { background: rgba(255,100,100,0.5); }
+
+    /* High Score Entry */
+    #arcade-hud .highscore-entry { margin-top: 16px; display: none; }
+    #arcade-hud .highscore-entry.visible { display: block; }
+    #arcade-hud .highscore-entry .rank-text { font-size: 16px; color: #ffcc44; margin-bottom: 8px; }
+    #arcade-hud .initials-input { display: flex; justify-content: center; gap: 8px; margin-bottom: 12px; }
+    #arcade-hud .initials-input input {
+      width: 40px;
+      height: 50px;
+      font-size: 28px;
+      text-align: center;
+      text-transform: uppercase;
+      background: rgba(0,0,0,0.5);
+      border: 2px solid #ffcc44;
+      color: #fff;
+      border-radius: 6px;
+      outline: none;
+      pointer-events: auto;
+    }
+    #arcade-hud .initials-input input:focus {
+      border-color: #fff;
+      background: rgba(255,204,68,0.2);
+    }
+    #arcade-hud .submit-score-btn {
+      padding: 8px 20px;
+      font-size: 14px;
+      background: rgba(255,204,68,0.4);
+      border: 1px solid #ffcc44;
+      color: #fff;
+      border-radius: 6px;
+      cursor: pointer;
+      pointer-events: auto;
+    }
+    #arcade-hud .submit-score-btn:hover { background: rgba(255,204,68,0.6); }
+
+    /* Leaderboard */
+    #arcade-hud .leaderboard { margin-top: 16px; display: none; }
+    #arcade-hud .leaderboard.visible { display: block; }
+    #arcade-hud .leaderboard h3 { font-size: 16px; color: #88ccff; margin-bottom: 8px; }
+    #arcade-hud .leaderboard-list { list-style: none; padding: 0; margin: 0; }
+    #arcade-hud .leaderboard-list li {
+      display: flex;
+      justify-content: space-between;
+      padding: 4px 8px;
+      font-size: 14px;
+      font-family: monospace;
+    }
+    #arcade-hud .leaderboard-list li.highlight {
+      background: rgba(255,204,68,0.2);
+      border-radius: 4px;
+    }
+    #arcade-hud .leaderboard-list .rank { color: #888; width: 24px; }
+    #arcade-hud .leaderboard-list .initials { color: #ffcc44; width: 50px; }
+    #arcade-hud .leaderboard-list .score { color: #fff; text-align: right; flex: 1; }
+
+    /* ================================================================
+       PRE-GAME MODAL
+       ================================================================ */
+    #pregame-modal {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      background: rgba(0,0,0,0.85);
+      display: none;
+      justify-content: center;
+      align-items: flex-start;
+      z-index: 1000;
+      overflow-y: auto;
+      padding: 20px 0;
+    }
+    #pregame-modal.visible { display: flex; }
+    #pregame-modal .modal-content {
+      background: linear-gradient(135deg, rgba(30,40,60,0.95) 0%, rgba(20,25,40,0.95) 100%);
+      border: 2px solid rgba(136,204,255,0.4);
+      border-radius: 16px;
+      padding: 32px 48px;
+      max-width: 500px;
+      text-align: center;
+      color: #fff;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.5), 0 0 40px rgba(136,204,255,0.1);
+      margin: auto;
+    }
+    #pregame-modal .mode-icon { font-size: 48px; margin-bottom: 16px; }
+    #pregame-modal .mode-title { font-size: 32px; font-weight: bold; color: #88ccff; margin-bottom: 8px; }
+    #pregame-modal .mode-subtitle { font-size: 14px; color: #888; margin-bottom: 24px; }
+    #pregame-modal .mode-description { font-size: 16px; line-height: 1.6; margin-bottom: 24px; color: #ccc; }
+    #pregame-modal .mode-objectives {
+      text-align: left;
+      background: rgba(0,0,0,0.3);
+      border-radius: 8px;
+      padding: 16px 20px;
+      margin-bottom: 28px;
+    }
+    #pregame-modal .mode-objectives h4 {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: #ffcc44;
+      margin-bottom: 12px;
+    }
+    #pregame-modal .mode-objectives ul { list-style: none; padding: 0; margin: 0; }
+    #pregame-modal .mode-objectives li {
+      font-size: 14px;
+      padding: 6px 0;
+      padding-left: 24px;
+      position: relative;
+      color: #aaa;
+    }
+    #pregame-modal .mode-objectives li::before {
+      content: '▸';
+      position: absolute;
+      left: 0;
+      color: #88ccff;
+    }
+    #pregame-modal .start-btn {
+      background: linear-gradient(135deg, #44aa88 0%, #338866 100%);
+      border: none;
+      color: #fff;
+      font-size: 20px;
+      font-weight: bold;
+      padding: 16px 64px;
+      border-radius: 8px;
+      cursor: pointer;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      transition: all 0.2s;
+      box-shadow: 0 4px 20px rgba(68,170,136,0.4);
+    }
+    #pregame-modal .start-btn:hover {
+      background: linear-gradient(135deg, #55bb99 0%, #44aa77 100%);
+      transform: translateY(-2px);
+      box-shadow: 0 6px 24px rgba(68,170,136,0.5);
+    }
+    #pregame-modal .start-btn:active { transform: translateY(0); }
+
+    /* Mobile adjustments for modal */
+    @media (max-width: 500px) {
+      #pregame-modal { padding: 10px; }
+      #pregame-modal .modal-content { padding: 20px 16px; margin: 0; max-width: 100%; }
+      #pregame-modal .mode-icon { font-size: 32px; margin-bottom: 8px; }
+      #pregame-modal .mode-title { font-size: 22px; margin-bottom: 4px; }
+      #pregame-modal .mode-subtitle { margin-bottom: 12px; }
+      #pregame-modal .mode-description { font-size: 13px; margin-bottom: 16px; line-height: 1.4; }
+      #pregame-modal .mode-objectives { padding: 12px 14px; margin-bottom: 16px; }
+      #pregame-modal .mode-objectives h4 { margin-bottom: 8px; font-size: 11px; }
+      #pregame-modal .mode-objectives li { font-size: 12px; padding: 4px 0; padding-left: 20px; }
+      #pregame-modal .start-btn { padding: 12px 40px; font-size: 16px; }
+    }
+    /* Extra small height screens */
+    @media (max-height: 500px) {
+      #pregame-modal { padding: 5px; }
+      #pregame-modal .modal-content { padding: 12px; }
+      #pregame-modal .mode-icon { font-size: 24px; margin-bottom: 4px; }
+      #pregame-modal .mode-title { font-size: 18px; }
+      #pregame-modal .mode-subtitle { font-size: 12px; margin-bottom: 8px; }
+      #pregame-modal .mode-description { font-size: 12px; margin-bottom: 10px; }
+      #pregame-modal .mode-objectives { padding: 8px 10px; margin-bottom: 10px; }
+      #pregame-modal .mode-objectives li { font-size: 11px; padding: 2px 0; }
+      #pregame-modal .start-btn { padding: 10px 32px; font-size: 14px; }
+    }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+
+  <!-- ================================================================
+       DESKTOP UI
+       ================================================================ -->
+  <div id="controls-panel" class="panel desktop-only">
+    <h2>System</h2>
+    <div class="tool-name">raise</div>
+    <div class="brush-info">Size: 8 | Strength: 2.0</div>
+    <div class="stats">60 FPS | Water: 0 | Springs: 0</div>
+    <div class="terrain-presets">
+      <div class="preset-label">Terrain:</div>
+      <button class="preset-btn active" data-preset="default">Default</button>
+      <button class="preset-btn" data-preset="hills">Hills</button>
+      <button class="preset-btn" data-preset="mountains">Mountains</button>
+      <button class="preset-btn" data-preset="plains">Plains</button>
+    </div>
+    <div class="button-row">
+      <button class="btn-small" id="btn-mode">Sandbox</button>
+      <div id="mode-dropdown" class="dropdown">
+        <button class="mode-btn active" data-mode="sandbox">
+          <span class="mode-name">Sandbox</span>
+          <span class="mode-desc">Free play, no objectives</span>
+        </button>
+        <button class="mode-btn" data-mode="flowRush">
+          <span class="mode-name">Flow Rush</span>
+          <span class="mode-desc">Guide water to targets</span>
+          <span class="high-score" id="highscore-flowRush"></span>
+        </button>
+        <button class="mode-btn" data-mode="cascade">
+          <span class="mode-name">Cascade</span>
+          <span class="mode-desc">Chain water through rings</span>
+          <span class="high-score" id="highscore-cascade"></span>
+        </button>
+        <button class="mode-btn" data-mode="floodDefense">
+          <span class="mode-name">Flood Defense</span>
+          <span class="mode-desc">Protect zones from water</span>
+          <span class="high-score" id="highscore-floodDefense"></span>
+        </button>
+      </div>
+      <button class="btn-small" id="btn-quality">High</button>
+      <div id="quality-dropdown" class="dropdown">
+        <button class="quality-btn" data-quality="low">Low (128px)</button>
+        <button class="quality-btn" data-quality="medium">Medium (192px)</button>
+        <button class="quality-btn active" data-quality="high">High (256px)</button>
+      </div>
+      <button class="btn-small btn-icon" id="btn-home" title="Reset View (H)">⌂</button>
+      <button class="btn-small btn-icon" id="btn-input-mode" title="Switch to Touch Mode">📱</button>
+    </div>
+  </div>
+
+  <div id="instructions-panel" class="panel desktop-only">
+    <h2>Tools</h2>
+    <ul class="tool-list">
+      <li><span class="key">1</span><strong>Raise</strong> <span class="desc">- Build up terrain</span></li>
+      <li><span class="key">2</span><strong>Lower</strong> <span class="desc">- Dig into terrain</span></li>
+      <li><span class="key">3</span><strong>Water</strong> <span class="desc">- Add water splash</span></li>
+      <li><span class="key">4</span><strong>Spring</strong> <span class="desc">- Create water source</span></li>
+      <li><span class="key">5</span><strong>Remove</strong> <span class="desc">- Delete springs</span></li>
+    </ul>
+    <div class="controls-section">
+      <strong>Mouse:</strong> Left-click to use tool<br>
+      Right-drag to look, Scroll to zoom<br><br>
+      <strong>Camera:</strong>
+      <span class="key">W</span><span class="key">A</span><span class="key">S</span><span class="key">D</span> Move
+      <span class="key">Q</span><span class="key">E</span> Down/Up<br><br>
+      <strong>Keys:</strong><br>
+      <span class="key">[</span><span class="key">]</span> Brush size<br>
+      <span class="key">-</span><span class="key">+</span> Brush strength<br>
+      <span class="key">&lt;</span><span class="key">&gt;</span> Time scale<br>
+      <span class="key">P</span> Pause<br>
+      <span class="key">R</span> Reset terrain<br>
+      <span class="key">C</span> Clear water<br>
+      <span class="key">H</span> Reset view
+    </div>
+  </div>
+
+  <!-- ================================================================
+       TOUCH UI
+       ================================================================ -->
+  <div id="top-bar" class="touch-only">
+    <div style="display: flex; gap: 6px;">
+      <button class="top-btn" id="btn-mode-touch">Sandbox</button>
+      <button class="top-btn" id="btn-new-map">Map</button>
+    </div>
+    <div id="stats-display">
+      <span class="title">Drift</span>&nbsp;|&nbsp;<span id="stats">Loading...</span>
+    </div>
+    <div style="display: flex; gap: 6px;">
+      <button class="top-btn top-btn-small" id="btn-quality-touch">Q</button>
+      <button class="top-btn top-btn-small" id="btn-home-touch" title="Reset View">⌂</button>
+      <button class="top-btn top-btn-small" id="btn-input-mode-touch" title="Switch to Desktop Mode">🖥️</button>
+    </div>
+  </div>
+
+  <!-- Touch mode dropdowns -->
+  <div id="preset-dropdown" class="dropdown touch-only">
+    <button class="preset-btn active" data-preset="default">Default</button>
+    <button class="preset-btn" data-preset="hills">Hills</button>
+    <button class="preset-btn" data-preset="mountains">Mountains</button>
+    <button class="preset-btn" data-preset="plains">Plains</button>
+  </div>
+
+  <div id="mode-dropdown-touch" class="dropdown touch-only">
+    <button class="mode-btn active" data-mode="sandbox">
+      <span class="mode-name">Sandbox</span>
+      <span class="mode-desc">Free play, no objectives</span>
+    </button>
+    <button class="mode-btn" data-mode="flowRush">
+      <span class="mode-name">Flow Rush</span>
+      <span class="mode-desc">Guide water to targets</span>
+      <span class="high-score" id="highscore-flowRush-touch"></span>
+    </button>
+    <button class="mode-btn" data-mode="cascade">
+      <span class="mode-name">Cascade</span>
+      <span class="mode-desc">Chain water through rings</span>
+      <span class="high-score" id="highscore-cascade-touch"></span>
+    </button>
+    <button class="mode-btn" data-mode="floodDefense">
+      <span class="mode-name">Flood Defense</span>
+      <span class="mode-desc">Protect zones from water</span>
+      <span class="high-score" id="highscore-floodDefense-touch"></span>
+    </button>
+  </div>
+
+  <div id="quality-dropdown-touch" class="dropdown touch-only">
+    <button class="quality-btn" data-quality="low">Low (128px)</button>
+    <button class="quality-btn" data-quality="medium">Medium (192px)</button>
+    <button class="quality-btn active" data-quality="high">High (256px)</button>
+  </div>
+
+  <!-- Side sliders (tablet) -->
+  <div class="side-slider touch-only" id="size-slider-container">
+    <span class="slider-label">SIZE</span>
+    <input type="range" id="size-slider" min="2" max="20" value="8">
+  </div>
+  <div class="side-slider touch-only" id="strength-slider-container">
+    <span class="slider-label">STRENGTH</span>
+    <input type="range" id="strength-slider" min="0.5" max="10" step="0.5" value="2">
+  </div>
+
+  <!-- Bottom toolbar -->
+  <div id="bottom-bar" class="touch-only">
+    <div id="tool-row">
+      <button class="tool-btn active" data-tool="raise">
+        <span class="icon">^</span>
+        <span>Raise</span>
+      </button>
+      <button class="tool-btn" data-tool="lower">
+        <span class="icon">v</span>
+        <span>Lower</span>
+      </button>
+      <button class="tool-btn" data-tool="water">
+        <span class="icon">~</span>
+        <span>Water</span>
+      </button>
+      <button class="tool-btn" data-tool="spring">
+        <span class="icon">o</span>
+        <span>Spring</span>
+      </button>
+      <div class="brush-info">
+        <div class="info-row">Size: <span class="info-value" id="size-value">8</span></div>
+        <div class="info-row">Str: <span class="info-value" id="strength-value">2.0</span></div>
+      </div>
+    </div>
+    <div id="slider-row">
+      <div class="phone-slider-group">
+        <div class="slider-label">
+          <span>Size</span>
+          <span class="slider-value" id="size-value-phone">8</span>
+        </div>
+        <input type="range" id="size-slider-phone" min="2" max="20" value="8">
+      </div>
+      <div class="phone-slider-group">
+        <div class="slider-label">
+          <span>Strength</span>
+          <span class="slider-value" id="strength-value-phone">2.0</span>
+        </div>
+        <input type="range" id="strength-slider-phone" min="0.5" max="10" step="0.5" value="2">
+      </div>
+    </div>
+  </div>
+
+  <!-- Help overlay (touch mode) -->
+  <div id="help-overlay" class="touch-only">
+    <div id="help-content">
+      <h2>Touch Controls</h2>
+      <div class="gesture"><strong>One finger drag</strong><br>Use selected tool</div>
+      <div class="gesture"><strong>Two finger drag</strong><br>Move camera</div>
+      <div class="gesture"><strong>Pinch</strong><br>Zoom in/out</div>
+      <div class="gesture"><strong>Two finger twist</strong><br>Rotate view</div>
+      <p style="font-size: 12px; margin-top: 12px; opacity: 0.8;">Adjust brush size and strength with sliders.</p>
+      <button class="close-btn" id="close-help">Got it!</button>
+    </div>
+  </div>
+
+  <!-- ================================================================
+       SHARED UI (both modes)
+       ================================================================ -->
+  <div id="arcade-hud">
+    <div class="timer">2:00</div>
+    <div class="score">0</div>
+    <div class="combo">x1</div>
+    <div class="combo-bar"><div class="combo-bar-fill" style="width: 0%"></div></div>
+    <div class="lives"></div>
+    <div class="game-over" style="display: none;">GAME OVER</div>
+    <div class="final-score" style="display: none;"></div>
+    <div class="new-high-score" style="display: none;">NEW HIGH SCORE!</div>
+    <div class="highscore-entry">
+      <div class="rank-text">Enter your initials:</div>
+      <div class="initials-input">
+        <input type="text" maxlength="1" class="initial" data-index="0" autocomplete="off">
+        <input type="text" maxlength="1" class="initial" data-index="1" autocomplete="off">
+        <input type="text" maxlength="1" class="initial" data-index="2" autocomplete="off">
+      </div>
+      <button class="submit-score-btn">Submit</button>
+    </div>
+    <div class="leaderboard">
+      <h3>Top Scores</h3>
+      <ul class="leaderboard-list"></ul>
+    </div>
+    <div class="game-buttons" style="display: none;">
+      <button class="restart-btn">Play Again</button>
+      <button class="quit-btn">Quit Game</button>
+    </div>
+  </div>
+
+  <div id="pregame-modal">
+    <div class="modal-content">
+      <div class="mode-icon">🌊</div>
+      <div class="mode-title">Flow Rush</div>
+      <div class="mode-subtitle">2 minutes to score big</div>
+      <p class="mode-description">
+        Guide water to glowing targets scattered across the terrain.
+        Build channels and redirect springs to maximize your score!
+      </p>
+      <div class="mode-objectives">
+        <h4>How to Play</h4>
+        <ul>
+          <li>Water touching targets earns points</li>
+          <li>Chain hits to build your combo multiplier</li>
+          <li>Use terrain tools to guide water flow</li>
+          <li>Find all targets before time runs out</li>
+        </ul>
+      </div>
+      <button class="start-btn">Start</button>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main-unified.js"></script>
+</body>
+</html>

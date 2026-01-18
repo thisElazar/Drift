@@ -35,6 +35,21 @@ const configs = {
       },
     },
   },
+  unified: {
+    base: './',
+    build: {
+      outDir: 'dist-unified',
+      emptyOutDir: true,
+      rollupOptions: {
+        input: resolve(__dirname, 'unified.html'),
+        output: {
+          entryFileNames: 'assets/drift-unified.js',
+          chunkFileNames: 'assets/[name].js',
+          assetFileNames: 'assets/[name].[ext]',
+        },
+      },
+    },
+  },
 };
 
 const targetConfig = configs[buildTarget];

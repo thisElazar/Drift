@@ -50,6 +50,12 @@ export class MobileControls {
     this.setupUIListeners();
   }
 
+  refreshScale() {
+    this.worldScale = getWorldScale();
+    this.gridWidth = getGridWidth();
+    this.gridHeight = getGridHeight();
+  }
+
   createBrushCursor() {
     const geometry = new THREE.RingGeometry(0.9, 1, 32);
     geometry.rotateX(-Math.PI / 2);
