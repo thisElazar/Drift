@@ -5,6 +5,29 @@ import { TerrainMesh } from './rendering/terrainMesh.js';
 import { WaterMesh } from './rendering/waterMesh.js';
 import { SpringMarkers } from './rendering/springMarkers.js';
 import { TerrainControls } from './ui/controls.js';
+import {
+  QualityLevel,
+  QualityConfig,
+  QualityPresets,
+  setQuality,
+  loadSavedQuality,
+  autoDetectQuality
+} from './simulation/quality.js';
+
+// Initialize quality BEFORE creating app
+function initQuality() {
+  const saved = loadSavedQuality();
+  if (saved) {
+    console.log('Loaded saved quality:', saved);
+    return saved;
+  }
+  // Desktop defaults to high quality
+  setQuality(QualityLevel.HIGH);
+  console.log('Using default quality: high');
+  return QualityLevel.HIGH;
+}
+
+const currentQuality = initQuality();
 
 class App {
   constructor() {
@@ -35,7 +58,8 @@ class App {
       this.water.addWater(x, y, amount, radius);
     };
     this.controls.onAddSpring = (x, y) => {
-      const flowRate = this.terrain.brushStrength * 3;  // Scale strength to flow rate
+      // Flow rate scales with both brush strength and size
+      const flowRate = this.terrain.brushStrength * this.terrain.brushRadius * 0.5;
       this.water.addSpring(x, y, flowRate);
     };
     this.controls.onRemoveSpring = (x, y) => {
@@ -68,6 +92,17 @@ class App {
 
     // Setup terrain preset buttons
     this.setupPresetButtons();
+
+    // Setup quality selector
+    this.setupQualitySelector();
+
+    // Setup home button
+    this.setupHomeButton();
+
+    // Connect home key (H) to controls
+    this.controls.onResetCamera = () => {
+      this.scene.resetCamera();
+    };
 
     // Simulation timing
     this.lastTime = performance.now();
@@ -105,6 +140,59 @@ class App {
         this.water.autoGenerateSprings();
       });
     });
+  }
+
+  setupQualitySelector() {
+    const qualityBtn = document.getElementById('btn-quality');
+    const qualityDropdown = document.getElementById('quality-dropdown');
+    const qualityButtons = document.querySelectorAll('.quality-btn');
+
+    if (!qualityBtn || !qualityDropdown) return;
+
+    // Update button text to show current quality
+    const preset = QualityPresets[QualityConfig.level];
+    qualityBtn.textContent = preset ? preset.label : 'Quality';
+
+    // Update active state in dropdown
+    qualityButtons.forEach(btn => {
+      const level = btn.dataset.quality;
+      btn.classList.toggle('active', level === QualityConfig.level);
+    });
+
+    // Toggle dropdown
+    qualityBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      qualityDropdown.classList.toggle('visible');
+    });
+
+    // Handle quality selection
+    qualityButtons.forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const level = btn.dataset.quality;
+
+        if (level !== QualityConfig.level) {
+          setQuality(level);
+          window.location.reload();
+        } else {
+          qualityDropdown.classList.remove('visible');
+        }
+      });
+    });
+
+    // Close dropdown when clicking elsewhere
+    document.addEventListener('click', () => {
+      qualityDropdown.classList.remove('visible');
+    });
+  }
+
+  setupHomeButton() {
+    const homeBtn = document.getElementById('btn-home');
+    if (homeBtn) {
+      homeBtn.addEventListener('click', () => {
+        this.scene.resetCamera();
+      });
+    }
   }
 
   animate() {

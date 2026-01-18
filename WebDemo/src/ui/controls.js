@@ -168,6 +168,9 @@ export class TerrainControls {
       case 'p':
         if (this.onTogglePause) this.onTogglePause();
         break;
+      case 'h':
+        if (this.onResetCamera) this.onResetCamera();
+        break;
     }
   }
 
@@ -338,4 +341,5 @@ export class TerrainControls {
   // Callbacks for time control (set from main.js)
   onTimeScaleChange = null;
   onTogglePause = null;
+  onResetCamera = null;
 }

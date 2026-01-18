@@ -196,4 +196,15 @@ export class Scene {
   get canvas() {
     return this.renderer.domElement;
   }
+
+  // Reset camera to initial position
+  resetCamera() {
+    this.camera.position.set(
+      this.terrainWidth * 0.5,
+      MAX_HEIGHT * 2.5,
+      this.terrainHeight * 0.5
+    );
+    this.controls.target.set(0, 0, 0);
+    this.controls.update();
+  }
 }

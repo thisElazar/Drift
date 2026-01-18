@@ -59,7 +59,8 @@ class MobileApp {
       this.water.addWater(x, y, amount, radius);
     };
     this.controls.onAddSpring = (x, y) => {
-      const flowRate = this.terrain.brushStrength * 3;
+      // Flow rate scales with both brush strength and size
+      const flowRate = this.terrain.brushStrength * this.terrain.brushRadius * 0.5;
       this.water.addSpring(x, y, flowRate);
     };
     this.controls.onTerrainReset = () => {

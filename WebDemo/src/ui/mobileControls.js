@@ -168,6 +168,20 @@ export class MobileControls {
       });
     }
 
+    // Home button (reset camera view)
+    const homeBtn = document.getElementById('btn-home');
+    if (homeBtn) {
+      const handleHome = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.scene.resetCamera();
+      };
+      homeBtn.addEventListener('touchend', handleHome);
+      homeBtn.addEventListener('click', (e) => {
+        if (!e.sourceCapabilities?.firesTouchEvents) handleHome(e);
+      });
+    }
+
     // Size sliders (tablet + phone versions)
     const sizeSlider = document.getElementById('size-slider');
     const sizeSliderPhone = document.getElementById('size-slider-phone');
@@ -366,7 +380,7 @@ export class MobileControls {
         const zoomDir = new THREE.Vector3()
           .subVectors(this.orbitTarget, this.camera.position)
           .normalize();
-        const zoomAmount = distDelta * 0.8;
+        const zoomAmount = distDelta * 2.5;
         this.camera.position.add(zoomDir.clone().multiplyScalar(zoomAmount));
       }
 
@@ -379,7 +393,7 @@ export class MobileControls {
         this.camera.getWorldDirection(right);
         right.crossVectors(up, right).normalize();
 
-        const panSpeed = 0.8;
+        const panSpeed = 2.5;
         const panX = right.clone().multiplyScalar(-panDeltaX * panSpeed);
         const panY = up.clone().multiplyScalar(panDeltaY * panSpeed);
 

@@ -3,6 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
   <title>Drift - Web Demo</title>
   <style>
     * {
@@ -79,6 +82,72 @@
       background: rgba(136,204,255,0.4);
       border-color: #88ccff;
     }
+    #controls-panel .quality-section {
+      margin-top: 10px;
+      padding-top: 8px;
+      border-top: 1px solid rgba(255,255,255,0.2);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    #controls-panel .quality-btn-main {
+      background: rgba(255,255,255,0.1);
+      border: 1px solid rgba(255,255,255,0.2);
+      color: #fff;
+      padding: 4px 10px;
+      border-radius: 4px;
+      font-size: 11px;
+      cursor: pointer;
+    }
+    #controls-panel .quality-btn-main:hover {
+      background: rgba(255,255,255,0.2);
+    }
+    #controls-panel .home-btn {
+      background: rgba(255,255,255,0.1);
+      border: 1px solid rgba(255,255,255,0.2);
+      color: #fff;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    #controls-panel .home-btn:hover {
+      background: rgba(255,255,255,0.2);
+    }
+    #quality-dropdown {
+      position: absolute;
+      top: 100%;
+      left: 0;
+      margin-top: 4px;
+      background: rgba(0,0,0,0.9);
+      border-radius: 6px;
+      padding: 4px;
+      display: none;
+      min-width: 140px;
+      z-index: 100;
+    }
+    #quality-dropdown.visible {
+      display: block;
+    }
+    #quality-dropdown .quality-btn {
+      display: block;
+      width: 100%;
+      background: rgba(255,255,255,0.1);
+      border: none;
+      color: #fff;
+      padding: 6px 10px;
+      margin: 2px 0;
+      border-radius: 4px;
+      font-size: 11px;
+      cursor: pointer;
+      text-align: left;
+    }
+    #quality-dropdown .quality-btn:hover {
+      background: rgba(255,255,255,0.2);
+    }
+    #quality-dropdown .quality-btn.active {
+      background: rgba(136,204,255,0.4);
+    }
     #instructions-panel {
       top: 10px;
       right: 10px;
@@ -130,6 +199,15 @@
       <button class="preset-btn" data-preset="mountains">Mountains</button>
       <button class="preset-btn" data-preset="plains">Plains</button>
     </div>
+    <div class="quality-section" style="position: relative;">
+      <button class="quality-btn-main" id="btn-quality">High</button>
+      <div id="quality-dropdown">
+        <button class="quality-btn" data-quality="low">Low (128px)</button>
+        <button class="quality-btn" data-quality="medium">Medium (192px)</button>
+        <button class="quality-btn active" data-quality="high">High (256px)</button>
+      </div>
+      <button class="home-btn" id="btn-home" title="Reset View (H)">⌂</button>
+    </div>
   </div>
 
   <div id="instructions-panel" class="panel">
@@ -153,7 +231,8 @@
       <span class="key">&lt;</span><span class="key">&gt;</span> Time scale<br>
       <span class="key">P</span> Pause<br>
       <span class="key">R</span> Reset terrain<br>
-      <span class="key">C</span> Clear water
+      <span class="key">C</span> Clear water<br>
+      <span class="key">H</span> Reset view
     </div>
   </div>
 
