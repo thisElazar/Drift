@@ -57,7 +57,77 @@ export class Water {
     this.impactWaveStrength = 2.0;  // Strength of wall impact waves
     this.pressureWaveStrength = 0.8; // How much pressure gradients create waves
 
+    // Spatial partitioning: bounding box of active water region
+    this.activeRegion = {
+      minX: 0,
+      maxX: this.width - 1,
+      minY: 0,
+      maxY: this.height - 1,
+      needsRecalc: true,  // Flag to recalculate bounds
+    };
+    this.regionPadding = 3;  // Extra cells around active region for propagation
+    this.regionRecalcInterval = 30;  // Recalc bounds every N frames
+    this.framesSinceRecalc = 0;
+
     this.dirty = false;
+  }
+
+  // Recalculate the active water region bounding box
+  recalcActiveRegion() {
+    let minX = this.width, maxX = 0;
+    let minY = this.height, maxY = 0;
+    let hasWater = false;
+
+    // Include springs in active region
+    for (const spring of this.springs) {
+      if (this.inBounds(spring.x, spring.y)) {
+        minX = Math.min(minX, spring.x);
+        maxX = Math.max(maxX, spring.x);
+        minY = Math.min(minY, spring.y);
+        maxY = Math.max(maxY, spring.y);
+        hasWater = true;
+      }
+    }
+
+    // Scan for cells with water or wave energy
+    for (let y = 0; y < this.height; y++) {
+      for (let x = 0; x < this.width; x++) {
+        const idx = this.index(x, y);
+        if (this.depth[idx] > this.minDepth || this.waveEnergy[idx] > 0.05) {
+          minX = Math.min(minX, x);
+          maxX = Math.max(maxX, x);
+          minY = Math.min(minY, y);
+          maxY = Math.max(maxY, y);
+          hasWater = true;
+        }
+      }
+    }
+
+    if (hasWater) {
+      // Add padding for propagation
+      this.activeRegion.minX = Math.max(1, minX - this.regionPadding);
+      this.activeRegion.maxX = Math.min(this.width - 2, maxX + this.regionPadding);
+      this.activeRegion.minY = Math.max(1, minY - this.regionPadding);
+      this.activeRegion.maxY = Math.min(this.height - 2, maxY + this.regionPadding);
+    } else {
+      // No water - use minimal region
+      this.activeRegion.minX = 1;
+      this.activeRegion.maxX = 1;
+      this.activeRegion.minY = 1;
+      this.activeRegion.maxY = 1;
+    }
+
+    this.activeRegion.needsRecalc = false;
+    this.framesSinceRecalc = 0;
+  }
+
+  // Expand active region to include a point (used when adding water)
+  expandRegion(x, y, radius = 0) {
+    const pad = this.regionPadding + radius;
+    this.activeRegion.minX = Math.max(1, Math.min(this.activeRegion.minX, x - pad));
+    this.activeRegion.maxX = Math.min(this.width - 2, Math.max(this.activeRegion.maxX, x + pad));
+    this.activeRegion.minY = Math.max(1, Math.min(this.activeRegion.minY, y - pad));
+    this.activeRegion.maxY = Math.min(this.height - 2, Math.max(this.activeRegion.maxY, y + pad));
   }
 
   index(x, y) {
@@ -96,16 +166,16 @@ export class Water {
         this.depth[idx] += perCellAmount * falloff;
       }
     }
+    this.expandRegion(Math.floor(centerX), Math.floor(centerY), radius);
     this.dirty = true;
   }
 
   // Add a spring
   addSpring(x, y, flowRate = SPRING_FLOW_RATE) {
-    this.springs.push({
-      x: Math.floor(x),
-      y: Math.floor(y),
-      flowRate,
-    });
+    const sx = Math.floor(x);
+    const sy = Math.floor(y);
+    this.springs.push({ x: sx, y: sy, flowRate });
+    this.expandRegion(sx, sy, 5);  // Springs will spread water outward
   }
 
   // Remove springs near a position
@@ -135,6 +205,8 @@ export class Water {
     this.waveEnergyNext.fill(0);
     this.waveDirectionX.fill(0);
     this.waveDirectionY.fill(0);
+    // Reset active region
+    this.activeRegion.needsRecalc = true;
     this.dirty = true;
   }
 
@@ -142,7 +214,17 @@ export class Water {
   simulate(dt = 1/60) {
     const terrain = this.terrain.heightMap;
 
-    // Copy current depth to next buffer
+    // Periodically recalculate active region bounds
+    this.framesSinceRecalc++;
+    if (this.activeRegion.needsRecalc || this.framesSinceRecalc >= this.regionRecalcInterval) {
+      this.recalcActiveRegion();
+    }
+
+    // Get active region bounds (with safe margins)
+    const { minX, maxX, minY, maxY } = this.activeRegion;
+
+    // Copy current depth to next buffer (only in active region for performance)
+    // Note: We still need full copy for areas that might receive water from edge
     this.depthNext.set(this.depth);
     this.waveEnergyNext.set(this.waveEnergy);
 
@@ -172,8 +254,9 @@ export class Water {
     }
 
     // PHASE 1.5: Detect terrain displacement and generate waves
-    for (let y = 1; y < this.height - 1; y++) {
-      for (let x = 1; x < this.width - 1; x++) {
+    // Only process within active region
+    for (let y = minY; y <= maxY; y++) {
+      for (let x = minX; x <= maxX; x++) {
         const idx = this.index(x, y);
         const waterHere = this.depth[idx];
 
@@ -200,8 +283,9 @@ export class Water {
     }
 
     // Pressure-based flow simulation with wave generation
-    for (let y = 1; y < this.height - 1; y++) {
-      for (let x = 1; x < this.width - 1; x++) {
+    // Only process within active region
+    for (let y = minY; y <= maxY; y++) {
+      for (let x = minX; x <= maxX; x++) {
         const idx = this.index(x, y);
         const waterHere = this.depth[idx];
 
@@ -265,8 +349,8 @@ export class Water {
           }
         }
 
-        // Wall impact creates sloshing waves
-        if (blockedFlow > 0.01) {
+        // Wall impact creates sloshing waves (culled at low flow)
+        if (blockedFlow > 0.05) {
           const impactEnergy = blockedFlow * this.impactWaveStrength;
           this.waveEnergyNext[idx] += impactEnergy;
           // Reverse wave direction on impact
@@ -295,13 +379,49 @@ export class Water {
       }
     }
 
+    // Expand region if water reached edges
+    if (minX > 1) {
+      for (let y = minY; y <= maxY; y++) {
+        if (this.depthNext[this.index(minX, y)] > this.minDepth) {
+          this.activeRegion.minX = Math.max(1, minX - 2);
+          break;
+        }
+      }
+    }
+    if (maxX < this.width - 2) {
+      for (let y = minY; y <= maxY; y++) {
+        if (this.depthNext[this.index(maxX, y)] > this.minDepth) {
+          this.activeRegion.maxX = Math.min(this.width - 2, maxX + 2);
+          break;
+        }
+      }
+    }
+    if (minY > 1) {
+      for (let x = minX; x <= maxX; x++) {
+        if (this.depthNext[this.index(x, minY)] > this.minDepth) {
+          this.activeRegion.minY = Math.max(1, minY - 2);
+          break;
+        }
+      }
+    }
+    if (maxY < this.height - 2) {
+      for (let x = minX; x <= maxX; x++) {
+        if (this.depthNext[this.index(x, maxY)] > this.minDepth) {
+          this.activeRegion.maxY = Math.min(this.height - 2, maxY + 2);
+          break;
+        }
+      }
+    }
+
     // Propagate wave energy to neighbors
-    for (let y = 1; y < this.height - 1; y++) {
-      for (let x = 1; x < this.width - 1; x++) {
+    // Only process within active region
+    for (let y = minY; y <= maxY; y++) {
+      for (let x = minX; x <= maxX; x++) {
         const idx = this.index(x, y);
         const energy = this.waveEnergy[idx];
 
-        if (energy > 0.01 && this.depth[idx] > this.minDepth) {
+        // Wave culling: skip low-energy cells (0.05 threshold for performance)
+        if (energy > 0.05 && this.depth[idx] > this.minDepth) {
           // Get wave direction
           const dirX = this.waveDirectionX[idx];
           const dirY = this.waveDirectionY[idx];
@@ -333,17 +453,23 @@ export class Water {
       }
     }
 
-    // Apply decay to wave energy and direction
-    for (let i = 0; i < this.width * this.height; i++) {
-      this.waveEnergyNext[i] *= this.waveDecay;
-      this.waveDirectionX[i] *= 0.92;
-      this.waveDirectionY[i] *= 0.92;
+    // Apply decay to wave energy and direction (only in active region)
+    for (let y = minY; y <= maxY; y++) {
+      for (let x = minX; x <= maxX; x++) {
+        const i = this.index(x, y);
+        this.waveEnergyNext[i] *= this.waveDecay;
+        this.waveDirectionX[i] *= 0.92;
+        this.waveDirectionY[i] *= 0.92;
+      }
     }
 
-    // Apply evaporation (very subtle)
-    for (let i = 0; i < this.width * this.height; i++) {
-      if (this.depthNext[i] > 0) {
-        this.depthNext[i] = Math.max(0, this.depthNext[i] - this.evaporationRate * dt);
+    // Apply evaporation (only in active region)
+    for (let y = minY; y <= maxY; y++) {
+      for (let x = minX; x <= maxX; x++) {
+        const i = this.index(x, y);
+        if (this.depthNext[i] > 0) {
+          this.depthNext[i] = Math.max(0, this.depthNext[i] - this.evaporationRate * dt);
+        }
       }
     }
 

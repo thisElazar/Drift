@@ -120,6 +120,13 @@ class UnifiedApp {
     this.fpsTime = 0;
     this.currentFps = 60;
 
+    // Adaptive performance - throttle simulation when FPS drops
+    this.adaptiveMaxSteps = getMaxSimSteps();  // Current limit
+    this.targetFps = 30;  // Minimum acceptable FPS
+    this.fpsHistory = [];  // Track recent FPS values
+    this.fpsHistorySize = 10;
+    this.adaptiveCooldown = 0;  // Frames before we can adjust again
+
     // Start render loop
     this.animate();
 
@@ -894,6 +901,33 @@ class UnifiedApp {
       this.frameCount = 0;
       this.fpsTime = 0;
 
+      // Track FPS history for adaptive performance
+      this.fpsHistory.push(this.currentFps);
+      if (this.fpsHistory.length > this.fpsHistorySize) {
+        this.fpsHistory.shift();
+      }
+
+      // Adaptive performance adjustment
+      if (this.adaptiveCooldown > 0) {
+        this.adaptiveCooldown--;
+      } else if (this.fpsHistory.length >= 3) {
+        const avgFps = this.fpsHistory.reduce((a, b) => a + b, 0) / this.fpsHistory.length;
+        const minFps = Math.min(...this.fpsHistory.slice(-3));
+        const baseMaxSteps = getMaxSimSteps();
+
+        if (minFps < this.targetFps && this.adaptiveMaxSteps > 1) {
+          // FPS too low - reduce simulation steps
+          this.adaptiveMaxSteps = Math.max(1, this.adaptiveMaxSteps - 1);
+          this.adaptiveCooldown = 4;  // Wait before adjusting again
+          console.log(`Adaptive: FPS ${minFps.toFixed(0)} < ${this.targetFps}, reducing steps to ${this.adaptiveMaxSteps}`);
+        } else if (avgFps > this.targetFps + 15 && this.adaptiveMaxSteps < baseMaxSteps) {
+          // FPS recovered - gradually increase steps
+          this.adaptiveMaxSteps = Math.min(baseMaxSteps, this.adaptiveMaxSteps + 1);
+          this.adaptiveCooldown = 6;
+          console.log(`Adaptive: FPS ${avgFps.toFixed(0)} good, increasing steps to ${this.adaptiveMaxSteps}`);
+        }
+      }
+
       // Update stats (desktop or mobile method)
       if (this.controls.updateStats) {
         if (this.inputMode === InputMode.DESKTOP) {
@@ -914,14 +948,17 @@ class UnifiedApp {
       }
     }
 
-    // Simulation
+    // Simulation with adaptive step limiting
     this.simAccumulator += dt;
-    const maxSteps = getMaxSimSteps();
     let steps = 0;
-    while (this.simAccumulator >= this.simStep && steps < maxSteps) {
+    while (this.simAccumulator >= this.simStep && steps < this.adaptiveMaxSteps) {
       this.water.simulate(this.simStep);
       this.simAccumulator -= this.simStep;
       steps++;
+    }
+    // Prevent accumulator from growing unbounded when throttled
+    if (this.simAccumulator > this.simStep * 4) {
+      this.simAccumulator = this.simStep * 2;
     }
 
     // Update game mode

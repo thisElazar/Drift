@@ -44,7 +44,7 @@ export class WaterMesh {
     const colors = new Float32Array(vertexCount * 4);
     this.geometry.setAttribute('color', new THREE.BufferAttribute(colors, 4));
 
-    // Water material - shiny to catch wave highlights
+    // Water material - shiny with subtle inner glow
     this.material = new THREE.MeshStandardMaterial({
       color: 0x3399ff,
       transparent: true,
@@ -55,6 +55,8 @@ export class WaterMesh {
       vertexColors: true,
       depthWrite: false,
       envMapIntensity: 1.5,
+      emissive: 0x1166aa,      // Subtle blue glow
+      emissiveIntensity: 0.15, // Keep it subtle
     });
 
     this.material.onBeforeCompile = (shader) => {
@@ -108,6 +110,10 @@ export class WaterMesh {
     const terrainHeights = this.terrain.heightMap;
     const waterDepths = this.water.depth;
 
+    // Get active region for optimized processing
+    const { minX, maxX, minY, maxY } = this.water.activeRegion;
+    const regionPad = 2;  // Small padding for edge calculations
+
     let hasWater = false;
 
     // Water color palette (depth-based)
@@ -126,8 +132,22 @@ export class WaterMesh {
         const vertIdx = gridIdx * 3;
         const colorIdx = gridIdx * 4;
 
+        // Skip cells far outside active region (fast path)
+        const inActiveRegion = x >= minX - regionPad && x <= maxX + regionPad &&
+                               y >= minY - regionPad && y <= maxY + regionPad;
+
         const depth = waterDepths[gridIdx];
         const terrainHeight = terrainHeights[gridIdx];
+
+        // Fast path for cells outside active region
+        if (!inActiveRegion) {
+          this.baseHeights[gridIdx] = terrainHeight - 10;
+          colors[colorIdx] = 0;
+          colors[colorIdx + 1] = 0;
+          colors[colorIdx + 2] = 0;
+          colors[colorIdx + 3] = 0;
+          continue;
+        }
 
         if (depth > MIN_RENDER_DEPTH) {
           // Store base height for wave animation
@@ -233,11 +253,24 @@ export class WaterMesh {
     const waveDirectionX = this.water.waveDirectionX;
     const waveDirectionY = this.water.waveDirectionY;
 
+    // Get active region for optimized processing
+    const { minX, maxX, minY, maxY } = this.water.activeRegion;
+    const regionPad = 2;
+
     for (let y = 0; y < this.gridHeight; y++) {
       for (let x = 0; x < this.gridWidth; x++) {
         const gridIdx = y * this.gridWidth + x;
         const vertIdx = gridIdx * 3;
         const colorIdx = gridIdx * 4;
+
+        // Skip cells outside active region
+        const inActiveRegion = x >= minX - regionPad && x <= maxX + regionPad &&
+                               y >= minY - regionPad && y <= maxY + regionPad;
+        if (!inActiveRegion) {
+          positions[vertIdx + 1] = this.baseHeights[gridIdx];
+          continue;
+        }
+
         const depth = waterDepths[gridIdx];
 
         if (depth > MIN_RENDER_DEPTH) {

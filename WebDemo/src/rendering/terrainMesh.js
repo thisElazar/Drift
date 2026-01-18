@@ -81,25 +81,31 @@ export class TerrainMesh {
     // Normalize height to 0-1 range
     const t = (height - MIN_HEIGHT) / (MAX_HEIGHT - MIN_HEIGHT);
 
-    // Color stops for terrain
-    if (t < 0.3) {
-      // Deep water to shallow water (not used for terrain, but handles low points)
-      return this.lerpColor({ r: 0.1, g: 0.2, b: 0.4 }, { r: 0.2, g: 0.4, b: 0.3 }, t / 0.3);
+    // Color stops for terrain (saturated for contrast)
+    if (t < 0.1) {
+      // Dark bedrock (neutral gray)
+      return this.lerpColor({ r: 0.12, g: 0.11, b: 0.10 }, { r: 0.22, g: 0.21, b: 0.19 }, t / 0.1);
+    } else if (t < 0.15) {
+      // Gray to dark desaturated green (blue pulled out first)
+      return this.lerpColor({ r: 0.22, g: 0.21, b: 0.19 }, { r: 0.12, g: 0.22, b: 0.12 }, (t - 0.1) / 0.05);
+    } else if (t < 0.3) {
+      // Dark green to teal-green (blue introduced gradually)
+      return this.lerpColor({ r: 0.12, g: 0.22, b: 0.12 }, { r: 0.15, g: 0.35, b: 0.25 }, (t - 0.15) / 0.15);
     } else if (t < 0.35) {
-      // Beach/sand
-      return this.lerpColor({ r: 0.76, g: 0.7, b: 0.5 }, { r: 0.6, g: 0.55, b: 0.4 }, (t - 0.3) / 0.05);
+      // Beach/sand - warm golden
+      return this.lerpColor({ r: 0.82, g: 0.72, b: 0.45 }, { r: 0.65, g: 0.55, b: 0.35 }, (t - 0.3) / 0.05);
     } else if (t < 0.6) {
-      // Grass
-      return this.lerpColor({ r: 0.2, g: 0.5, b: 0.2 }, { r: 0.3, g: 0.45, b: 0.25 }, (t - 0.35) / 0.25);
+      // Grass - vibrant green
+      return this.lerpColor({ r: 0.18, g: 0.55, b: 0.15 }, { r: 0.25, g: 0.48, b: 0.18 }, (t - 0.35) / 0.25);
     } else if (t < 0.75) {
-      // Forest/darker green
-      return this.lerpColor({ r: 0.15, g: 0.35, b: 0.15 }, { r: 0.3, g: 0.3, b: 0.25 }, (t - 0.6) / 0.15);
+      // Forest/darker green - rich deep green
+      return this.lerpColor({ r: 0.1, g: 0.38, b: 0.1 }, { r: 0.22, g: 0.32, b: 0.18 }, (t - 0.6) / 0.15);
     } else if (t < 0.9) {
-      // Rock/mountain
-      return this.lerpColor({ r: 0.4, g: 0.38, b: 0.35 }, { r: 0.55, g: 0.53, b: 0.5 }, (t - 0.75) / 0.15);
+      // Rock/mountain - cooler gray with slight contrast
+      return this.lerpColor({ r: 0.35, g: 0.34, b: 0.32 }, { r: 0.52, g: 0.50, b: 0.48 }, (t - 0.75) / 0.15);
     } else {
-      // Snow caps
-      return this.lerpColor({ r: 0.7, g: 0.7, b: 0.72 }, { r: 0.95, g: 0.95, b: 0.97 }, (t - 0.9) / 0.1);
+      // Snow caps - bright white
+      return this.lerpColor({ r: 0.85, g: 0.85, b: 0.9 }, { r: 0.98, g: 0.98, b: 1.0 }, (t - 0.9) / 0.1);
     }
   }
 

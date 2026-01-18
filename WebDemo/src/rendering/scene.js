@@ -13,21 +13,24 @@ export class Scene {
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.1;
+    this.renderer.toneMappingExposure = 1.2;
     container.appendChild(this.renderer.domElement);
 
     // Create scene
     this.scene = new THREE.Scene();
 
+    // Set fallback background color (matches sky bottom) in case sphere has gaps
+    this.scene.background = new THREE.Color(0x88aabc);
+
     // Gradient sky background
     this.setupSkyBackground();
 
-    // Atmospheric fog matching sky
-    this.scene.fog = new THREE.FogExp2(0x88aabb, 0.00035);
+    // Atmospheric fog matching sky (very subtle)
+    this.scene.fog = new THREE.FogExp2(0xaaccdd, 0.00008);
 
-    // Create camera
+    // Create camera (far plane must exceed sky sphere radius + max camera distance)
     const aspect = window.innerWidth / window.innerHeight;
-    this.camera = new THREE.PerspectiveCamera(55, aspect, 1, this.terrainWidth * 5);
+    this.camera = new THREE.PerspectiveCamera(55, aspect, 1, this.terrainWidth * 12);
     this.camera.position.set(
       this.terrainWidth * 0.5,
       MAX_HEIGHT * 2.5,
@@ -59,13 +62,13 @@ export class Scene {
   }
 
   setupSkyBackground() {
-    // Create gradient sky using a large sphere
-    const skyGeo = new THREE.SphereGeometry(this.terrainWidth * 4, 32, 32);
+    // Create gradient sky using a large sphere (bigger than camera far plane)
+    const skyGeo = new THREE.SphereGeometry(this.terrainWidth * 8, 32, 32);
     const skyMat = new THREE.ShaderMaterial({
       uniforms: {
         topColor: { value: new THREE.Color(0x66bbff) },    // Bright sky blue at top
         middleColor: { value: new THREE.Color(0xaaccee) }, // Lighter blue at horizon
-        bottomColor: { value: new THREE.Color(0x667788) }, // Lighter blue-gray below
+        bottomColor: { value: new THREE.Color(0x88aabc) }, // Blue-gray below
         offset: { value: 20 },
         exponent: { value: 0.6 }
       },
@@ -101,7 +104,7 @@ export class Scene {
 
   setupLighting() {
     // Hemisphere light - sky blue from above, warm ground bounce from below
-    const hemi = new THREE.HemisphereLight(0x87ceeb, 0x908060, 1.0);
+    const hemi = new THREE.HemisphereLight(0x87ceeb, 0x806040, 0.8);
     this.scene.add(hemi);
 
     // Main sun light - warm directional
@@ -156,8 +159,8 @@ export class Scene {
     fill.position.set(-this.terrainWidth * 0.3, MAX_HEIGHT * 2, -this.terrainHeight * 0.4);
     this.scene.add(fill);
 
-    // Subtle ambient to lift shadows
-    const ambient = new THREE.AmbientLight(0x606070, 0.4);
+    // Ambient light to lift shadows (keep low for contrast)
+    const ambient = new THREE.AmbientLight(0x404050, 0.3);
     this.scene.add(ambient);
   }
 

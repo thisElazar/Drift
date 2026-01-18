@@ -400,7 +400,7 @@ export class MobileControls {
         right.crossVectors(up, right).normalize();
 
         const panSpeed = 2.5;
-        const panX = right.clone().multiplyScalar(-panDeltaX * panSpeed);
+        const panX = right.clone().multiplyScalar(panDeltaX * panSpeed);
         const panY = up.clone().multiplyScalar(panDeltaY * panSpeed);
 
         this.camera.position.add(panX).add(panY);
