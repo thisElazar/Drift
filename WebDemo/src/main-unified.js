@@ -645,13 +645,13 @@ class UnifiedApp {
     submitBtn.addEventListener('touchend', handleSubmit);
   }
 
-  submitHighScore(initials) {
+  async submitHighScore(initials) {
     const scoreManager = new ScoreManager();
     const modeType = this.gameModeManager.lastPlayedMode;
     const score = this.pendingHighScore;
 
     if (modeType && score > 0) {
-      scoreManager.addHighScore(modeType, score, initials);
+      await scoreManager.addHighScore(modeType, score, initials);
       this.updateHighScoreDisplay();
       this.showLeaderboard(modeType, score);
     }
@@ -668,10 +668,68 @@ class UnifiedApp {
     if (!hud) return;
 
     const scoreManager = new ScoreManager();
-    const leaderboard = scoreManager.getLeaderboard(modeType);
-    const listEl = hud.querySelector('.leaderboard-list');
+    const localLeaderboard = scoreManager.getLeaderboard(modeType);
+    const globalListEl = hud.querySelector('.leaderboard-list[data-tab-content="global"]');
+    const localListEl = hud.querySelector('.leaderboard-list[data-tab-content="local"]');
+    const statusEl = hud.querySelector('.leaderboard-status');
+    const tabs = hud.querySelectorAll('.leaderboard-tab');
 
-    listEl.innerHTML = leaderboard.map((entry, index) => {
+    // Render local leaderboard
+    localListEl.innerHTML = this.renderLeaderboardList(localLeaderboard, highlightScore);
+
+    // Set up tab switching
+    tabs.forEach(tab => {
+      tab.onclick = () => {
+        tabs.forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        const tabName = tab.dataset.tab;
+        globalListEl.style.display = tabName === 'global' ? '' : 'none';
+        localListEl.style.display = tabName === 'local' ? '' : 'none';
+      };
+    });
+
+    // Handle global leaderboard
+    if (scoreManager.isGlobalLeaderboardAvailable()) {
+      globalListEl.innerHTML = '<li style="color: #666; text-align: center;">Loading...</li>';
+      statusEl.textContent = '';
+
+      // Fetch global scores
+      scoreManager.fetchGlobalLeaderboard(modeType).then(globalLeaderboard => {
+        if (globalLeaderboard.length > 0) {
+          globalListEl.innerHTML = this.renderLeaderboardList(globalLeaderboard, highlightScore);
+        } else {
+          globalListEl.innerHTML = '<li style="color: #666; text-align: center;">No scores yet - be the first!</li>';
+        }
+      }).catch(() => {
+        globalListEl.innerHTML = '<li style="color: #666; text-align: center;">Could not load global scores</li>';
+      });
+
+      // Default to global tab
+      tabs[0].classList.add('active');
+      tabs[1].classList.remove('active');
+      globalListEl.style.display = '';
+      localListEl.style.display = 'none';
+    } else {
+      // Firebase not configured - show local only
+      globalListEl.innerHTML = '<li style="color: #666; text-align: center;">Global scores unavailable</li>';
+      statusEl.textContent = 'Local scores only';
+
+      // Default to local tab when global unavailable
+      tabs[0].classList.remove('active');
+      tabs[1].classList.add('active');
+      globalListEl.style.display = 'none';
+      localListEl.style.display = '';
+    }
+
+    hud.querySelector('.leaderboard').classList.add('visible');
+  }
+
+  renderLeaderboardList(leaderboard, highlightScore = null) {
+    if (leaderboard.length === 0) {
+      return '<li style="color: #666; text-align: center;">No scores yet</li>';
+    }
+
+    return leaderboard.map((entry, index) => {
       const isHighlight = entry.score === highlightScore;
       return `
         <li class="${isHighlight ? 'highlight' : ''}">
@@ -681,8 +739,6 @@ class UnifiedApp {
         </li>
       `;
     }).join('');
-
-    hud.querySelector('.leaderboard').classList.add('visible');
   }
 
   updateHighScoreDisplay() {

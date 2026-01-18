@@ -4,12 +4,19 @@
  * Features:
  * - Point accumulation
  * - Combo multiplier with decay
- * - High score persistence (localStorage)
+ * - High score persistence (localStorage + Firebase)
  * - Per-mode high scores
+ * - Global leaderboards via Firebase
+ * - Client-side initials filtering
  */
+
+import { db, isConfigured } from '../firebase.js';
+import { collection, addDoc, query, orderBy, limit, getDocs } from 'firebase/firestore';
+import { sanitizeInitials, isAllowedInitials } from './initialsFilter.js';
 
 const STORAGE_KEY = 'drift-high-scores-v2';
 const MAX_LEADERBOARD_ENTRIES = 5;
+const GLOBAL_LEADERBOARD_SIZE = 10;
 
 export class ScoreManager {
   constructor() {
@@ -22,6 +29,10 @@ export class ScoreManager {
     // Load high scores from localStorage
     // Structure: { modeType: [{ initials: "AAA", score: 1000 }, ...] }
     this.highScores = this.loadHighScores();
+
+    // Global leaderboard cache
+    this.globalLeaderboards = {};
+    this.globalLeaderboardsLoading = {};
 
     // Callbacks
     this.onScoreChange = null;
@@ -167,26 +178,31 @@ export class ScoreManager {
   }
 
   /**
+   * Validate initials before submission
+   */
+  validateInitials(initials) {
+    return isAllowedInitials(initials);
+  }
+
+  /**
    * Add a score to the leaderboard with initials
    */
-  addHighScore(modeType, score, initials) {
+  async addHighScore(modeType, score, initials) {
+    // Sanitize initials (filters inappropriate content)
+    const cleanInitials = await sanitizeInitials(initials);
+
     if (!this.highScores[modeType]) {
       this.highScores[modeType] = [];
     }
 
-    // Sanitize initials (3 uppercase letters)
-    const cleanInitials = (initials || 'AAA')
-      .toUpperCase()
-      .replace(/[^A-Z]/g, '')
-      .slice(0, 3)
-      .padEnd(3, 'A');
-
-    // Add new entry
-    this.highScores[modeType].push({
+    const entry = {
       initials: cleanInitials,
       score: score,
       date: Date.now(),
-    });
+    };
+
+    // Add new entry
+    this.highScores[modeType].push(entry);
 
     // Sort by score descending
     this.highScores[modeType].sort((a, b) => b.score - a.score);
@@ -196,6 +212,9 @@ export class ScoreManager {
 
     this.saveHighScores();
 
+    // Submit to Firebase (async, don't block)
+    this.submitToGlobalLeaderboard(modeType, score, cleanInitials);
+
     if (this.onNewHighScore) {
       this.onNewHighScore(modeType, score, cleanInitials);
     }
@@ -204,7 +223,87 @@ export class ScoreManager {
   }
 
   /**
-   * Get leaderboard for a mode
+   * Submit score to Firebase global leaderboard
+   */
+  async submitToGlobalLeaderboard(modeType, score, initials) {
+    if (!isConfigured || !db) {
+      console.log('Firebase not configured - score saved locally only');
+      return false;
+    }
+
+    try {
+      const scoresRef = collection(db, 'leaderboards', modeType, 'scores');
+      await addDoc(scoresRef, {
+        initials: initials,
+        score: score,
+        date: Date.now(),
+      });
+      console.log('Score submitted to global leaderboard');
+
+      // Refresh global leaderboard cache
+      this.fetchGlobalLeaderboard(modeType);
+      return true;
+    } catch (error) {
+      console.warn('Failed to submit score to Firebase:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Fetch global leaderboard from Firebase
+   */
+  async fetchGlobalLeaderboard(modeType) {
+    if (!isConfigured || !db) {
+      return [];
+    }
+
+    // Prevent duplicate fetches
+    if (this.globalLeaderboardsLoading[modeType]) {
+      return this.globalLeaderboards[modeType] || [];
+    }
+
+    this.globalLeaderboardsLoading[modeType] = true;
+
+    try {
+      const scoresRef = collection(db, 'leaderboards', modeType, 'scores');
+      const q = query(scoresRef, orderBy('score', 'desc'), limit(GLOBAL_LEADERBOARD_SIZE));
+      const snapshot = await getDocs(q);
+
+      const scores = [];
+      snapshot.forEach((doc) => {
+        scores.push(doc.data());
+      });
+
+      this.globalLeaderboards[modeType] = scores;
+      return scores;
+    } catch (error) {
+      console.warn('Failed to fetch global leaderboard:', error);
+      return [];
+    } finally {
+      this.globalLeaderboardsLoading[modeType] = false;
+    }
+  }
+
+  /**
+   * Get global leaderboard (cached, triggers fetch if needed)
+   */
+  getGlobalLeaderboard(modeType) {
+    // Trigger fetch in background if not cached
+    if (!this.globalLeaderboards[modeType]) {
+      this.fetchGlobalLeaderboard(modeType);
+    }
+    return this.globalLeaderboards[modeType] || [];
+  }
+
+  /**
+   * Check if Firebase is available
+   */
+  isGlobalLeaderboardAvailable() {
+    return isConfigured && db !== null;
+  }
+
+  /**
+   * Get leaderboard for a mode (local scores)
    */
   getLeaderboard(modeType) {
     return this.highScores[modeType] || [];
