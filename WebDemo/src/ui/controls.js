@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { GRID_WIDTH, GRID_HEIGHT, WORLD_SCALE } from '../simulation/constants.js';
+import { getWorldScale } from '../simulation/constants.js';
 
 export const Tool = {
   NONE: 'none',
@@ -75,7 +75,7 @@ export class TerrainControls {
   }
 
   updateBrushCursor(x, y, z) {
-    const radius = this.terrain.brushRadius * WORLD_SCALE;
+    const radius = this.terrain.brushRadius * getWorldScale();
     this.brushCursor.scale.set(radius, radius, radius);
     this.brushCursor.position.set(x, y + 1, z);
     this.brushCursor.visible = true;
@@ -303,8 +303,9 @@ export class TerrainControls {
       const point = intersects[0].point;
 
       // Convert world position to grid coordinates
-      const gridX = (point.x / WORLD_SCALE) + GRID_WIDTH / 2;
-      const gridY = (point.z / WORLD_SCALE) + GRID_HEIGHT / 2;
+      const worldScale = getWorldScale();
+      const gridX = (point.x / worldScale) + this.terrain.width / 2;
+      const gridY = (point.z / worldScale) + this.terrain.height / 2;
 
       switch (this.currentTool) {
         case Tool.RAISE:

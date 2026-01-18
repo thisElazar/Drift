@@ -72,6 +72,14 @@ export class SpringMarkers {
     }
   }
 
+  /**
+   * Refresh worldScale when quality changes
+   */
+  refreshScale() {
+    this.worldScale = getWorldScale();
+    this.lastSpringCount = -1;  // Force rebuild on next update
+  }
+
   get object() {
     return this.group;
   }

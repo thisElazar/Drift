@@ -437,4 +437,76 @@ export class Water {
 
     console.log(`Generated ${this.springs.length} springs at peaks`);
   }
+
+  /**
+   * Get a snapshot of current water state for resampling
+   */
+  getSnapshot() {
+    return {
+      width: this.width,
+      height: this.height,
+      depth: new Float32Array(this.depth),
+      waveEnergy: new Float32Array(this.waveEnergy),
+      springs: this.springs.map(s => ({ ...s })),
+    };
+  }
+
+  /**
+   * Resample water from a snapshot with different dimensions
+   */
+  loadFromSnapshot(snapshot) {
+    const oldWidth = snapshot.width;
+    const oldHeight = snapshot.height;
+    const oldDepth = snapshot.depth;
+    const oldWaveEnergy = snapshot.waveEnergy;
+
+    // Resample depth using bilinear interpolation
+    for (let y = 0; y < this.height; y++) {
+      for (let x = 0; x < this.width; x++) {
+        const oldX = (x / (this.width - 1)) * (oldWidth - 1);
+        const oldY = (y / (this.height - 1)) * (oldHeight - 1);
+
+        const x0 = Math.floor(oldX);
+        const y0 = Math.floor(oldY);
+        const x1 = Math.min(x0 + 1, oldWidth - 1);
+        const y1 = Math.min(y0 + 1, oldHeight - 1);
+
+        const fx = oldX - x0;
+        const fy = oldY - y0;
+
+        // Depth
+        const d00 = oldDepth[y0 * oldWidth + x0];
+        const d10 = oldDepth[y0 * oldWidth + x1];
+        const d01 = oldDepth[y1 * oldWidth + x0];
+        const d11 = oldDepth[y1 * oldWidth + x1];
+
+        const d0 = d00 * (1 - fx) + d10 * fx;
+        const d1 = d01 * (1 - fx) + d11 * fx;
+        const depth = d0 * (1 - fy) + d1 * fy;
+
+        const idx = this.index(x, y);
+        this.depth[idx] = depth;
+        this.depthNext[idx] = depth;
+
+        // Wave energy (same interpolation)
+        const w00 = oldWaveEnergy[y0 * oldWidth + x0];
+        const w10 = oldWaveEnergy[y0 * oldWidth + x1];
+        const w01 = oldWaveEnergy[y1 * oldWidth + x0];
+        const w11 = oldWaveEnergy[y1 * oldWidth + x1];
+
+        const w0 = w00 * (1 - fx) + w10 * fx;
+        const w1 = w01 * (1 - fx) + w11 * fx;
+        this.waveEnergy[idx] = w0 * (1 - fy) + w1 * fy;
+      }
+    }
+
+    // Scale spring positions to new grid
+    this.springs = snapshot.springs.map(s => ({
+      x: Math.floor((s.x / (oldWidth - 1)) * (this.width - 1)),
+      y: Math.floor((s.y / (oldHeight - 1)) * (this.height - 1)),
+      flowRate: s.flowRate,
+    }));
+
+    this.dirty = true;
+  }
 }

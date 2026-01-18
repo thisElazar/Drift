@@ -148,6 +148,374 @@
     #quality-dropdown .quality-btn.active {
       background: rgba(136,204,255,0.4);
     }
+    /* Game Mode UI */
+    #mode-dropdown {
+      position: absolute;
+      top: 100%;
+      left: 0;
+      margin-top: 4px;
+      background: rgba(0,0,0,0.9);
+      border-radius: 6px;
+      padding: 4px;
+      display: none;
+      min-width: 160px;
+      z-index: 100;
+    }
+    #mode-dropdown.visible {
+      display: block;
+    }
+    #mode-dropdown .mode-btn {
+      display: block;
+      width: 100%;
+      background: rgba(255,255,255,0.1);
+      border: none;
+      color: #fff;
+      padding: 8px 10px;
+      margin: 2px 0;
+      border-radius: 4px;
+      font-size: 11px;
+      cursor: pointer;
+      text-align: left;
+    }
+    #mode-dropdown .mode-btn:hover {
+      background: rgba(255,255,255,0.2);
+    }
+    #mode-dropdown .mode-btn .mode-name {
+      font-weight: bold;
+      display: block;
+    }
+    #mode-dropdown .mode-btn .mode-desc {
+      font-size: 10px;
+      opacity: 0.7;
+      margin-top: 2px;
+    }
+    #mode-dropdown .mode-btn .high-score {
+      font-size: 10px;
+      color: #ffcc44;
+      margin-top: 2px;
+    }
+    /* Arcade HUD */
+    #arcade-hud {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      display: none;
+      text-align: center;
+      color: #fff;
+      pointer-events: none;
+    }
+    #arcade-hud.visible {
+      display: block;
+    }
+    #arcade-hud .timer {
+      font-size: 28px;
+      font-weight: bold;
+      color: #88ccff;
+      margin-bottom: 8px;
+    }
+    #arcade-hud .timer.urgent {
+      color: #ff6666;
+      animation: pulse 0.5s infinite alternate;
+    }
+    #arcade-hud .score {
+      font-size: 48px;
+      font-weight: bold;
+      text-shadow: 0 2px 10px rgba(0,0,0,0.5);
+    }
+    #arcade-hud .combo {
+      font-size: 24px;
+      color: #ffcc44;
+      margin-top: 8px;
+    }
+    #arcade-hud .combo-bar {
+      width: 200px;
+      height: 4px;
+      background: rgba(255,255,255,0.2);
+      margin: 8px auto;
+      border-radius: 2px;
+    }
+    #arcade-hud .combo-bar-fill {
+      height: 100%;
+      background: #ffcc44;
+      border-radius: 2px;
+      transition: width 0.1s;
+    }
+    #arcade-hud .lives {
+      font-size: 24px;
+      margin-top: 12px;
+      display: flex;
+      justify-content: center;
+      gap: 4px;
+    }
+    #arcade-hud .heart {
+      display: inline-block;
+      position: relative;
+      width: 24px;
+      text-align: center;
+    }
+    #arcade-hud .heart.full {
+      color: #ff4466;
+    }
+    #arcade-hud .heart.three-quarter {
+      background: linear-gradient(to right, #ff4466 75%, #664444 75%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    #arcade-hud .heart.half {
+      background: linear-gradient(to right, #ff4466 50%, #664444 50%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    #arcade-hud .heart.quarter {
+      background: linear-gradient(to right, #ff4466 25%, #664444 25%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    #arcade-hud .heart.empty {
+      color: #664444;
+    }
+    #arcade-hud .game-over {
+      font-size: 36px;
+      color: #ff6666;
+      margin-top: 20px;
+    }
+    #arcade-hud .final-score {
+      font-size: 24px;
+      margin-top: 10px;
+    }
+    #arcade-hud .new-high-score {
+      font-size: 18px;
+      color: #ffcc44;
+      animation: pulse 0.5s infinite alternate;
+    }
+    @keyframes pulse {
+      from { opacity: 0.7; }
+      to { opacity: 1; }
+    }
+    #arcade-hud .game-buttons {
+      display: flex;
+      justify-content: center;
+      gap: 12px;
+      margin-top: 20px;
+    }
+    #arcade-hud .game-buttons button {
+      padding: 10px 24px;
+      font-size: 14px;
+      color: #fff;
+      border-radius: 6px;
+      cursor: pointer;
+      pointer-events: auto;
+    }
+    #arcade-hud .restart-btn {
+      background: rgba(136,204,255,0.4);
+      border: 1px solid #88ccff;
+    }
+    #arcade-hud .restart-btn:hover {
+      background: rgba(136,204,255,0.6);
+    }
+    #arcade-hud .quit-btn {
+      background: rgba(255,100,100,0.3);
+      border: 1px solid #ff6666;
+    }
+    #arcade-hud .quit-btn:hover {
+      background: rgba(255,100,100,0.5);
+    }
+    /* High Score Entry */
+    #arcade-hud .highscore-entry {
+      margin-top: 16px;
+      display: none;
+    }
+    #arcade-hud .highscore-entry.visible {
+      display: block;
+    }
+    #arcade-hud .highscore-entry .rank-text {
+      font-size: 16px;
+      color: #ffcc44;
+      margin-bottom: 8px;
+    }
+    #arcade-hud .initials-input {
+      display: flex;
+      justify-content: center;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    #arcade-hud .initials-input input {
+      width: 40px;
+      height: 50px;
+      font-size: 28px;
+      text-align: center;
+      text-transform: uppercase;
+      background: rgba(0,0,0,0.5);
+      border: 2px solid #ffcc44;
+      color: #fff;
+      border-radius: 6px;
+      outline: none;
+      pointer-events: auto;
+    }
+    #arcade-hud .initials-input input:focus {
+      border-color: #fff;
+      background: rgba(255,204,68,0.2);
+    }
+    #arcade-hud .submit-score-btn {
+      padding: 8px 20px;
+      font-size: 14px;
+      background: rgba(255,204,68,0.4);
+      border: 1px solid #ffcc44;
+      color: #fff;
+      border-radius: 6px;
+      cursor: pointer;
+      pointer-events: auto;
+    }
+    #arcade-hud .submit-score-btn:hover {
+      background: rgba(255,204,68,0.6);
+    }
+    /* Leaderboard */
+    #arcade-hud .leaderboard {
+      margin-top: 16px;
+      display: none;
+    }
+    #arcade-hud .leaderboard.visible {
+      display: block;
+    }
+    #arcade-hud .leaderboard h3 {
+      font-size: 16px;
+      color: #88ccff;
+      margin-bottom: 8px;
+    }
+    #arcade-hud .leaderboard-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+    #arcade-hud .leaderboard-list li {
+      display: flex;
+      justify-content: space-between;
+      padding: 4px 8px;
+      font-size: 14px;
+      font-family: monospace;
+    }
+    #arcade-hud .leaderboard-list li.highlight {
+      background: rgba(255,204,68,0.2);
+      border-radius: 4px;
+    }
+    #arcade-hud .leaderboard-list .rank {
+      color: #888;
+      width: 24px;
+    }
+    #arcade-hud .leaderboard-list .initials {
+      color: #ffcc44;
+      width: 50px;
+    }
+    #arcade-hud .leaderboard-list .score {
+      color: #fff;
+      text-align: right;
+      flex: 1;
+    }
+    /* Pre-game Modal */
+    #pregame-modal {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      background: rgba(0,0,0,0.85);
+      display: none;
+      justify-content: center;
+      align-items: center;
+      z-index: 1000;
+    }
+    #pregame-modal.visible {
+      display: flex;
+    }
+    #pregame-modal .modal-content {
+      background: linear-gradient(135deg, rgba(30,40,60,0.95) 0%, rgba(20,25,40,0.95) 100%);
+      border: 2px solid rgba(136,204,255,0.4);
+      border-radius: 16px;
+      padding: 32px 48px;
+      max-width: 500px;
+      text-align: center;
+      color: #fff;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.5), 0 0 40px rgba(136,204,255,0.1);
+    }
+    #pregame-modal .mode-icon {
+      font-size: 48px;
+      margin-bottom: 16px;
+    }
+    #pregame-modal .mode-title {
+      font-size: 32px;
+      font-weight: bold;
+      color: #88ccff;
+      margin-bottom: 8px;
+    }
+    #pregame-modal .mode-subtitle {
+      font-size: 14px;
+      color: #888;
+      margin-bottom: 24px;
+    }
+    #pregame-modal .mode-description {
+      font-size: 16px;
+      line-height: 1.6;
+      margin-bottom: 24px;
+      color: #ccc;
+    }
+    #pregame-modal .mode-objectives {
+      text-align: left;
+      background: rgba(0,0,0,0.3);
+      border-radius: 8px;
+      padding: 16px 20px;
+      margin-bottom: 28px;
+    }
+    #pregame-modal .mode-objectives h4 {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: #ffcc44;
+      margin-bottom: 12px;
+    }
+    #pregame-modal .mode-objectives ul {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+    #pregame-modal .mode-objectives li {
+      font-size: 14px;
+      padding: 6px 0;
+      padding-left: 24px;
+      position: relative;
+      color: #aaa;
+    }
+    #pregame-modal .mode-objectives li::before {
+      content: '▸';
+      position: absolute;
+      left: 0;
+      color: #88ccff;
+    }
+    #pregame-modal .start-btn {
+      background: linear-gradient(135deg, #44aa88 0%, #338866 100%);
+      border: none;
+      color: #fff;
+      font-size: 20px;
+      font-weight: bold;
+      padding: 16px 64px;
+      border-radius: 8px;
+      cursor: pointer;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      transition: all 0.2s;
+      box-shadow: 0 4px 20px rgba(68,170,136,0.4);
+    }
+    #pregame-modal .start-btn:hover {
+      background: linear-gradient(135deg, #55bb99 0%, #44aa77 100%);
+      transform: translateY(-2px);
+      box-shadow: 0 6px 24px rgba(68,170,136,0.5);
+    }
+    #pregame-modal .start-btn:active {
+      transform: translateY(0);
+    }
     #instructions-panel {
       top: 10px;
       right: 10px;
@@ -200,6 +568,28 @@
       <button class="preset-btn" data-preset="plains">Plains</button>
     </div>
     <div class="quality-section" style="position: relative;">
+      <button class="quality-btn-main" id="btn-mode">Sandbox</button>
+      <div id="mode-dropdown">
+        <button class="mode-btn active" data-mode="sandbox">
+          <span class="mode-name">Sandbox</span>
+          <span class="mode-desc">Free play, no objectives</span>
+        </button>
+        <button class="mode-btn" data-mode="flowRush">
+          <span class="mode-name">Flow Rush</span>
+          <span class="mode-desc">Guide water to targets</span>
+          <span class="high-score" id="highscore-flowRush"></span>
+        </button>
+        <button class="mode-btn" data-mode="cascade">
+          <span class="mode-name">Cascade</span>
+          <span class="mode-desc">Chain water through rings</span>
+          <span class="high-score" id="highscore-cascade"></span>
+        </button>
+        <button class="mode-btn" data-mode="floodDefense">
+          <span class="mode-name">Flood Defense</span>
+          <span class="mode-desc">Protect zones from water</span>
+          <span class="high-score" id="highscore-floodDefense"></span>
+        </button>
+      </div>
       <button class="quality-btn-main" id="btn-quality">High</button>
       <div id="quality-dropdown">
         <button class="quality-btn" data-quality="low">Low (128px)</button>
@@ -233,6 +623,56 @@
       <span class="key">R</span> Reset terrain<br>
       <span class="key">C</span> Clear water<br>
       <span class="key">H</span> Reset view
+    </div>
+  </div>
+
+  <div id="arcade-hud">
+    <div class="timer">2:00</div>
+    <div class="score">0</div>
+    <div class="combo">x1</div>
+    <div class="combo-bar"><div class="combo-bar-fill" style="width: 0%"></div></div>
+    <div class="lives"></div>
+    <div class="game-over" style="display: none;">GAME OVER</div>
+    <div class="final-score" style="display: none;"></div>
+    <div class="new-high-score" style="display: none;">NEW HIGH SCORE!</div>
+    <div class="highscore-entry">
+      <div class="rank-text">Enter your initials:</div>
+      <div class="initials-input">
+        <input type="text" maxlength="1" class="initial" data-index="0" autocomplete="off">
+        <input type="text" maxlength="1" class="initial" data-index="1" autocomplete="off">
+        <input type="text" maxlength="1" class="initial" data-index="2" autocomplete="off">
+      </div>
+      <button class="submit-score-btn">Submit</button>
+    </div>
+    <div class="leaderboard">
+      <h3>Top Scores</h3>
+      <ul class="leaderboard-list"></ul>
+    </div>
+    <div class="game-buttons" style="display: none;">
+      <button class="restart-btn">Play Again</button>
+      <button class="quit-btn">Quit Game</button>
+    </div>
+  </div>
+
+  <div id="pregame-modal">
+    <div class="modal-content">
+      <div class="mode-icon">🌊</div>
+      <div class="mode-title">Flow Rush</div>
+      <div class="mode-subtitle">2 minutes to score big</div>
+      <p class="mode-description">
+        Guide water to glowing targets scattered across the terrain.
+        Build channels and redirect springs to maximize your score!
+      </p>
+      <div class="mode-objectives">
+        <h4>How to Play</h4>
+        <ul>
+          <li>Water touching targets earns points</li>
+          <li>Chain hits to build your combo multiplier</li>
+          <li>Use terrain tools to guide water flow</li>
+          <li>Find all targets before time runs out</li>
+        </ul>
+      </div>
+      <button class="start-btn">Start</button>
     </div>
   </div>
 

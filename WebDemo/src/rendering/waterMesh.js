@@ -367,6 +367,44 @@ export class WaterMesh {
     }
   }
 
+  /**
+   * Rebuild geometry when grid size changes
+   */
+  rebuild() {
+    // Update dimensions
+    this.gridWidth = this.water.width;
+    this.gridHeight = this.water.height;
+    this.worldScale = getWorldScale();
+
+    // Dispose old geometry
+    this.geometry.dispose();
+
+    // Create new geometry with new dimensions
+    this.geometry = new THREE.PlaneGeometry(
+      this.gridWidth * this.worldScale,
+      this.gridHeight * this.worldScale,
+      this.gridWidth - 1,
+      this.gridHeight - 1
+    );
+
+    this.geometry.rotateX(-Math.PI / 2);
+
+    // Recreate internal arrays
+    const vertexCount = this.gridWidth * this.gridHeight;
+    this.baseHeights = new Float32Array(vertexCount);
+    this.smoothedWaveHeights = new Float32Array(vertexCount);
+
+    // Add vertex colors
+    const colors = new Float32Array(vertexCount * 4);
+    this.geometry.setAttribute('color', new THREE.BufferAttribute(colors, 4));
+
+    // Update mesh geometry reference
+    this.mesh.geometry = this.geometry;
+
+    // Update geometry with water data
+    this.updateGeometry();
+  }
+
   get object() {
     return this.mesh;
   }

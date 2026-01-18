@@ -188,4 +188,64 @@ export class Terrain {
 
     return h0 * (1 - fy) + h1 * fy;
   }
+
+  /**
+   * Get a snapshot of current terrain state for resampling
+   */
+  getSnapshot() {
+    return {
+      width: this.width,
+      height: this.height,
+      heightMap: new Float32Array(this.heightMap),
+      preset: this.currentPreset,
+      brushRadius: this.brushRadius,
+      brushStrength: this.brushStrength,
+    };
+  }
+
+  /**
+   * Resample terrain from a snapshot with different dimensions
+   * Uses bilinear interpolation for smooth scaling
+   */
+  loadFromSnapshot(snapshot) {
+    const oldWidth = snapshot.width;
+    const oldHeight = snapshot.height;
+    const oldMap = snapshot.heightMap;
+
+    // Restore settings
+    this.currentPreset = snapshot.preset;
+    this.brushRadius = snapshot.brushRadius;
+    this.brushStrength = snapshot.brushStrength;
+
+    // Resample heightmap using bilinear interpolation
+    for (let y = 0; y < this.height; y++) {
+      for (let x = 0; x < this.width; x++) {
+        // Map new coordinates to old coordinate space
+        const oldX = (x / (this.width - 1)) * (oldWidth - 1);
+        const oldY = (y / (this.height - 1)) * (oldHeight - 1);
+
+        // Bilinear interpolation from old heightmap
+        const x0 = Math.floor(oldX);
+        const y0 = Math.floor(oldY);
+        const x1 = Math.min(x0 + 1, oldWidth - 1);
+        const y1 = Math.min(y0 + 1, oldHeight - 1);
+
+        const fx = oldX - x0;
+        const fy = oldY - y0;
+
+        const h00 = oldMap[y0 * oldWidth + x0];
+        const h10 = oldMap[y0 * oldWidth + x1];
+        const h01 = oldMap[y1 * oldWidth + x0];
+        const h11 = oldMap[y1 * oldWidth + x1];
+
+        const h0 = h00 * (1 - fx) + h10 * fx;
+        const h1 = h01 * (1 - fx) + h11 * fx;
+        const height = h0 * (1 - fy) + h1 * fy;
+
+        this.heightMap[this.index(x, y)] = height;
+      }
+    }
+
+    this.dirty = true;
+  }
 }

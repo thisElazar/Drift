@@ -118,6 +118,33 @@ export class TerrainMesh {
     }
   }
 
+  /**
+   * Rebuild geometry when grid size changes
+   */
+  rebuild() {
+    const worldScale = getWorldScale();
+
+    // Dispose old geometry
+    this.geometry.dispose();
+
+    // Create new geometry with new dimensions
+    this.geometry = new THREE.PlaneGeometry(
+      this.terrain.width * worldScale,
+      this.terrain.height * worldScale,
+      this.terrain.width - 1,
+      this.terrain.height - 1
+    );
+
+    // Rotate to be horizontal (XZ plane)
+    this.geometry.rotateX(-Math.PI / 2);
+
+    // Update mesh geometry reference
+    this.mesh.geometry = this.geometry;
+
+    // Update geometry with terrain data
+    this.updateGeometry();
+  }
+
   // Get the Three.js object to add to scene
   get object() {
     return this.mesh;
