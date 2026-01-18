@@ -1,7 +1,7 @@
 import {
-  GRID_WIDTH,
-  GRID_HEIGHT,
-  GRID_SIZE,
+  getGridWidth,
+  getGridHeight,
+  getGridSize,
   WATER_FLOW_RATE,
   WATER_MIN_DEPTH,
   EVAPORATION_RATE,
@@ -24,22 +24,23 @@ const NEIGHBORS = [
 export class Water {
   constructor(terrain) {
     this.terrain = terrain;
-    this.width = GRID_WIDTH;
-    this.height = GRID_HEIGHT;
+    this.width = getGridWidth();
+    this.height = getGridHeight();
+    const gridSize = getGridSize();
 
     // Water state arrays
-    this.depth = new Float32Array(GRID_SIZE);
-    this.depthNext = new Float32Array(GRID_SIZE); // Double buffer
-    this.velocityX = new Float32Array(GRID_SIZE);
-    this.velocityY = new Float32Array(GRID_SIZE);
+    this.depth = new Float32Array(gridSize);
+    this.depthNext = new Float32Array(gridSize); // Double buffer
+    this.velocityX = new Float32Array(gridSize);
+    this.velocityY = new Float32Array(gridSize);
 
     // PHASE 1.5: Wave energy system for pressure-driven waves
-    this.previousDepth = new Float32Array(GRID_SIZE);      // For displacement detection
-    this.previousTerrain = new Float32Array(GRID_SIZE);    // For terrain change detection
-    this.waveEnergy = new Float32Array(GRID_SIZE);         // Wave energy at each cell
-    this.waveDirectionX = new Float32Array(GRID_SIZE);     // Wave propagation direction
-    this.waveDirectionY = new Float32Array(GRID_SIZE);
-    this.waveEnergyNext = new Float32Array(GRID_SIZE);     // Double buffer for wave energy
+    this.previousDepth = new Float32Array(gridSize);      // For displacement detection
+    this.previousTerrain = new Float32Array(gridSize);    // For terrain change detection
+    this.waveEnergy = new Float32Array(gridSize);         // Wave energy at each cell
+    this.waveDirectionX = new Float32Array(gridSize);     // Wave propagation direction
+    this.waveDirectionY = new Float32Array(gridSize);
+    this.waveEnergyNext = new Float32Array(gridSize);     // Double buffer for wave energy
 
     // Springs: array of {x, y, flowRate}
     this.springs = [];
@@ -333,14 +334,14 @@ export class Water {
     }
 
     // Apply decay to wave energy and direction
-    for (let i = 0; i < GRID_SIZE; i++) {
+    for (let i = 0; i < this.width * this.height; i++) {
       this.waveEnergyNext[i] *= this.waveDecay;
       this.waveDirectionX[i] *= 0.92;
       this.waveDirectionY[i] *= 0.92;
     }
 
     // Apply evaporation (very subtle)
-    for (let i = 0; i < GRID_SIZE; i++) {
+    for (let i = 0; i < this.width * this.height; i++) {
       if (this.depthNext[i] > 0) {
         this.depthNext[i] = Math.max(0, this.depthNext[i] - this.evaporationRate * dt);
       }
@@ -365,7 +366,7 @@ export class Water {
   // Get total water in system (for debugging)
   getTotalWater() {
     let total = 0;
-    for (let i = 0; i < GRID_SIZE; i++) {
+    for (let i = 0; i < this.width * this.height; i++) {
       total += this.depth[i];
     }
     return total;

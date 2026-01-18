@@ -1,10 +1,12 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { TERRAIN_WIDTH, TERRAIN_HEIGHT, MAX_HEIGHT } from '../simulation/constants.js';
+import { getTerrainWidth, getTerrainHeight, MAX_HEIGHT } from '../simulation/constants.js';
 
 export class Scene {
   constructor(container) {
     this.container = container;
+    this.terrainWidth = getTerrainWidth();
+    this.terrainHeight = getTerrainHeight();
 
     // Create renderer
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -25,11 +27,11 @@ export class Scene {
 
     // Create camera
     const aspect = window.innerWidth / window.innerHeight;
-    this.camera = new THREE.PerspectiveCamera(55, aspect, 1, TERRAIN_WIDTH * 5);
+    this.camera = new THREE.PerspectiveCamera(55, aspect, 1, this.terrainWidth * 5);
     this.camera.position.set(
-      TERRAIN_WIDTH * 0.5,
+      this.terrainWidth * 0.5,
       MAX_HEIGHT * 2.5,
-      TERRAIN_HEIGHT * 0.5
+      this.terrainHeight * 0.5
     );
 
     // Orbit controls
@@ -43,7 +45,7 @@ export class Scene {
     this.controls.minPolarAngle = 0.1;
     this.controls.maxPolarAngle = Math.PI * 0.85;
     this.controls.minDistance = 80;
-    this.controls.maxDistance = TERRAIN_WIDTH * 2.5;
+    this.controls.maxDistance = this.terrainWidth * 2.5;
 
     // Lighting
     this.setupLighting();
@@ -58,7 +60,7 @@ export class Scene {
 
   setupSkyBackground() {
     // Create gradient sky using a large sphere
-    const skyGeo = new THREE.SphereGeometry(TERRAIN_WIDTH * 4, 32, 32);
+    const skyGeo = new THREE.SphereGeometry(this.terrainWidth * 4, 32, 32);
     const skyMat = new THREE.ShaderMaterial({
       uniforms: {
         topColor: { value: new THREE.Color(0x66bbff) },    // Bright sky blue at top
@@ -104,11 +106,11 @@ export class Scene {
 
     // Main sun light - warm directional
     this.sun = new THREE.DirectionalLight(0xfff4e5, 1.6);
-    this.sun.position.set(TERRAIN_WIDTH * 0.4, MAX_HEIGHT * 4, TERRAIN_HEIGHT * 0.2);
+    this.sun.position.set(this.terrainWidth * 0.4, MAX_HEIGHT * 4, this.terrainHeight * 0.2);
     this.scene.add(this.sun);
 
     // Visible sun disc
-    const sunGeo = new THREE.CircleGeometry(TERRAIN_WIDTH * 0.08, 32);
+    const sunGeo = new THREE.CircleGeometry(this.terrainWidth * 0.08, 32);
     const sunMat = new THREE.MeshBasicMaterial({
       color: 0xffffdd,
       fog: false,
@@ -118,7 +120,7 @@ export class Scene {
     this.scene.add(this.sunDisc);
 
     // Sun glow (larger, semi-transparent)
-    const glowGeo = new THREE.CircleGeometry(TERRAIN_WIDTH * 0.15, 32);
+    const glowGeo = new THREE.CircleGeometry(this.terrainWidth * 0.15, 32);
     const glowMat = new THREE.MeshBasicMaterial({
       color: 0xffeeaa,
       transparent: true,
@@ -131,7 +133,7 @@ export class Scene {
 
     // Fill light from opposite side - cool and subtle
     const fill = new THREE.DirectionalLight(0xaabbcc, 0.5);
-    fill.position.set(-TERRAIN_WIDTH * 0.3, MAX_HEIGHT * 2, -TERRAIN_HEIGHT * 0.4);
+    fill.position.set(-this.terrainWidth * 0.3, MAX_HEIGHT * 2, -this.terrainHeight * 0.4);
     this.scene.add(fill);
 
     // Subtle ambient to lift shadows
@@ -161,7 +163,7 @@ export class Scene {
     // Animate sun in a circle around the terrain
     this.sunAngle += this.sunSpeed * dt;
 
-    const radius = TERRAIN_WIDTH * 1.5;
+    const radius = this.terrainWidth * 1.5;
     const height = MAX_HEIGHT * 4 + Math.sin(this.sunAngle * 0.5) * MAX_HEIGHT * 2;
 
     this.sun.position.x = Math.cos(this.sunAngle) * radius;
@@ -172,7 +174,7 @@ export class Scene {
     this.sun.target.position.set(0, 0, 0);
 
     // Move sun disc and glow to match light position (scaled out for sky)
-    const discRadius = TERRAIN_WIDTH * 2.5;
+    const discRadius = this.terrainWidth * 2.5;
     const discHeight = height * 1.5;
     this.sunDisc.position.x = Math.cos(this.sunAngle) * discRadius;
     this.sunDisc.position.z = Math.sin(this.sunAngle) * discRadius;

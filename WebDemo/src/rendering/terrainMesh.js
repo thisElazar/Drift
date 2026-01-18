@@ -1,8 +1,6 @@
 import * as THREE from 'three';
 import {
-  GRID_WIDTH,
-  GRID_HEIGHT,
-  WORLD_SCALE,
+  getWorldScale,
   MAX_HEIGHT,
   MIN_HEIGHT,
 } from '../simulation/constants.js';
@@ -10,13 +8,14 @@ import {
 export class TerrainMesh {
   constructor(terrain) {
     this.terrain = terrain;
+    const worldScale = getWorldScale();
 
-    // Create geometry
+    // Create geometry using terrain's dimensions
     this.geometry = new THREE.PlaneGeometry(
-      GRID_WIDTH * WORLD_SCALE,
-      GRID_HEIGHT * WORLD_SCALE,
-      GRID_WIDTH - 1,
-      GRID_HEIGHT - 1
+      terrain.width * worldScale,
+      terrain.height * worldScale,
+      terrain.width - 1,
+      terrain.height - 1
     );
 
     // Rotate to be horizontal (XZ plane)
@@ -42,21 +41,23 @@ export class TerrainMesh {
     const positions = this.geometry.attributes.position.array;
     const colors = this.geometry.attributes.color?.array ||
       new Float32Array(positions.length);
+    const gridWidth = this.terrain.width;
+    const gridHeight = this.terrain.height;
 
     // Update vertex positions and colors
-    for (let y = 0; y < GRID_HEIGHT; y++) {
-      for (let x = 0; x < GRID_WIDTH; x++) {
-        const gridIdx = y * GRID_WIDTH + x;
+    for (let y = 0; y < gridHeight; y++) {
+      for (let x = 0; x < gridWidth; x++) {
+        const gridIdx = y * gridWidth + x;
         const vertIdx = gridIdx * 3;
 
         // Get height from terrain
-        const height = this.terrain.heightMap[gridIdx];
+        const h = this.terrain.heightMap[gridIdx];
 
         // Update Y position (which is up after rotation)
-        positions[vertIdx + 1] = height;
+        positions[vertIdx + 1] = h;
 
         // Calculate color based on height
-        const color = this.getHeightColor(height);
+        const color = this.getHeightColor(h);
         colors[vertIdx] = color.r;
         colors[vertIdx + 1] = color.g;
         colors[vertIdx + 2] = color.b;

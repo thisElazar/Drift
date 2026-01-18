@@ -1,10 +1,11 @@
 import * as THREE from 'three';
-import { WORLD_SCALE } from '../simulation/constants.js';
+import { getWorldScale } from '../simulation/constants.js';
 
 export class SpringMarkers {
   constructor(water, terrain) {
     this.water = water;
     this.terrain = terrain;
+    this.worldScale = getWorldScale();
 
     // Container for all spring markers
     this.group = new THREE.Group();
@@ -39,8 +40,8 @@ export class SpringMarkers {
 
       const terrainHeight = this.terrain.getHeight(spring.x, spring.y);
       const waterDepth = this.water.getDepth(spring.x, spring.y);
-      const worldX = (spring.x - this.terrain.width / 2) * WORLD_SCALE;
-      const worldZ = (spring.y - this.terrain.height / 2) * WORLD_SCALE;
+      const worldX = (spring.x - this.terrain.width / 2) * this.worldScale;
+      const worldZ = (spring.y - this.terrain.height / 2) * this.worldScale;
 
       // Position just above water surface (or terrain if no water yet)
       const surfaceY = terrainHeight + Math.max(0.5, waterDepth) + 0.2;

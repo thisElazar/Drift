@@ -5,7 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:mobile": "vite --open /mobile.html",
     "build": "vite build",
+    "build:desktop": "BUILD_TARGET=desktop vite build",
+    "build:mobile": "BUILD_TARGET=mobile vite build",
+    "build:all": "npm run build:desktop && npm run build:mobile",
     "preview": "vite preview"
   },
   "dependencies": {

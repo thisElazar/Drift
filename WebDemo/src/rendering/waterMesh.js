@@ -1,9 +1,5 @@
 import * as THREE from 'three';
-import {
-  GRID_WIDTH,
-  GRID_HEIGHT,
-  WORLD_SCALE,
-} from '../simulation/constants.js';
+import { getWorldScale } from '../simulation/constants.js';
 
 const MIN_RENDER_DEPTH = 0.3;
 
@@ -22,19 +18,22 @@ export class WaterMesh {
     this.water = water;
     this.terrain = terrain;
     this.time = 0;
+    this.gridWidth = water.width;
+    this.gridHeight = water.height;
+    this.worldScale = getWorldScale();
 
     // Create geometry
     this.geometry = new THREE.PlaneGeometry(
-      GRID_WIDTH * WORLD_SCALE,
-      GRID_HEIGHT * WORLD_SCALE,
-      GRID_WIDTH - 1,
-      GRID_HEIGHT - 1
+      this.gridWidth * this.worldScale,
+      this.gridHeight * this.worldScale,
+      this.gridWidth - 1,
+      this.gridHeight - 1
     );
 
     this.geometry.rotateX(-Math.PI / 2);
 
     // Store base positions for wave animation
-    const vertexCount = GRID_WIDTH * GRID_HEIGHT;
+    const vertexCount = this.gridWidth * this.gridHeight;
     this.baseHeights = new Float32Array(vertexCount);
 
     // Smoothed wave heights to prevent flickering
@@ -74,7 +73,7 @@ export class WaterMesh {
 
   // Check if a cell is at the shoreline (has dry neighbors)
   isShorelineCell(x, y, waterDepths) {
-    const depth = waterDepths[y * GRID_WIDTH + x];
+    const depth = waterDepths[y * this.gridWidth + x];
     if (depth <= MIN_RENDER_DEPTH) return false;
 
     // Check 4-connected neighbors
@@ -82,8 +81,8 @@ export class WaterMesh {
     for (const [dx, dy] of neighbors) {
       const nx = x + dx;
       const ny = y + dy;
-      if (nx < 0 || nx >= GRID_WIDTH || ny < 0 || ny >= GRID_HEIGHT) continue;
-      const nDepth = waterDepths[ny * GRID_WIDTH + nx];
+      if (nx < 0 || nx >= this.gridWidth || ny < 0 || ny >= this.gridHeight) continue;
+      const nDepth = waterDepths[ny * this.gridWidth + nx];
       if (nDepth <= MIN_RENDER_DEPTH) return true;
     }
     return false;
@@ -91,7 +90,7 @@ export class WaterMesh {
 
   // Get flow speed at a cell
   getFlowSpeed(x, y) {
-    const idx = y * GRID_WIDTH + x;
+    const idx = y * this.gridWidth + x;
     const vx = this.water.velocityX[idx];
     const vy = this.water.velocityY[idx];
     return Math.sqrt(vx * vx + vy * vy);
@@ -99,7 +98,7 @@ export class WaterMesh {
 
   // Get wave energy at a cell
   getWaveEnergy(x, y) {
-    const idx = y * GRID_WIDTH + x;
+    const idx = y * this.gridWidth + x;
     return this.water.waveEnergy[idx];
   }
 
@@ -121,9 +120,9 @@ export class WaterMesh {
     // Foam: white with slight blue tint
     const foamColor = { r: 0.9, g: 0.95, b: 1.0 };
 
-    for (let y = 0; y < GRID_HEIGHT; y++) {
-      for (let x = 0; x < GRID_WIDTH; x++) {
-        const gridIdx = y * GRID_WIDTH + x;
+    for (let y = 0; y < this.gridHeight; y++) {
+      for (let x = 0; x < this.gridWidth; x++) {
+        const gridIdx = y * this.gridWidth + x;
         const vertIdx = gridIdx * 3;
         const colorIdx = gridIdx * 4;
 
@@ -234,16 +233,16 @@ export class WaterMesh {
     const waveDirectionX = this.water.waveDirectionX;
     const waveDirectionY = this.water.waveDirectionY;
 
-    for (let y = 0; y < GRID_HEIGHT; y++) {
-      for (let x = 0; x < GRID_WIDTH; x++) {
-        const gridIdx = y * GRID_WIDTH + x;
+    for (let y = 0; y < this.gridHeight; y++) {
+      for (let x = 0; x < this.gridWidth; x++) {
+        const gridIdx = y * this.gridWidth + x;
         const vertIdx = gridIdx * 3;
         const colorIdx = gridIdx * 4;
         const depth = waterDepths[gridIdx];
 
         if (depth > MIN_RENDER_DEPTH) {
-          const worldX = x * WORLD_SCALE;
-          const worldZ = y * WORLD_SCALE;
+          const worldX = x * this.worldScale;
+          const worldZ = y * this.worldScale;
 
           // Get flow data
           const vx = this.water.velocityX[gridIdx];

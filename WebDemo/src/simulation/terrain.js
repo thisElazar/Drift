@@ -1,8 +1,8 @@
 import { fbm } from './noise.js';
 import {
-  GRID_WIDTH,
-  GRID_HEIGHT,
-  GRID_SIZE,
+  getGridWidth,
+  getGridHeight,
+  getGridSize,
   MAX_HEIGHT,
   MIN_HEIGHT,
   NOISE_SCALE,
@@ -22,9 +22,9 @@ export const TerrainPreset = {
 
 export class Terrain {
   constructor() {
-    this.width = GRID_WIDTH;
-    this.height = GRID_HEIGHT;
-    this.heightMap = new Float32Array(GRID_SIZE);
+    this.width = getGridWidth();
+    this.height = getGridHeight();
+    this.heightMap = new Float32Array(getGridSize());
     this.dirty = false; // Flag for mesh updates
     this.currentPreset = TerrainPreset.DEFAULT;
 

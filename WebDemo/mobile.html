@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>Drift - Mobile Demo</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      touch-action: none;
+    }
+    html, body {
+      overflow: hidden;
+      background: #1a1a2e;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      position: fixed;
+      width: 100%;
+      height: 100%;
+    }
+    #app {
+      width: 100vw;
+      height: 100vh;
+    }
+
+    /* Top bar - all same height */
+    #top-bar {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      right: 10px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 6px;
+      pointer-events: none;
+    }
+    #top-bar > * {
+      pointer-events: auto;
+    }
+    .top-btn {
+      background: rgba(0,0,0,0.6);
+      border: 1px solid rgba(255,255,255,0.2);
+      color: #fff;
+      padding: 6px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      backdrop-filter: blur(4px);
+      -webkit-tap-highlight-color: transparent;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .top-btn:active {
+      transform: scale(0.95);
+      background: rgba(136,204,255,0.4);
+    }
+    #stats-display {
+      background: rgba(0,0,0,0.6);
+      padding: 6px 10px;
+      border-radius: 6px;
+      font-size: 11px;
+      color: #fff;
+      backdrop-filter: blur(4px);
+      height: 32px;
+      display: flex;
+      align-items: center;
+      border: 1px solid rgba(255,255,255,0.2);
+    }
+    #stats-display .title {
+      color: #88ccff;
+      font-weight: bold;
+    }
+    .top-btn-small {
+      width: 32px;
+      padding: 0;
+    }
+
+    /* Terrain preset dropdown */
+    #preset-dropdown, #quality-dropdown {
+      position: absolute;
+      top: 48px;
+      left: 10px;
+      background: rgba(0,0,0,0.85);
+      border-radius: 8px;
+      padding: 4px;
+      display: none;
+      backdrop-filter: blur(4px);
+      z-index: 50;
+      border: 1px solid rgba(255,255,255,0.2);
+    }
+    #quality-dropdown {
+      left: auto;
+      left: 160px;
+    }
+    #preset-dropdown.visible, #quality-dropdown.visible {
+      display: block;
+    }
+    #preset-dropdown .preset-btn, #quality-dropdown .quality-btn {
+      display: block;
+      width: 100%;
+      background: rgba(255,255,255,0.1);
+      border: none;
+      color: #fff;
+      padding: 10px 16px;
+      margin: 2px 0;
+      border-radius: 6px;
+      font-size: 13px;
+      cursor: pointer;
+      text-align: left;
+    }
+    #preset-dropdown .preset-btn:active,
+    #preset-dropdown .preset-btn.active,
+    #quality-dropdown .quality-btn:active,
+    #quality-dropdown .quality-btn.active {
+      background: rgba(136,204,255,0.4);
+    }
+
+    /* Side sliders - vertical, no background */
+    .side-slider {
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 60px 0;
+    }
+    #size-slider-container {
+      left: 6px;
+    }
+    #strength-slider-container {
+      right: 6px;
+    }
+    .side-slider .slider-label {
+      position: absolute;
+      top: 0;
+      font-size: 9px;
+      font-weight: bold;
+      letter-spacing: 1px;
+      color: rgba(255,255,255,0.9);
+      text-shadow: 0 1px 4px rgba(0,0,0,0.9);
+    }
+    .side-slider input[type="range"] {
+      -webkit-appearance: none;
+      width: 100px;
+      height: 32px;
+      background: transparent;
+      cursor: pointer;
+      transform: rotate(-90deg);
+      margin: 0;
+    }
+    .side-slider input[type="range"]::-webkit-slider-track {
+      height: 6px;
+      background: rgba(255,255,255,0.3);
+      border-radius: 3px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.6);
+    }
+    .side-slider input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 24px;
+      height: 24px;
+      background: #88ccff;
+      border-radius: 50%;
+      margin-top: -9px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+    }
+
+    /* Bottom toolbar - compact */
+    #bottom-bar {
+      position: absolute;
+      bottom: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0,0,0,0.75);
+      border-radius: 14px;
+      padding: 8px 12px;
+      backdrop-filter: blur(4px);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      border: 1px solid rgba(255,255,255,0.15);
+    }
+
+    /* Tool buttons */
+    .tool-btn {
+      width: 50px;
+      height: 50px;
+      border: 2px solid rgba(255,255,255,0.3);
+      border-radius: 10px;
+      background: rgba(255,255,255,0.1);
+      color: #fff;
+      font-size: 9px;
+      font-weight: bold;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: all 0.15s;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .tool-btn .icon {
+      font-size: 20px;
+      margin-bottom: 1px;
+    }
+    .tool-btn:active {
+      transform: scale(0.95);
+    }
+    .tool-btn.active {
+      background: rgba(136,204,255,0.4);
+      border-color: #88ccff;
+    }
+
+    /* Brush info in bottom bar */
+    .brush-info {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 0 6px;
+      border-left: 1px solid rgba(255,255,255,0.2);
+      margin-left: 2px;
+    }
+    .brush-info .info-row {
+      font-size: 10px;
+      color: rgba(255,255,255,0.7);
+    }
+    .brush-info .info-value {
+      color: #88ccff;
+      font-weight: bold;
+    }
+
+    /* Help overlay */
+    #help-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0,0,0,0.85);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+    }
+    #help-overlay.visible {
+      display: flex;
+    }
+    #help-content {
+      background: rgba(30,30,50,0.95);
+      padding: 24px;
+      border-radius: 16px;
+      max-width: 300px;
+      color: #fff;
+      text-align: center;
+    }
+    #help-content h2 {
+      color: #88ccff;
+      margin-bottom: 16px;
+      font-size: 18px;
+    }
+    #help-content .gesture {
+      background: rgba(255,255,255,0.1);
+      padding: 8px 12px;
+      border-radius: 8px;
+      margin: 8px 0;
+      font-size: 13px;
+    }
+    #help-content .close-btn {
+      margin-top: 20px;
+      background: #88ccff;
+      color: #000;
+      border: none;
+      padding: 12px 32px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+
+    /* ========== PHONE LAYOUT (small screens) ========== */
+    @media (max-width: 500px) {
+      /* Hide side sliders on phone */
+      .side-slider {
+        display: none;
+      }
+
+      /* Show sliders in bottom bar instead */
+      #bottom-bar {
+        flex-wrap: wrap;
+        justify-content: center;
+        max-width: 95%;
+        padding: 10px;
+        gap: 8px;
+      }
+
+      #tool-row {
+        display: flex;
+        gap: 6px;
+        width: 100%;
+        justify-content: center;
+      }
+
+      .tool-btn {
+        width: 46px;
+        height: 46px;
+        font-size: 8px;
+      }
+      .tool-btn .icon {
+        font-size: 18px;
+      }
+
+      #slider-row {
+        display: flex;
+        width: 100%;
+        gap: 12px;
+        padding-top: 8px;
+        border-top: 1px solid rgba(255,255,255,0.15);
+        margin-top: 4px;
+      }
+
+      .phone-slider-group {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .phone-slider-group .slider-label {
+        display: flex;
+        justify-content: space-between;
+        font-size: 10px;
+        color: rgba(255,255,255,0.7);
+      }
+      .phone-slider-group .slider-value {
+        color: #88ccff;
+        font-weight: bold;
+      }
+      .phone-slider-group input[type="range"] {
+        width: 100%;
+        height: 24px;
+        -webkit-appearance: none;
+        background: transparent;
+      }
+      .phone-slider-group input[type="range"]::-webkit-slider-track {
+        height: 6px;
+        background: rgba(255,255,255,0.2);
+        border-radius: 3px;
+      }
+      .phone-slider-group input[type="range"]::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        width: 20px;
+        height: 20px;
+        background: #88ccff;
+        border-radius: 50%;
+        margin-top: -7px;
+      }
+
+      /* Hide the tablet brush info */
+      .brush-info {
+        display: none;
+      }
+
+      /* Smaller top buttons on phone */
+      .top-btn {
+        font-size: 11px;
+        padding: 5px 8px;
+        height: 28px;
+      }
+      #stats-display {
+        font-size: 10px;
+        height: 28px;
+        padding: 4px 8px;
+      }
+      .top-btn-small {
+        width: 28px;
+      }
+    }
+
+    /* ========== TABLET LAYOUT (larger screens) ========== */
+    @media (min-width: 501px) {
+      /* Hide phone-specific elements */
+      #tool-row, #slider-row {
+        display: contents;
+      }
+      .phone-slider-group {
+        display: none !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+
+  <!-- Top bar -->
+  <div id="top-bar">
+    <div style="display: flex; gap: 6px;">
+      <button class="top-btn" id="btn-new-map">New Map</button>
+      <button class="top-btn" id="btn-reset">Reset</button>
+      <button class="top-btn" id="btn-quality">Quality</button>
+    </div>
+    <div id="stats-display">
+      <span class="title">Drift</span>&nbsp;|&nbsp;<span id="stats">Loading...</span>
+    </div>
+    <button class="top-btn top-btn-small" id="btn-help-top">?</button>
+  </div>
+
+  <!-- Quality dropdown -->
+  <div id="quality-dropdown">
+    <button class="quality-btn" data-quality="low">Low (128px) - Phone</button>
+    <button class="quality-btn" data-quality="medium">Medium (192px)</button>
+    <button class="quality-btn active" data-quality="high">High (256px) - Tablet</button>
+  </div>
+
+  <!-- Terrain preset dropdown -->
+  <div id="preset-dropdown">
+    <button class="preset-btn active" data-preset="default">Default</button>
+    <button class="preset-btn" data-preset="hills">Hills</button>
+    <button class="preset-btn" data-preset="mountains">Mountains</button>
+    <button class="preset-btn" data-preset="plains">Plains</button>
+  </div>
+
+  <!-- Side sliders (tablet only - hidden on phone via CSS) -->
+  <div class="side-slider" id="size-slider-container">
+    <span class="slider-label">SIZE</span>
+    <input type="range" id="size-slider" min="2" max="20" value="8">
+  </div>
+  <div class="side-slider" id="strength-slider-container">
+    <span class="slider-label">STRENGTH</span>
+    <input type="range" id="strength-slider" min="0.5" max="10" step="0.5" value="2">
+  </div>
+
+  <!-- Bottom toolbar -->
+  <div id="bottom-bar">
+    <div id="tool-row">
+      <button class="tool-btn active" data-tool="raise">
+        <span class="icon">^</span>
+        <span>Raise</span>
+      </button>
+      <button class="tool-btn" data-tool="lower">
+        <span class="icon">v</span>
+        <span>Lower</span>
+      </button>
+      <button class="tool-btn" data-tool="water">
+        <span class="icon">~</span>
+        <span>Water</span>
+      </button>
+      <button class="tool-btn" data-tool="spring">
+        <span class="icon">o</span>
+        <span>Spring</span>
+      </button>
+      <!-- Brush info for tablet -->
+      <div class="brush-info">
+        <div class="info-row">Size: <span class="info-value" id="size-value">8</span></div>
+        <div class="info-row">Str: <span class="info-value" id="strength-value">2.0</span></div>
+      </div>
+    </div>
+
+    <!-- Sliders row for phone only -->
+    <div id="slider-row">
+      <div class="phone-slider-group">
+        <div class="slider-label">
+          <span>Size</span>
+          <span class="slider-value" id="size-value-phone">8</span>
+        </div>
+        <input type="range" id="size-slider-phone" min="2" max="20" value="8">
+      </div>
+      <div class="phone-slider-group">
+        <div class="slider-label">
+          <span>Strength</span>
+          <span class="slider-value" id="strength-value-phone">2.0</span>
+        </div>
+        <input type="range" id="strength-slider-phone" min="0.5" max="10" step="0.5" value="2">
+      </div>
+    </div>
+  </div>
+
+  <!-- Help overlay -->
+  <div id="help-overlay">
+    <div id="help-content">
+      <h2>Touch Controls</h2>
+      <div class="gesture"><strong>One finger drag</strong><br>Use selected tool</div>
+      <div class="gesture"><strong>Two finger drag</strong><br>Move camera</div>
+      <div class="gesture"><strong>Pinch</strong><br>Zoom in/out</div>
+      <div class="gesture"><strong>Two finger twist</strong><br>Rotate view</div>
+      <p style="font-size: 12px; margin-top: 12px; opacity: 0.8;">Adjust brush size and strength with sliders.</p>
+      <button class="close-btn" id="close-help">Got it!</button>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main-mobile.js"></script>
+</body>
+</html>
