@@ -638,20 +638,27 @@ class UnifiedApp {
 
     const handleSubmit = (e) => {
       e.preventDefault();
+      e.stopPropagation();
+      if (submitBtn.disabled) return; // Prevent double-tap
+      submitBtn.disabled = true;
       const initials = Array.from(inputs).map(i => i.value || 'A').join('');
       this.submitHighScore(initials);
+      submitBtn.disabled = false;
     };
     submitBtn.addEventListener('click', handleSubmit);
-    submitBtn.addEventListener('touchend', handleSubmit);
+    submitBtn.addEventListener('touchend', (e) => {
+      e.preventDefault();
+      handleSubmit(e);
+    });
   }
 
-  async submitHighScore(initials) {
+  submitHighScore(initials) {
     const scoreManager = new ScoreManager();
     const modeType = this.gameModeManager.lastPlayedMode;
     const score = this.pendingHighScore;
 
     if (modeType && score > 0) {
-      await scoreManager.addHighScore(modeType, score, initials);
+      scoreManager.addHighScore(modeType, score, initials);
       this.updateHighScoreDisplay();
       this.showLeaderboard(modeType, score);
     }
@@ -760,6 +767,7 @@ class UnifiedApp {
     const hud = document.getElementById('arcade-hud');
     if (hud) {
       hud.classList.toggle('visible', visible);
+      hud.classList.remove('game-ended'); // Reset mobile layout
       if (visible) {
         hud.querySelector('.game-over').style.display = 'none';
         hud.querySelector('.final-score').style.display = 'none';
@@ -811,6 +819,9 @@ class UnifiedApp {
     const hud = document.getElementById('arcade-hud');
     if (!hud) return;
 
+    // Add game-ended class for mobile layout
+    hud.classList.add('game-ended');
+
     const gameOverEl = hud.querySelector('.game-over');
     if (this.gameModeManager.currentMode && this.gameModeManager.currentMode.victory) {
       gameOverEl.textContent = "TIME'S UP!";
@@ -861,6 +872,7 @@ class UnifiedApp {
     const hud = document.getElementById('arcade-hud');
     if (!hud) return;
 
+    hud.classList.remove('game-ended'); // Reset mobile layout
     hud.querySelector('.game-over').style.display = 'none';
     hud.querySelector('.final-score').style.display = 'none';
     hud.querySelector('.new-high-score').style.display = 'none';

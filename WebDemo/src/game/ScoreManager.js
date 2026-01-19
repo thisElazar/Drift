@@ -187,9 +187,9 @@ export class ScoreManager {
   /**
    * Add a score to the leaderboard with initials
    */
-  async addHighScore(modeType, score, initials) {
+  addHighScore(modeType, score, initials) {
     // Sanitize initials (filters inappropriate content)
-    const cleanInitials = await sanitizeInitials(initials);
+    const cleanInitials = sanitizeInitials(initials);
 
     if (!this.highScores[modeType]) {
       this.highScores[modeType] = [];
